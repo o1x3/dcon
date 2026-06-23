@@ -1,0 +1,13 @@
+# Built binary
+/dcon
+dist/
+
+# Go
+*.test
+*.out
+coverage.*
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
