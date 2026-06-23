@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 150" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">
+  <defs>
+    <linearGradient id="tA" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3fb950"/><stop offset="1" stop-color="#2ea043"/></linearGradient>
+    <linearGradient id="tB" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#58a6ff"/><stop offset="1" stop-color="#1f6feb"/></linearGradient>
+    <linearGradient id="tC" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#bc8cff"/><stop offset="1" stop-color="#8957e5"/></linearGradient>
+    <linearGradient id="tD" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f0883e"/><stop offset="1" stop-color="#db6d28"/></linearGradient>
+  </defs>
+
+  <!-- tile 1 -->
+  <g transform="translate(16,8)">
+    <rect width="185" height="134" rx="14" fill="#0d1117" stroke="#21262d"/>
+    <rect x="0" y="0" width="185" height="4" rx="2" fill="url(#tA)"/>
+    <text x="20" y="64" fill="#3fb950" font-size="38" font-weight="800">92<tspan font-size="18" fill="#7d8590"> MB</tspan></text>
+    <text x="20" y="92" fill="#e6edf3" font-size="14" font-weight="600">idle memory</text>
+    <text x="20" y="113" fill="#7d8590" font-size="12">≈ 12× lighter than docker</text>
+  </g>
+  <!-- tile 2 -->
+  <g transform="translate(217,8)">
+    <rect width="185" height="134" rx="14" fill="#0d1117" stroke="#21262d"/>
+    <rect x="0" y="0" width="185" height="4" rx="2" fill="url(#tB)"/>
+    <text x="20" y="64" fill="#58a6ff" font-size="38" font-weight="800">7.5<tspan font-size="18" fill="#7d8590"> MB</tspan></text>
+    <text x="20" y="92" fill="#e6edf3" font-size="14" font-weight="600">single static CLI</text>
+    <text x="20" y="113" fill="#7d8590" font-size="12">no app bundle, no daemon</text>
+  </g>
+  <!-- tile 3 -->
+  <g transform="translate(418,8)">
+    <rect width="185" height="134" rx="14" fill="#0d1117" stroke="#21262d"/>
+    <rect x="0" y="0" width="185" height="4" rx="2" fill="url(#tC)"/>
+    <text x="20" y="64" fill="#bc8cff" font-size="38" font-weight="800">1<tspan font-size="18" fill="#7d8590"> VM / ctr</tspan></text>
+    <text x="20" y="92" fill="#e6edf3" font-size="14" font-weight="600">per-container isolation</text>
+    <text x="20" y="113" fill="#7d8590" font-size="12">not a shared kernel</text>
+  </g>
+  <!-- tile 4 -->
+  <g transform="translate(619,8)">
+    <rect width="185" height="134" rx="14" fill="#0d1117" stroke="#21262d"/>
+    <rect x="0" y="0" width="185" height="4" rx="2" fill="url(#tD)"/>
+    <text x="20" y="64" fill="#f0883e" font-size="38" font-weight="800">0</text>
+    <text x="20" y="92" fill="#e6edf3" font-size="14" font-weight="600">background daemons</text>
+    <text x="20" y="113" fill="#7d8590" font-size="12">launchd, on demand</text>
+  </g>
+</svg>

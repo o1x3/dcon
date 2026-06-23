@@ -33,6 +33,10 @@ If your fingers and scripts already type `docker`, alias it and never look back:
 alias docker=dcon        # or: curl … | DCON_LINK_DOCKER=1 bash
 ```
 
+📖 **Want recipes?** The [cookbook (SECONDARY.md)](SECONDARY.md) has 15 end-to-end
+scenarios — compose stacks, profiles, scaling, multi-arch builds, private
+registries, Rosetta, debugging, and more.
+
 ---
 
 ## Why dcon
@@ -60,6 +64,27 @@ Measured on this host — Apple silicon (Mac16,12), macOS 26 — comparing dcon
 the leanest docker backends; vs Docker Desktop the memory gap is *larger*).
 Reproduce with `make bench`.
 
+<p align="center"><img src="assets/stats.svg" alt="dcon at a glance: 92 MB idle, 7.5 MB CLI, per-container VM, 0 daemons" width="820"></p>
+
+### Idle memory — ~12× lighter
+
+When no containers are running, Apple `container`'s services idle at ~90 MB and
+microVMs exist only while a container is up. The docker engine keeps a full Linux
+VM resident the whole time.
+
+<p align="center"><img src="assets/bench-memory.svg" alt="Idle engine memory: dcon 92 MB vs OrbStack 1094 MB vs Docker Desktop ~2000 MB" width="820"></p>
+
+### The honest tradeoff
+
+dcon boots a **fresh microVM per container** — stronger isolation, but a higher
+cold start than a shared-VM engine. If you want maximum per-container isolation
+and a near-zero idle footprint, dcon wins. If you want the absolute fastest
+container churn, a shared-VM engine is faster today.
+
+<p align="center"><img src="assets/bench-startup.svg" alt="Cold container start: dcon 741 ms (per-container VM) vs OrbStack 207 ms (shared VM)" width="820"></p>
+
+### Full numbers
+
 | metric | dcon (Apple container) | docker (OrbStack) |
 |---|---|---|
 | **idle engine memory** | **92 MB** | 1094 MB |
@@ -70,35 +95,6 @@ Reproduce with `make bench`.
 | cold `pull alpine` | ~20 s¹ | ~3 s |
 
 ¹ network/registry-bound on this run; dcon defaults to 3 concurrent layer downloads.
-
-### Idle memory — ~12× lighter
-
-When no containers are running, Apple `container`'s services idle at ~90 MB and
-microVMs exist only while a container is up. The docker engine keeps a full Linux
-VM resident the whole time.
-
-```mermaid
-xychart-beta
-    title "Idle engine memory — MB, lower is better"
-    x-axis ["dcon (Apple container)", "docker (OrbStack)", "Docker Desktop (typical)"]
-    y-axis "resident MB" 0 --> 2200
-    bar [92, 1094, 2000]
-```
-
-### The honest tradeoff
-
-dcon boots a **fresh microVM per container** — stronger isolation, but a higher
-cold start than a shared-VM engine. If you want maximum per-container isolation
-and a near-zero idle footprint, dcon wins. If you want the absolute fastest
-container churn, a shared-VM engine is faster today.
-
-```mermaid
-xychart-beta
-    title "Container start — ms, lower is faster"
-    x-axis ["dcon (per-container VM)", "docker (shared VM)"]
-    y-axis "milliseconds" 0 --> 900
-    bar [741, 207]
-```
 
 ## Install
 
