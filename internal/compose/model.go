@@ -447,3 +447,39 @@ func (p *Project) Order() []string {
 	}
 	return order
 }
+
+// Levels groups services into dependency levels: every service in level i
+// depends only on services in earlier levels, so all services within a level
+// have no ordering constraint between them and can be brought up concurrently.
+// Built on Order(), so undefined deps and cycles degrade identically (a cycle's
+// members collapse toward level 0 rather than deadlocking). Returns nil for an
+// empty project.
+func (p *Project) Levels() [][]string {
+	order := p.Order()
+	if len(order) == 0 {
+		return nil
+	}
+	level := make(map[string]int, len(order))
+	maxLevel := 0
+	for _, name := range order {
+		svc := p.Services[name]
+		lv := 0
+		for _, d := range svc.DependsOn {
+			if _, ok := p.Services[d]; !ok {
+				continue // undefined dependency: ignored, as in Order()
+			}
+			if level[d]+1 > lv {
+				lv = level[d] + 1
+			}
+		}
+		level[name] = lv
+		if lv > maxLevel {
+			maxLevel = lv
+		}
+	}
+	levels := make([][]string, maxLevel+1)
+	for _, name := range order { // preserves Order()'s deterministic sort within a level
+		levels[level[name]] = append(levels[level[name]], name)
+	}
+	return levels
+}

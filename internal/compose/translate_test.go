@@ -2,6 +2,7 @@ package compose
 
 import (
 	"reflect"
+	"sort"
 	"testing"
 )
 
@@ -55,6 +56,55 @@ func TestOrderRespectsDependsOn(t *testing.T) {
 	}
 	if pos["db"] > pos["web"] || pos["db"] > pos["cache"] {
 		t.Errorf("db must precede its dependents; order=%v", order)
+	}
+}
+
+func TestLevels(t *testing.T) {
+	// db, cache are independent roots; api depends on both; web depends on api.
+	p := &Project{
+		Name: "t",
+		Services: map[string]*Service{
+			"db":    {},
+			"cache": {},
+			"api":   {DependsOn: DependsList{"db", "cache"}},
+			"web":   {DependsOn: DependsList{"api"}},
+		},
+	}
+	levels := p.Levels()
+	if len(levels) != 3 {
+		t.Fatalf("got %d levels (%v), want 3", len(levels), levels)
+	}
+	wantSet := func(got []string, want ...string) {
+		t.Helper()
+		g := append([]string{}, got...)
+		sort.Strings(g)
+		sort.Strings(want)
+		if !reflect.DeepEqual(g, want) {
+			t.Errorf("level mismatch: got %v, want %v", g, want)
+		}
+	}
+	wantSet(levels[0], "cache", "db") // independent roots run together
+	wantSet(levels[1], "api")
+	wantSet(levels[2], "web")
+
+	// Invariant: no service shares a level with one of its dependencies.
+	levelOf := map[string]int{}
+	for i, lv := range levels {
+		for _, n := range lv {
+			levelOf[n] = i
+		}
+	}
+	for name, svc := range p.Services {
+		for _, d := range svc.DependsOn {
+			if levelOf[d] >= levelOf[name] {
+				t.Errorf("%s (level %d) must be a later level than its dep %s (level %d)", name, levelOf[name], d, levelOf[d])
+			}
+		}
+	}
+
+	// Empty project yields no levels.
+	if got := (&Project{Services: map[string]*Service{}}).Levels(); got != nil {
+		t.Errorf("empty project Levels() = %v, want nil", got)
 	}
 }
 

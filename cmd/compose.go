@@ -198,34 +198,32 @@ func composeUp() *cobra.Command {
 			net := ensureNetwork(p)
 			ensureVolumes(p)
 
-			var started []string
-			for _, name := range p.Order() {
-				if skipService(p, name, selected, active) {
-					continue
-				}
+			// bringUp creates/starts every replica of one service and returns the
+			// container names it brought up. Pure per-service work so independent
+			// services can run concurrently.
+			bringUp := func(name string) ([]string, error) {
 				svc := p.Services[name]
 				if svc.Hostname != "" {
 					fmt.Fprintf(os.Stderr, "dcon: warning: service %q hostname is not supported by the backend and was ignored\n", name)
 				}
-
 				if svc.Build.IsSet() && !noBuild && (doBuild || svc.Image == "") {
 					fmt.Printf("Building %s...\n", name)
 					if err := runtime.Run(p.BuildArgs(name, svc)...); err != nil {
-						return fmt.Errorf("build %s: %w", name, err)
+						return nil, fmt.Errorf("build %s: %w", name, err)
 					}
 				}
-
 				count := p.Replicas(svc, scale[name])
 				if count > 1 && svc.ContainerName != "" {
-					return fmt.Errorf("service %q has a container_name and cannot be scaled to %d", name, count)
+					return nil, fmt.Errorf("service %q has a container_name and cannot be scaled to %d", name, count)
 				}
+				var local []string
 				for i := 1; i <= count; i++ {
 					cname := p.ContainerName(name, i, svc)
 					if forceRecreate {
 						_, _ = runtime.CaptureSilent("delete", "--force", cname)
 					} else if _, err := runtime.CaptureSilent("inspect", cname); err == nil {
 						fmt.Printf("Container %s is up-to-date\n", cname)
-						started = append(started, cname)
+						local = append(local, cname)
 						continue
 					}
 					if noStart {
@@ -233,15 +231,53 @@ func composeUp() *cobra.Command {
 						rargs[0] = "create"
 						fmt.Printf("Creating %s...\n", cname)
 						if err := runtime.Run(rargs...); err != nil {
-							return err
+							return local, err
 						}
 						continue
 					}
 					fmt.Printf("Creating %s...\n", cname)
 					if err := runtime.Run(p.RunArgs(name, svc, i, net, nil)...); err != nil {
-						return fmt.Errorf("start %s: %w", name, err)
+						return local, fmt.Errorf("start %s: %w", name, err)
 					}
-					started = append(started, cname)
+					local = append(local, cname)
+				}
+				return local, nil
+			}
+
+			// Bring services up one dependency level at a time; within a level
+			// (no ordering constraints between members) start them concurrently,
+			// capped by parallelLimit() so a wide stack can't boot dozens of
+			// microVMs at once. depends_on ordering is preserved across levels.
+			var started []string
+			var mu sync.Mutex
+			sem := make(chan struct{}, parallelLimit())
+			for _, level := range p.Levels() {
+				var wg sync.WaitGroup
+				var levelErr error
+				var errOnce sync.Once
+				for _, name := range level {
+					if skipService(p, name, selected, active) {
+						continue
+					}
+					wg.Add(1)
+					go func(name string) {
+						defer wg.Done()
+						if cap(sem) > 0 {
+							sem <- struct{}{}
+							defer func() { <-sem }()
+						}
+						names, err := bringUp(name)
+						mu.Lock()
+						started = append(started, names...)
+						mu.Unlock()
+						if err != nil {
+							errOnce.Do(func() { levelErr = err })
+						}
+					}(name)
+				}
+				wg.Wait()
+				if levelErr != nil {
+					return levelErr
 				}
 			}
 
@@ -267,6 +303,21 @@ func composeUp() *cobra.Command {
 	f.IntP("timeout", "t", 10, "Use this timeout in seconds for container shutdown")
 	f.Bool("wait", false, "Wait for services to be running|healthy")
 	return cmd
+}
+
+// parallelLimit is the max number of services brought up concurrently within a
+// dependency level. Defaults to 8 (each microVM boot is heavy); override with
+// DCON_COMPOSE_PARALLEL (<=0 means unlimited).
+func parallelLimit() int {
+	if v := os.Getenv("DCON_COMPOSE_PARALLEL"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				return 0 // unlimited
+			}
+			return n
+		}
+	}
+	return 8
 }
 
 // removeOrphanContainers deletes project containers whose service is no longer
