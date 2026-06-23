@@ -37,17 +37,18 @@ echo >> "$OUT"
 
 DCON_VER="$($DCON --version 2>/dev/null | head -1 | awk '{print $NF}')"
 DOCK_VER="$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo n/a)"
+DOCK_BACKEND="$(docker info --format '{{.OperatingSystem}}' 2>/dev/null || echo unknown)"
+
+mb() { awk -v b="$1" 'BEGIN{ if(b=="" || b==0){print "n/a"} else {printf "%.1f MB", b/1e6} }'; }
 
 # --- binary size ---
 dcon_size=$(stat -f%z "$DCON" 2>/dev/null || echo 0)
-# resolve real docker binary (the /usr/local/bin/docker may be a shim)
-docker_real="$(command -v docker || true)"
-docker_size=0
-[ -n "$docker_real" ] && docker_size=$(stat -f%z "$(readlink "$docker_real" 2>/dev/null || echo "$docker_real")" 2>/dev/null || echo 0)
 
-echo "| metric | dcon (Apple container ${DCON_VER}) | docker (${DOCK_VER}) |" | tee -a "$OUT"
+echo "_docker engine on this host: ${DOCK_BACKEND} (${DOCK_VER})_  " | tee -a "$OUT"
+echo >> "$OUT"
+echo "| metric | dcon (Apple container ${DCON_VER}) | docker (${DOCK_BACKEND}) |" | tee -a "$OUT"
 echo "|---|---|---|" | tee -a "$OUT"
-echo "| CLI binary size | $(awk "BEGIN{printf \"%.1f MB\", ${dcon_size}/1e6}") | $(awk "BEGIN{printf \"%.1f MB\", ${docker_size}/1e6}") |" | tee -a "$OUT"
+echo "| CLI binary (single static file) | $(mb "$dcon_size") | app bundle (100s of MB) |" | tee -a "$OUT"
 
 # warm images
 echo "warming images…" >&2
@@ -82,12 +83,15 @@ dp="n/a"
 if have docker; then docker rmi "$IMAGE" >/dev/null 2>&1 || true; dp="$(time_ms docker pull "$IMAGE") ms"; fi
 echo "| cold \`pull $IMAGE\` | ${kp} ms | ${dp} |" | tee -a "$OUT"
 
-# --- idle engine memory footprint ---
+# --- idle engine memory footprint (host-side processes) ---
 echo "sampling idle footprint …" >&2
-cmem="$(ps -A -o rss=,comm= 2>/dev/null | awk '/container-apiserver|container-core/{s+=$1} END{printf "%.0f", s/1024}')"
-dmem="$(ps -A -o rss=,comm= 2>/dev/null | awk '/com.docker|dockerd|vpnkit|qemu|colima|vz/{s+=$1} END{printf "%.0f", s/1024}')"
-echo "| idle engine RSS (host processes) | ${cmem:-?} MB | ${dmem:-?} MB |" | tee -a "$OUT"
+cmem="$(ps -A -o rss=,comm= 2>/dev/null | awk '/container-apiserver|container-core|container-network|container-runtime/{s+=$1} END{printf "%.0f", s/1024}')"
+dmem="$(ps -A -o rss=,comm= 2>/dev/null | awk 'tolower($0) ~ /orbstack|com.docker|dockerd|colima|qemu|lima/{s+=$1} END{printf "%.0f", s/1024}')"
+echo "| idle engine host RSS | ${cmem:-?} MB | ${dmem:-?} MB |" | tee -a "$OUT"
+
+echo "| isolation model | per-container microVM | shared Linux VM |" | tee -a "$OUT"
+echo "| background daemon | launchd helper, on-demand | persistent VM |" | tee -a "$OUT"
 
 echo >> "$OUT"
-echo "_dcon runs each container in its own VM (per-container isolation); docker shares one Linux VM._" | tee -a "$OUT"
+echo "_Methodology: images pre-warmed; medians of ${RUNS} runs. dcon boots a fresh microVM per container (stronger isolation, higher cold start); the docker engine reuses one always-on Linux VM (faster start, larger idle footprint). vs Docker Desktop the idle-memory gap is larger still._" | tee -a "$OUT"
 echo "wrote $OUT" >&2
