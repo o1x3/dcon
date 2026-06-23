@@ -15,83 +15,93 @@ func newBuildCmd() *cobra.Command {
 		Short: "Build an image from a Dockerfile",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			f := cmd.Flags()
-			cargs := []string{"build"}
-
-			for _, t := range mustStringSlice(f, "tag") {
-				cargs = append(cargs, "--tag", t)
-			}
-			if file, _ := f.GetString("file"); file != "" {
-				cargs = append(cargs, "--file", file)
-			}
-			for _, b := range mustStringSlice(f, "build-arg") {
-				cargs = append(cargs, "--build-arg", b)
-			}
-			for _, l := range mustStringSlice(f, "label") {
-				cargs = append(cargs, "--label", l)
-			}
-			for _, s := range mustStringSlice(f, "secret") {
-				cargs = append(cargs, "--secret", s)
-			}
-			if v, _ := f.GetBool("no-cache"); v {
-				cargs = append(cargs, "--no-cache")
-			}
-			if v, _ := f.GetBool("pull"); v {
-				cargs = append(cargs, "--pull")
-			}
-			if v, _ := f.GetBool("quiet"); v {
-				cargs = append(cargs, "--quiet")
-			}
-			if t, _ := f.GetString("target"); t != "" {
-				cargs = append(cargs, "--target", t)
-			}
-			if p, _ := f.GetString("platform"); p != "" {
-				cargs = append(cargs, "--platform", p)
-			}
-			for _, o := range mustStringSlice(f, "output") {
-				cargs = append(cargs, "--output", o)
-			}
-			if pr, _ := f.GetString("progress"); pr != "" && pr != "auto" {
-				// docker has rawjson/quiet; container supports auto|plain|tty.
-				if pr == "rawjson" {
-					pr = "plain"
-				}
-				cargs = append(cargs, "--progress", pr)
-			}
-			if c, _ := f.GetString("cpus"); c != "" {
-				cargs = append(cargs, "--cpus", c)
-			}
-			if m, _ := f.GetString("memory"); m != "" {
-				cargs = append(cargs, "--memory", m)
-			}
-			if a, _ := f.GetString("arch"); a != "" {
-				cargs = append(cargs, "--arch", a)
-			}
-			if o, _ := f.GetString("os"); o != "" {
-				cargs = append(cargs, "--os", o)
-			}
-			// docker cache-from/to -> container hidden cache-in/out (best effort)
-			for _, cf := range mustStringSlice(f, "cache-from") {
-				cargs = append(cargs, "--cache-in", cf)
-			}
-			for _, ct := range mustStringSlice(f, "cache-to") {
-				cargs = append(cargs, "--cache-out", ct)
-			}
-
-			for _, name := range []string{"network", "add-host", "ssh", "squash", "iidfile", "build-context"} {
-				if f.Changed(name) {
-					fmt.Fprintf(os.Stderr, "dcon: warning: --%s is not supported by the backend and was ignored\n", name)
-				}
-			}
-
-			ctx := "."
-			if len(args) == 1 {
-				ctx = args[0]
-			}
-			cargs = append(cargs, ctx)
-			return runtime.Run(cargs...)
+			return runtime.Run(buildBuildArgs(cmd, args)...)
 		},
 	}
+	addBuildFlags(cmd)
+	return cmd
+}
+
+// buildBuildArgs translates docker build flags on cmd into `container build …`.
+func buildBuildArgs(cmd *cobra.Command, args []string) []string {
+	f := cmd.Flags()
+	cargs := []string{"build"}
+
+	for _, t := range mustStringSlice(f, "tag") {
+		cargs = append(cargs, "--tag", t)
+	}
+	if file, _ := f.GetString("file"); file != "" {
+		cargs = append(cargs, "--file", file)
+	}
+	for _, b := range mustStringSlice(f, "build-arg") {
+		cargs = append(cargs, "--build-arg", b)
+	}
+	for _, l := range mustStringSlice(f, "label") {
+		cargs = append(cargs, "--label", l)
+	}
+	for _, s := range mustStringSlice(f, "secret") {
+		cargs = append(cargs, "--secret", s)
+	}
+	if v, _ := f.GetBool("no-cache"); v {
+		cargs = append(cargs, "--no-cache")
+	}
+	if v, _ := f.GetBool("pull"); v {
+		cargs = append(cargs, "--pull")
+	}
+	if v, _ := f.GetBool("quiet"); v {
+		cargs = append(cargs, "--quiet")
+	}
+	if t, _ := f.GetString("target"); t != "" {
+		cargs = append(cargs, "--target", t)
+	}
+	if p, _ := f.GetString("platform"); p != "" {
+		cargs = append(cargs, "--platform", p)
+	}
+	for _, o := range mustStringSlice(f, "output") {
+		cargs = append(cargs, "--output", o)
+	}
+	if pr, _ := f.GetString("progress"); pr != "" && pr != "auto" {
+		// docker has rawjson/quiet; container supports auto|plain|tty.
+		if pr == "rawjson" {
+			pr = "plain"
+		}
+		cargs = append(cargs, "--progress", pr)
+	}
+	if c, _ := f.GetString("cpus"); c != "" {
+		cargs = append(cargs, "--cpus", c)
+	}
+	if m, _ := f.GetString("memory"); m != "" {
+		cargs = append(cargs, "--memory", m)
+	}
+	if a, _ := f.GetString("arch"); a != "" {
+		cargs = append(cargs, "--arch", a)
+	}
+	if o, _ := f.GetString("os"); o != "" {
+		cargs = append(cargs, "--os", o)
+	}
+	// docker cache-from/to -> container hidden cache-in/out (best effort)
+	for _, cf := range mustStringSlice(f, "cache-from") {
+		cargs = append(cargs, "--cache-in", cf)
+	}
+	for _, ct := range mustStringSlice(f, "cache-to") {
+		cargs = append(cargs, "--cache-out", ct)
+	}
+
+	for _, name := range []string{"network", "add-host", "ssh", "squash", "iidfile", "build-context"} {
+		if f.Changed(name) {
+			fmt.Fprintf(os.Stderr, "dcon: warning: --%s is not supported by the backend and was ignored\n", name)
+		}
+	}
+
+	ctx := "."
+	if len(args) == 1 {
+		ctx = args[0]
+	}
+	cargs = append(cargs, ctx)
+	return cargs
+}
+
+func addBuildFlags(cmd *cobra.Command) {
 	f := cmd.Flags()
 	f.StringSliceP("tag", "t", nil, "Name and optionally a tag (format: name:tag)")
 	f.StringP("file", "f", "", "Name of the Dockerfile (default: PATH/Dockerfile)")
@@ -122,5 +132,4 @@ func newBuildCmd() *cobra.Command {
 	f.Bool("force-rm", false, "Always remove intermediate containers (no-op)")
 	_ = f.MarkHidden("rm")
 	_ = f.MarkHidden("force-rm")
-	return cmd
 }
