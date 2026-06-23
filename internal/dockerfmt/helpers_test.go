@@ -40,16 +40,31 @@ func TestShortImage(t *testing.T) {
 }
 
 func TestHumanSize(t *testing.T) {
+	// Values verified against docker/go-units (4 significant figures).
 	cases := map[float64]string{
 		0:          "0B",
 		512:        "512B",
+		1023:       "1.023kB",
+		999600:     "999.6kB",
 		4180000:    "4.18MB",
+		11710000:   "11.71MB",
+		1234000000: "1.234GB",
 		1500000000: "1.5GB",
 	}
 	for in, want := range cases {
 		if got := HumanSize(in); got != want {
 			t.Errorf("HumanSize(%v) = %q; want %q", in, got, want)
 		}
+	}
+}
+
+func TestTruncCommandRuneSafe(t *testing.T) {
+	// 25 multibyte runes; must cut at 20 runes without splitting a rune.
+	long := []string{"日本語日本語日本語日本語日本語日本語日本語日本語日"}
+	out := TruncCommand(long, false)
+	inner := out[1 : len(out)-1] // strip quotes
+	if n := len([]rune(inner)); n != 20 {
+		t.Errorf("expected 20 runes, got %d (%q)", n, inner)
 	}
 }
 

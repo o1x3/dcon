@@ -29,19 +29,20 @@ func getContainers(all bool) ([]dockerfmt.Container, error) {
 
 // psView exposes Docker ps template fields (.ID, .Image, .Status, ...).
 type psView struct {
-	ID         string
-	Image      string
-	Command    string
-	CreatedAt  string
-	RunningFor string
-	Status     string
-	Ports      string
-	Names      string
-	Labels     string
-	Mounts     string
-	Networks   string
-	Size       string
-	State      string
+	ID           string
+	Image        string
+	Command      string
+	CreatedAt    string
+	RunningFor   string
+	Status       string
+	Ports        string
+	Names        string
+	Labels       string
+	Mounts       string
+	Networks     string
+	Size         string
+	State        string
+	LocalVolumes string
 }
 
 // matchStatusFilter maps Docker's status-filter vocabulary
@@ -151,20 +152,31 @@ func buildPsView(c dockerfmt.Container, noTrunc bool) psView {
 	if c.Configuration.InitProcess.Executable == "" {
 		cmdParts = c.Configuration.InitProcess.Arguments
 	}
+	createdAt := c.Configuration.CreationDate
+	if t, ok := dockerfmt.ParseTime(createdAt); ok {
+		createdAt = t.Format("2006-01-02 15:04:05 -0700 MST")
+	}
+	localVols := 0
+	for _, m := range c.Configuration.Mounts {
+		if m.IsVolume() {
+			localVols++
+		}
+	}
 	return psView{
-		ID:         id,
-		Image:      dockerfmt.ShortImage(c.Configuration.Image.Reference),
-		Command:    dockerfmt.TruncCommand(cmdParts, noTrunc),
-		CreatedAt:  c.Configuration.CreationDate,
-		RunningFor: dockerfmt.RelativeAgo(c.Configuration.CreationDate),
-		Status:     statusString(c),
-		Ports:      portsString(c),
-		Names:      c.ID,
-		Labels:     labelsString(c.Configuration.Labels),
-		Mounts:     mountsString(c),
-		Networks:   networksString(c),
-		Size:       "N/A",
-		State:      c.Status.State,
+		ID:           id,
+		Image:        dockerfmt.ShortImage(c.Configuration.Image.Reference),
+		Command:      dockerfmt.TruncCommand(cmdParts, noTrunc),
+		CreatedAt:    createdAt,
+		RunningFor:   dockerfmt.RelativeAgo(c.Configuration.CreationDate),
+		Status:       statusString(c),
+		Ports:        portsString(c),
+		Names:        c.ID,
+		Labels:       labelsString(c.Configuration.Labels),
+		Mounts:       mountsString(c),
+		Networks:     networksString(c),
+		Size:         "N/A",
+		State:        c.Status.State,
+		LocalVolumes: fmt.Sprint(localVols),
 	}
 }
 

@@ -1,5 +1,7 @@
 package dockerfmt
 
+import "encoding/json"
+
 // These structs mirror the JSON emitted by `container ... --format json`.
 // Only the fields dcon needs for Docker-style rendering are declared; unknown
 // fields are ignored by encoding/json.
@@ -37,9 +39,18 @@ type Descriptor struct {
 }
 
 type Filesystem struct {
-	Source      string   `json:"source"`
-	Destination string   `json:"destination"`
-	Options     []string `json:"options"`
+	// Type encodes the backend FSType enum as a single-key object, e.g.
+	// {"volume": …} or {"virtiofs": …}.
+	Type        map[string]json.RawMessage `json:"type"`
+	Source      string                     `json:"source"`
+	Destination string                     `json:"destination"`
+	Options     []string                   `json:"options"`
+}
+
+// IsVolume reports whether the mount is a named (local) volume.
+func (f Filesystem) IsVolume() bool {
+	_, ok := f.Type["volume"]
+	return ok
 }
 
 type PublishPort struct {

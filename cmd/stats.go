@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"dcon/internal/dockerfmt"
@@ -32,12 +33,19 @@ func sampleStats(ids []string) ([]dockerfmt.Stats, error) {
 	return s, nil
 }
 
-func renderStats(cur, prev []dockerfmt.Stats, dt float64, format string) error {
+func statID(id string, noTrunc bool) string {
+	if noTrunc {
+		return id
+	}
+	return dockerfmt.ShortID(id)
+}
+
+func renderStats(cur, prev []dockerfmt.Stats, dt float64, format string, noTrunc bool, extraIDs []string) error {
 	prevByID := map[string]dockerfmt.Stats{}
 	for _, p := range prev {
 		prevByID[p.ID] = p
 	}
-	views := make([]any, 0, len(cur))
+	views := make([]any, 0, len(cur)+len(extraIDs))
 	for _, s := range cur {
 		cpu := "--"
 		if p, ok := prevByID[s.ID]; ok && dt > 0 && s.CPUUsageUsec >= p.CPUUsageUsec {
@@ -49,15 +57,22 @@ func renderStats(cur, prev []dockerfmt.Stats, dt float64, format string) error {
 			memPerc = fmt.Sprintf("%.2f%%", float64(s.MemoryUsageBytes)/float64(s.MemoryLimitBytes)*100)
 		}
 		views = append(views, statsView{
-			Container: dockerfmt.ShortID(s.ID),
+			Container: statID(s.ID, noTrunc),
 			Name:      s.ID,
-			ID:        dockerfmt.ShortID(s.ID),
+			ID:        statID(s.ID, noTrunc),
 			CPUPerc:   cpu,
 			MemUsage:  fmt.Sprintf("%s / %s", dockerfmt.HumanSizeBytes(s.MemoryUsageBytes), dockerfmt.HumanSizeBytes(s.MemoryLimitBytes)),
 			MemPerc:   memPerc,
 			NetIO:     fmt.Sprintf("%s / %s", dockerfmt.HumanSizeBytes(s.NetworkRxBytes), dockerfmt.HumanSizeBytes(s.NetworkTxBytes)),
 			BlockIO:   fmt.Sprintf("%s / %s", dockerfmt.HumanSizeBytes(s.BlockReadBytes), dockerfmt.HumanSizeBytes(s.BlockWriteBytes)),
 			PIDs:      fmt.Sprint(s.NumProcesses),
+		})
+	}
+	// --all: non-running containers appear as placeholder "--" rows.
+	for _, id := range extraIDs {
+		views = append(views, statsView{
+			Container: statID(id, noTrunc), Name: id, ID: statID(id, noTrunc),
+			CPUPerc: "--", MemUsage: "-- / --", MemPerc: "--", NetIO: "-- / --", BlockIO: "-- / --", PIDs: "--",
 		})
 	}
 	def := dockerfmt.TableDef{
@@ -78,8 +93,33 @@ func newStatsCmd() *cobra.Command {
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			noStream, _ := cmd.Flags().GetBool("no-stream")
+			noTrunc, _ := cmd.Flags().GetBool("no-trunc")
+			all, _ := cmd.Flags().GetBool("all")
 			format, _ := cmd.Flags().GetString("format")
 
+			// extraIDs: with --all and no explicit ids, also show non-running
+			// containers as placeholder rows.
+			extraIDs := func(cur []dockerfmt.Stats) []string {
+				if !all || len(args) > 0 {
+					return nil
+				}
+				inSample := map[string]bool{}
+				for _, s := range cur {
+					inSample[s.ID] = true
+				}
+				cs, _ := getContainers(true)
+				var ids []string
+				for _, c := range cs {
+					if !inSample[c.ID] {
+						ids = append(ids, c.ID)
+					}
+				}
+				return ids
+			}
+
+			streaming := !noStream
+			tableMode := format == "" || strings.HasPrefix(format, "table")
+			prevT := time.Now()
 			prev, err := sampleStats(args)
 			if err != nil {
 				return err
@@ -91,16 +131,18 @@ func newStatsCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if !noStream {
-					fmt.Print("\033[H\033[2J") // clear screen for live view
+				dt := time.Since(prevT).Seconds()
+				if streaming && tableMode {
+					fmt.Print("\033[H\033[2J") // clear screen only for the live table view
 				}
-				if err := renderStats(cur, prev, interval, format); err != nil {
+				if err := renderStats(cur, prev, dt, format, noTrunc, extraIDs(cur)); err != nil {
 					return err
 				}
 				if noStream {
 					return nil
 				}
 				prev = cur
+				prevT = time.Now()
 			}
 		},
 	}

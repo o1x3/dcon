@@ -37,6 +37,7 @@ var fieldHeader = map[string]string{
 	".Size":         "SIZE",
 	".Names":        "NAMES",
 	".Name":         "NAME",
+	".LocalVolumes": "LOCAL VOLUMES",
 	".Labels":       "LABELS",
 	".Mounts":       "MOUNTS",
 	".Networks":     "NETWORKS",
@@ -55,7 +56,10 @@ var fieldHeader = map[string]string{
 	".PIDs":         "PIDS",
 }
 
-var fieldTokenRe = regexp.MustCompile(`{{\s*(\.[A-Za-z0-9_]+)`)
+// fieldActionRe matches a whole `{{ .Field … }}` action so the header
+// derivation can replace the entire action with the column header, leaving any
+// surrounding literal text (dots, version strings) untouched.
+var fieldActionRe = regexp.MustCompile(`{{\s*(\.[A-Za-z0-9_]+)[^}]*}}`)
 
 // Render emits a list of view objects honouring Docker's -q / --format /
 // default-table conventions.
@@ -98,15 +102,15 @@ func Render(format string, quiet bool, views []any, def TableDef) error {
 			return err
 		}
 		w := NewTabWriter()
-		// Header row: substitute each field token with its column header.
-		header := fieldTokenRe.ReplaceAllStringFunc(body, func(m string) string {
-			tok := fieldTokenRe.FindStringSubmatch(m)[1]
+		// Header row: replace each whole {{.Field …}} action with its column
+		// header; literal text between actions is preserved verbatim.
+		header := fieldActionRe.ReplaceAllStringFunc(body, func(m string) string {
+			tok := fieldActionRe.FindStringSubmatch(m)[1]
 			if h, ok := fieldHeader[tok]; ok {
-				return strings.Replace(m, tok, h, 1)
+				return h
 			}
-			return strings.Replace(m, tok, strings.ToUpper(strings.TrimPrefix(tok, ".")), 1)
+			return strings.ToUpper(strings.TrimPrefix(tok, "."))
 		})
-		header = strings.NewReplacer("{{", "", "}}", "", ".", "").Replace(header)
 		fmt.Fprintln(w, header)
 		for _, v := range views {
 			if err := tmpl.Execute(w, v); err != nil {

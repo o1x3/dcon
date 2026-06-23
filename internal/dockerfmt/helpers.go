@@ -6,21 +6,20 @@ import (
 	"time"
 )
 
-// HumanSize renders a byte count the way Docker does (decimal SI units).
+// HumanSize renders a byte count the way Docker (go-units) does: decimal SI
+// units with 4 significant figures.
 func HumanSize(n float64) string {
 	const unit = 1000.0
-	if n < unit {
+	units := []string{"B", "kB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"}
+	i := 0
+	for n >= unit && i < len(units)-1 {
+		n /= unit
+		i++
+	}
+	if i == 0 {
 		return fmt.Sprintf("%dB", int64(n))
 	}
-	units := []string{"kB", "MB", "GB", "TB", "PB"}
-	val := n
-	for _, u := range units {
-		val /= unit
-		if val < unit {
-			return fmt.Sprintf("%.3g%s", val, u)
-		}
-	}
-	return fmt.Sprintf("%.3gEB", val)
+	return fmt.Sprintf("%.4g%s", n, units[i])
 }
 
 // HumanSizeBytes is HumanSize over an unsigned value.
@@ -131,8 +130,9 @@ func SplitRepoTag(ref string) (repo, tag string) {
 func TruncCommand(parts []string, noTrunc bool) string {
 	cmd := strings.Join(parts, " ")
 	cmd = strings.ReplaceAll(cmd, "\n", " ")
-	if !noTrunc && len(cmd) > 20 {
-		cmd = cmd[:20]
+	// Truncate by runes (not bytes) so multibyte UTF-8 is never split.
+	if r := []rune(cmd); !noTrunc && len(r) > 20 {
+		cmd = string(r[:20])
 	}
 	return `"` + cmd + `"`
 }
