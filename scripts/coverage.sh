@@ -21,13 +21,15 @@ elif [ "$num" -ge 40 ]; then COLOR="yellowgreen"
 elif [ "$num" -ge 20 ]; then COLOR="yellow"
 else COLOR="orange"; fi
 
-export BADGE="<!--COVERAGE-->![coverage](https://img.shields.io/badge/coverage-${PCT}%25-${COLOR})<!--/COVERAGE-->"
-
-if grep -q '<!--COVERAGE-->' README.md; then
-  perl -0pi -e 's{<!--COVERAGE-->.*?<!--/COVERAGE-->}{$ENV{BADGE}}s' README.md
+# Replace the percentage+color token inside the shields coverage badge URL.
+# (A linked-image badge renders reliably on GitHub; HTML-comment markers around
+# a bare markdown image inside the centered header block do not.)
+export TOKEN="coverage-${PCT}%25-${COLOR}"
+if grep -qE 'badge/coverage-[0-9.]+%25-[a-z]+' README.md; then
+  perl -pi -e 's{badge/coverage-[0-9.]+%25-[a-z]+}{badge/$ENV{TOKEN}}' README.md
   echo "updated coverage badge: ${PCT}% (${COLOR})"
 else
-  echo "no <!--COVERAGE--> marker in README.md; coverage is ${PCT}%"
+  echo "no coverage badge found in README.md; coverage is ${PCT}%"
 fi
 
 echo "COVERAGE=${PCT}"
