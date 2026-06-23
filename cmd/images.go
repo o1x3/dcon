@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	goruntime "runtime"
 	"sort"
 	"strings"
@@ -167,13 +168,21 @@ func matchImageFilters(v imageView, filters []string) bool {
 		}
 		switch kv[0] {
 		case "reference":
-			if !strings.Contains(v.Repository+":"+v.Tag, strings.TrimSuffix(kv[1], ":*")) {
+			// glob match against both the tagged form and the bare repo
+			// (docker treats reference=nginx as matching any tag).
+			full := v.Repository + ":" + v.Tag
+			m1, _ := filepath.Match(kv[1], full)
+			m2, _ := filepath.Match(kv[1], v.Repository)
+			if !m1 && !m2 {
 				return false
 			}
 		case "dangling":
+			// All listed images are tagged here, so dangling=true matches none.
 			if kv[1] == "true" {
-				return false // backend has no dangling images concept
+				return false
 			}
+		default:
+			fmt.Fprintf(os.Stderr, "dcon: warning: image filter %q is not supported and was ignored\n", kv[0])
 		}
 	}
 	return true

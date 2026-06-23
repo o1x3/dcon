@@ -76,6 +76,9 @@ func buildBuildArgs(cmd *cobra.Command, args []string) ([]string, error) {
 		cargs = append(cargs, "--label", l)
 	}
 	for _, s := range mustStringArray(f, "secret") {
+		if strings.Contains(s, "type=") {
+			fmt.Fprintf(os.Stderr, "dcon: warning: --secret type= field is not supported by the backend; use id=<key>[,src=<path>|,env=<VAR>]\n")
+		}
 		cargs = append(cargs, "--secret", s)
 	}
 	if v, _ := f.GetBool("no-cache"); v {
