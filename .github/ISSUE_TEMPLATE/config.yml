@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Cookbook & scenarios
+    url: https://github.com/o1x3/dcon/blob/main/SECONDARY.md
+    about: 15 end-to-end recipes — check here before filing a usage question.
+  - name: Apple container
+    url: https://github.com/apple/container
+    about: dcon's backend. Engine/runtime bugs usually belong upstream.

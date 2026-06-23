@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">
+  <defs>
+    <linearGradient id="word" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3fb950"/>
+      <stop offset="0.55" stop-color="#39c5cf"/>
+      <stop offset="1" stop-color="#58a6ff"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.42" r="0.55">
+      <stop offset="0" stop-color="#39c5cf" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#39c5cf" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
+      <circle cx="1.5" cy="1.5" r="1.5" fill="#1b2430"/>
+    </pattern>
+  </defs>
+
+  <rect x="1" y="1" width="1198" height="318" rx="22" fill="#0d1117" stroke="#21262d"/>
+  <rect x="1" y="1" width="1198" height="318" rx="22" fill="url(#dots)"/>
+  <rect x="1" y="1" width="1198" height="318" rx="22" fill="url(#glow)"/>
+
+  <!-- terminal prompt accent + wordmark -->
+  <text x="600" y="172" text-anchor="middle" font-size="128" font-weight="800" letter-spacing="-2">
+    <tspan fill="#2ea043">❯ </tspan><tspan fill="url(#word)">dcon</tspan>
+  </text>
+  <rect x="792" y="92" width="26" height="86" rx="4" fill="#3fb950" opacity="0.9"/>
+
+  <!-- tagline -->
+  <text x="600" y="228" text-anchor="middle" fill="#c9d1d9" font-size="24" font-weight="500">A drop-in Docker CLI for macOS — powered by Apple <tspan font-family="ui-monospace,SFMono-Regular,Menlo,monospace" fill="#58a6ff">container</tspan></text>
+
+  <!-- subtitle pills -->
+  <g font-size="14" font-weight="600">
+    <g transform="translate(341,262)">
+      <rect width="150" height="30" rx="15" fill="#161b22" stroke="#30363d"/>
+      <circle cx="18" cy="15" r="4" fill="#3fb950"/>
+      <text x="32" y="20" fill="#adbac7">docker-compatible</text>
+    </g>
+    <g transform="translate(503,262)">
+      <rect width="148" height="30" rx="15" fill="#161b22" stroke="#30363d"/>
+      <circle cx="18" cy="15" r="4" fill="#58a6ff"/>
+      <text x="32" y="20" fill="#adbac7">per-container VM</text>
+    </g>
+    <g transform="translate(663,262)">
+      <rect width="118" height="30" rx="15" fill="#161b22" stroke="#30363d"/>
+      <circle cx="18" cy="15" r="4" fill="#bc8cff"/>
+      <text x="32" y="20" fill="#adbac7">7.5 MB binary</text>
+    </g>
+    <g transform="translate(793,262)">
+      <rect width="108" height="30" rx="15" fill="#161b22" stroke="#30363d"/>
+      <circle cx="18" cy="15" r="4" fill="#f0883e"/>
+      <text x="32" y="20" fill="#adbac7">no daemon</text>
+    </g>
+  </g>
+</svg>

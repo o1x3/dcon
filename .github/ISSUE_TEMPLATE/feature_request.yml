@@ -1,0 +1,23 @@
+name: Feature / parity request
+description: A Docker command, flag, or compose key dcon should support
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: want
+    attributes:
+      label: What Docker behaviour is missing?
+      description: The command/flag/compose key and how Docker behaves.
+      placeholder: "dcon should support `docker <...>` which currently ..."
+    validations:
+      required: true
+  - type: textarea
+    id: backend
+    attributes:
+      label: Can the Apple container backend do it?
+      description: >
+        If you know whether `container` supports the underlying capability,
+        say so. dcon only adds what the backend can actually back.
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else

@@ -1,0 +1,47 @@
+name: Bug report
+description: A dcon command behaves differently from Docker (or breaks)
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you run, what did you expect, what did you get?
+      placeholder: |
+        $ dcon run --rm alpine echo hi
+        expected: hi
+        got: ...
+    validations:
+      required: true
+  - type: textarea
+    id: debug
+    attributes:
+      label: Underlying command (DCON_DEBUG=1)
+      description: Re-run with `DCON_DEBUG=1` and paste the `+ container …` line(s).
+      render: shell
+  - type: input
+    id: dcon-version
+    attributes:
+      label: dcon version
+      placeholder: "dcon version 1.0.0  (run: dcon version)"
+    validations:
+      required: true
+  - type: input
+    id: container-version
+    attributes:
+      label: Apple container version
+      placeholder: "container CLI version 1.0.0  (run: container --version)"
+  - type: input
+    id: macos
+    attributes:
+      label: macOS / chip
+      placeholder: "macOS 26, Apple M3"
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: The backend is running (`dcon system start`) and a kernel is installed.
+          required: true
+        - label: This isn't one of the documented backend limitations (pause/rename/commit/diff/events/…).
+          required: true

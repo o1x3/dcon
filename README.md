@@ -1,8 +1,6 @@
 <div align="center">
 
-# dcon
-
-**A drop-in Docker CLI for macOS, powered by Apple's [`container`](https://github.com/apple/container) runtime.**
+<img src="assets/hero.svg" alt="dcon — a drop-in Docker CLI for macOS, powered by Apple container" width="840">
 
 Speak `docker`. Run on Apple's per-container virtual machines. No daemon of its own, no desktop app — one 7.5 MB static binary.
 
@@ -15,8 +13,6 @@ Speak `docker`. Run on Apple's per-container virtual machines. No daemon of its 
 
 </div>
 
----
-
 ```sh
 curl -fsSL https://raw.githubusercontent.com/o1x3/dcon/main/install.sh | bash
 ```
@@ -26,6 +22,12 @@ dcon system start                              # start the backend (once)
 dcon system kernel set --recommended           # install a guest kernel (once)
 dcon run --rm alpine echo "hello from dcon"     # …and you're running containers
 ```
+
+<div align="center">
+
+<img src="assets/demo.gif" alt="dcon in action: run a container, list images, bring up a compose stack" width="900">
+
+</div>
 
 If your fingers and scripts already type `docker`, alias it and never look back:
 
