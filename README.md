@@ -162,6 +162,10 @@ dcon needs Apple's `container` runtime present (it is the engine):
 Read-only commands (`ps`, `images`, `volume ls`, …) work without a kernel;
 booting containers needs it.
 
+Run **`dcon doctor`** at any point to check all of the above at once — it reports
+the backend, kernel, builder, `docker` drop-in, and warm-pool status with a fix
+hint for anything that isn't ready.
+
 ## Command parity
 
 Every entry below is a real dcon command. ✅ full · ≈ best-effort · 🍏 Apple-native

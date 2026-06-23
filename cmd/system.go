@@ -201,7 +201,7 @@ func newSystemGroupCmd() *cobra.Command {
 		},
 	}
 
-	group.AddCommand(df, prune, events, newInfoCmd(), newVersionCmd())
+	group.AddCommand(df, prune, events, newInfoCmd(), newVersionCmd(), newDoctorCmd())
 	// Backend-native passthroughs
 	group.AddCommand(
 		newPassthrough("dns [SUBCOMMAND]", "Manage local DNS domains (backend)", []string{"system", "dns"}),

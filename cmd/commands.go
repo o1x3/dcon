@@ -72,8 +72,8 @@ func init() {
 		// system / info
 		newVersionCmd(), newInfoCmd(),
 
-		// dcon-native: warm-VM pool (sub-OrbStack start latency)
-		newWarmCmd(),
+		// dcon-native: warm-VM pool (sub-OrbStack start latency) + setup doctor
+		newWarmCmd(), newDoctorCmd(),
 
 		// management groups
 		newContainerGroupCmd(), newImageGroupCmd(), newVolumeGroupCmd(),
