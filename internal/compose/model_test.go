@@ -1,0 +1,179 @@
+package compose
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+const sampleCompose = `
+name: shop
+services:
+  web:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    environment:
+      - ENV=prod
+      - DEBUG=1
+    depends_on:
+      - api
+    volumes:
+      - ./html:/usr/share/nginx/html
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile.api
+      args:
+        VERSION: "2"
+    environment:
+      KEY: value
+    command: ./run --port 9000
+volumes:
+  data: {}
+networks:
+  default: {}
+`
+
+func loadSample(t *testing.T) *Project {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yaml")
+	if err := os.WriteFile(path, []byte(sampleCompose), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(path, "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	return p
+}
+
+func TestLoadParsesServices(t *testing.T) {
+	p := loadSample(t)
+	if p.Name != "shop" {
+		t.Errorf("name = %q; want shop", p.Name)
+	}
+	if len(p.Services) != 2 {
+		t.Fatalf("want 2 services; got %d", len(p.Services))
+	}
+	web := p.Services["web"]
+	if web.Image != "nginx:alpine" {
+		t.Errorf("web image = %q", web.Image)
+	}
+	if web.Environment["ENV"] != "prod" || web.Environment["DEBUG"] != "1" {
+		t.Errorf("web env list-form parse wrong: %v", web.Environment)
+	}
+	if len(web.DependsOn) != 1 || web.DependsOn[0] != "api" {
+		t.Errorf("web depends_on wrong: %v", web.DependsOn)
+	}
+}
+
+func TestLoadBuildMapForm(t *testing.T) {
+	p := loadSample(t)
+	api := p.Services["api"]
+	if !api.Build.IsSet() {
+		t.Fatal("api build not set")
+	}
+	if api.Build.Context != "./api" || api.Build.Dockerfile != "Dockerfile.api" {
+		t.Errorf("build map parse wrong: %+v", api.Build)
+	}
+	if api.Build.Args["VERSION"] != "2" {
+		t.Errorf("build args map-form wrong: %v", api.Build.Args)
+	}
+	if api.Environment["KEY"] != "value" {
+		t.Errorf("env map-form wrong: %v", api.Environment)
+	}
+}
+
+func TestOrderTopological(t *testing.T) {
+	p := loadSample(t)
+	order := p.Order()
+	pos := map[string]int{}
+	for i, n := range order {
+		pos[n] = i
+	}
+	if pos["api"] > pos["web"] {
+		t.Errorf("api (dependency) must come before web; order=%v", order)
+	}
+}
+
+func TestRunArgsResolvesRelativeVolume(t *testing.T) {
+	p := loadSample(t)
+	web := p.Services["web"]
+	args := p.RunArgs("web", web, 1, "shop_default", nil)
+	// the ./html bind source should be absolute (under the temp dir)
+	found := false
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--volume" && filepath.IsAbs(splitColon(args[i+1])) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("relative volume not resolved to absolute: %v", args)
+	}
+}
+
+func TestRunArgsShellSplitsStringCommand(t *testing.T) {
+	p := loadSample(t)
+	api := p.Services["api"]
+	args := p.RunArgs("api", api, 1, "", nil)
+	// api's `command: ./run --port 9000` should shell-split after the image.
+	if !containsSub(args, "9000") || !containsSub(args, "--port") || !containsSub(args, "./run") {
+		t.Errorf("string command not shell-split: %v", args)
+	}
+}
+
+func TestBuildArgs(t *testing.T) {
+	p := loadSample(t)
+	api := p.Services["api"]
+	args := p.BuildArgs("api", api)
+	if args[0] != "build" {
+		t.Errorf("build args[0]=%q", args[0])
+	}
+	if !containsSub(args, p.BuildImageName("api")) {
+		t.Errorf("build should tag project image: %v", args)
+	}
+}
+
+func TestDefaultNetworkAndName(t *testing.T) {
+	p := loadSample(t)
+	if p.DefaultNetwork() != "shop_default" {
+		t.Errorf("DefaultNetwork=%q", p.DefaultNetwork())
+	}
+	if p.ContainerName("web", 1, p.Services["web"]) != "shop-web-1" {
+		t.Errorf("ContainerName=%q", p.ContainerName("web", 1, p.Services["web"]))
+	}
+}
+
+func TestEnvVarExpansion(t *testing.T) {
+	t.Setenv("DCON_TEST_TAG", "v9")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yaml")
+	os.WriteFile(path, []byte("services:\n  a:\n    image: img:${DCON_TEST_TAG:-latest}\n"), 0o644)
+	p, err := Load(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Services["a"].Image != "img:v9" {
+		t.Errorf("env expansion wrong: %q", p.Services["a"].Image)
+	}
+}
+
+func splitColon(s string) string {
+	for i := 0; i < len(s); i++ {
+		if s[i] == ':' {
+			return s[:i]
+		}
+	}
+	return s
+}
+
+func containsSub(args []string, want string) bool {
+	for _, a := range args {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
