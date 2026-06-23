@@ -109,6 +109,13 @@ curl -fsSL https://raw.githubusercontent.com/o1x3/dcon/main/install.sh | bash
 Knobs: `DCON_VERSION=v1.2.3`, `DCON_PREFIX=/usr/local`, `DCON_LINK_DOCKER=1`
 (also symlink `docker`), `DCON_FROM_SOURCE=1` (build with Go).
 
+**Homebrew:**
+
+```sh
+brew tap o1x3/dcon https://github.com/o1x3/dcon
+brew install dcon          # installs the binary + shell completions
+```
+
 **From source:**
 
 ```sh
@@ -117,10 +124,15 @@ make install            # builds + installs /usr/local/bin/dcon
 make link-docker        # optional: symlink docker -> dcon
 ```
 
-**Homebrew-style manual:**
+### Shell completions
+
+dcon ships cobra completions for bash, zsh, and fish (Homebrew installs them
+automatically). Manually:
 
 ```sh
-go build -o dcon . && sudo mv dcon /usr/local/bin/
+dcon completion zsh  > "${fpath[1]}/_dcon"          # zsh
+dcon completion bash > /usr/local/etc/bash_completion.d/dcon
+dcon completion fish > ~/.config/fish/completions/dcon.fish
 ```
 
 ## Setup
