@@ -73,6 +73,32 @@ dcon run --rm --cpus 1.5 alpine nproc
 # dcon: warning: --cpus 1.5 rounded up to 2 (backend accepts whole CPUs only)
 ```
 
+### ⚡ Warm pool — `--rm` runs in ~90 ms instead of ~700 ms
+
+A fresh microVM cold-boots in ~700 ms. The warm pool pre-boots a **single-use**
+VM and `exec`s your workload into it, landing in ~90 ms — faster than a
+shared-VM engine, and each run still gets its own fresh VM (the member is used
+once, then destroyed). Great for tight test/dev loops that re-run the same image.
+
+```sh
+dcon warm alpine                 # pre-boot 1 warm alpine VM (~700 ms, once)
+dcon run --rm alpine echo hi     # served from the pool → ~90 ms
+dcon warm -n 3 python:3.12       # keep 3 warm python VMs ready
+dcon warm ls                     # CONTAINER ID / IMAGE / AGE / STATE
+dcon warm prune                  # tear the pool down
+
+# Or let dcon self-prime: the first eligible run is cold, the rest are warm.
+export DCON_WARM=auto            # off by default to keep the ~92 MB idle footprint
+for i in 1 2 3; do dcon run --rm alpine echo "run $i"; done
+```
+
+What's eligible for the fast path: a `--rm` run with no bind mounts, ports,
+resource limits, or custom networking (those are bound at VM-boot time, so they
+take the cold path automatically). Env vars, `--workdir`, `--user`, `-it`, and
+the image's own `ENTRYPOINT`/`CMD` are reproduced exactly — warm output matches
+cold output. Knobs: `DCON_WARM_DEPTH` (sustained depth), `DCON_WARM_TTL` (idle
+reap), `DCON_WARM=off` (force always-cold). See also `dcon doctor`.
+
 ## 3. A real Compose stack (web + db + cache)
 
 `compose.yaml`:

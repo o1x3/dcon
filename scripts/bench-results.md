@@ -7,11 +7,11 @@ _docker engine on this host: OrbStack (29.4.0)_
 
 | metric | dcon (Apple container 1.0.0-dev) | docker (OrbStack) |
 |---|---|---|
-| CLI binary (single static file) | 7.6 MB | app bundle (100s of MB) |
-| `run --rm alpine:latest echo` — cold (fresh microVM) | 769 ms | 212 ms |
-| `run --rm alpine:latest echo` — **warm pool** (still per-container) | **90 ms** | 212 ms |
-| cold `pull alpine:latest` | 12842 ms | 3268 ms |
-| idle engine host RSS | 92 MB | 1005 MB |
+| CLI binary (single static file) | 7.7 MB | app bundle (100s of MB) |
+| `run --rm alpine:latest echo` — cold (fresh microVM) | 700 ms | 206 ms |
+| `run --rm alpine:latest echo` — **warm pool** (still per-container) | **92 ms** | 206 ms |
+| cold `pull alpine:latest` | 12712 ms | 3266 ms |
+| idle engine host RSS | 91 MB | 1004 MB |
 | isolation model | per-container microVM | shared Linux VM |
 | background daemon | launchd helper, on-demand | persistent VM |
 
