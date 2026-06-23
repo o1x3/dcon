@@ -91,7 +91,7 @@ func addRunFlags(cmd *cobra.Command) {
 	f.String("gpus", "", "GPU devices (unsupported by backend)")
 	f.String("memory-swap", "", "Swap limit (unsupported by backend)")
 	f.String("cpu-shares", "", "CPU shares (unsupported by backend)")
-	f.Bool("detach-keys", false, "")
+	f.String("detach-keys", "", "Override the key sequence for detaching (accepted; ignored)")
 	_ = f.MarkHidden("net")
 	_ = f.MarkHidden("dns-opt")
 	_ = f.MarkHidden("detach-keys")

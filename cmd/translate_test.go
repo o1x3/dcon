@@ -157,7 +157,10 @@ func TestBuildTranslation(t *testing.T) {
 		"--no-cache", "--target", "prod", "--platform", "linux/arm64",
 		"--cache-from", "type=registry,ref=foo", "--progress", "rawjson", ".",
 	})
-	got := buildBuildArgs(c, c.Flags().Args())
+	got, err := buildBuildArgs(c, c.Flags().Args())
+	if err != nil {
+		t.Fatal(err)
+	}
 	checks := [][2]string{
 		{"--tag", "img:1"}, {"--file", "Dockerfile"}, {"--build-arg", "X=1"},
 		{"--target", "prod"}, {"--platform", "linux/arm64"},
@@ -173,6 +176,31 @@ func TestBuildTranslation(t *testing.T) {
 	}
 	if got[len(got)-1] != "." {
 		t.Errorf("build context should be last arg; got %v", got)
+	}
+}
+
+func TestTranslateOutput(t *testing.T) {
+	cases := []struct {
+		in, want string
+		err      bool
+	}{
+		{"type=oci", "type=oci", false},
+		{"type=local,dest=out", "type=local,dest=out", false},
+		{"type=docker,dest=x.tar", "type=oci,dest=x.tar", false},
+		{"type=image,name=foo", "type=oci", false},
+		{"type=registry,ref=foo", "", true},
+	}
+	for _, c := range cases {
+		got, err := translateOutput(c.in)
+		if c.err {
+			if err == nil {
+				t.Errorf("translateOutput(%q) expected error", c.in)
+			}
+			continue
+		}
+		if err != nil || got != c.want {
+			t.Errorf("translateOutput(%q) = (%q,%v); want %q", c.in, got, err, c.want)
+		}
 	}
 }
 

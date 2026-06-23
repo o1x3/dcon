@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -26,15 +27,24 @@ func newLoginCmd() *cobra.Command {
 			user, _ := cmd.Flags().GetString("username")
 			pass, _ := cmd.Flags().GetString("password")
 			passStdin, _ := cmd.Flags().GetBool("password-stdin")
+			scheme, _ := cmd.Flags().GetString("scheme")
 
 			cargs := []string{"registry", "login"}
 			if user != "" {
 				cargs = append(cargs, "--username", user)
 			}
+			if scheme != "" {
+				cargs = append(cargs, "--scheme", scheme)
+			}
 
 			// container only accepts the password via --password-stdin. If the
 			// user passed -p, feed it on stdin; otherwise pass through stdio.
 			if pass != "" {
+				// The backend cannot prompt for a username while reading the
+				// password from stdin, so require one up front.
+				if user == "" {
+					return fmt.Errorf("a username is required with -p/--password (use -u)")
+				}
 				cargs = append(cargs, "--password-stdin", server)
 				c := exec.Command(runtime.Bin(), cargs...)
 				c.Stdin = strings.NewReader(pass)
@@ -52,6 +62,7 @@ func newLoginCmd() *cobra.Command {
 	cmd.Flags().StringP("username", "u", "", "Username")
 	cmd.Flags().StringP("password", "p", "", "Password")
 	cmd.Flags().Bool("password-stdin", false, "Take the password from stdin")
+	cmd.Flags().String("scheme", "", "Registry scheme: http, https, or auto")
 	return cmd
 }
 

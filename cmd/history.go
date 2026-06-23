@@ -71,8 +71,10 @@ func newHistoryCmd() *cobra.Command {
 					ID:           "<missing>",
 					CreatedSince: dockerfmt.RelativeAgo(h.Created),
 					CreatedBy:    cb,
-					Size:         "0B",
-					Comment:      h.Comment,
+					// Per-layer size is not present in the OCI config and is
+					// unrecoverable from the backend; use a non-numeric sentinel.
+					Size:    "unknown",
+					Comment: h.Comment,
 				})
 			}
 			def := dockerfmt.TableDef{

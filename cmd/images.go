@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	goruntime "runtime"
 	"sort"
 	"strings"
 
@@ -24,30 +25,31 @@ type imageView struct {
 }
 
 func imageSizeBytes(img dockerfmt.Image) int64 {
-	// Prefer a linux/arm64 variant (the default on Apple silicon), else the
-	// largest variant, else the index descriptor size.
-	var best int64
+	// Prefer the host-platform linux variant (closest to `docker images` SIZE),
+	// else the first linux variant. Reflects summed compressed blob sizes — the
+	// only size the backend exposes — so it won't exactly equal docker's value.
+	var fallback int64
 	for _, v := range img.Variants {
-		if v.Platform.OS == "linux" && v.Platform.Architecture == "arm64" {
+		if v.Platform.OS != "linux" {
+			continue
+		}
+		if v.Platform.Architecture == goruntime.GOARCH {
 			return v.Size
 		}
-		if v.Size > best {
-			best = v.Size
+		if fallback == 0 {
+			fallback = v.Size
 		}
 	}
-	if best > 0 {
-		return best
-	}
-	return img.Configuration.Descriptor.Size
+	return fallback
 }
 
 func buildImageView(img dockerfmt.Image, noTrunc bool) imageView {
 	repo, tag := dockerfmt.SplitRepoTag(dockerfmt.ShortImage(img.Configuration.Name))
 	id := img.ID
+	// DIGEST shows the full sha256:<hex> like `docker images --digests`.
 	digest := img.Configuration.Descriptor.Digest
 	if !noTrunc {
 		id = dockerfmt.ShortID(id)
-		digest = dockerfmt.ShortID(digest)
 	}
 	plat := ""
 	if len(img.Variants) > 0 {
@@ -196,6 +198,9 @@ func newPullCmd() *cobra.Command {
 			if q, _ := cmd.Flags().GetBool("quiet"); q {
 				cargs = append(cargs, "--progress", "none")
 			}
+			if s, _ := cmd.Flags().GetString("scheme"); s != "" {
+				cargs = append(cargs, "--scheme", s)
+			}
 			if cmd.Flags().Changed("all-tags") {
 				fmt.Fprintln(os.Stderr, "dcon: warning: -a/--all-tags is not supported by the backend and was ignored")
 			}
@@ -206,6 +211,7 @@ func newPullCmd() *cobra.Command {
 	cmd.Flags().String("platform", "", "Set platform if server is multi-platform capable")
 	cmd.Flags().String("arch", "", "Target architecture (backend extra)")
 	cmd.Flags().String("os", "", "Target OS (backend extra)")
+	cmd.Flags().String("scheme", "", "Registry scheme: http, https, or auto")
 	cmd.Flags().BoolP("quiet", "q", false, "Suppress verbose output")
 	cmd.Flags().BoolP("all-tags", "a", false, "Download all tagged images (unsupported)")
 	return cmd
@@ -221,6 +227,15 @@ func newPushCmd() *cobra.Command {
 			if p, _ := cmd.Flags().GetString("platform"); p != "" {
 				cargs = append(cargs, "--platform", p)
 			}
+			if a, _ := cmd.Flags().GetString("arch"); a != "" {
+				cargs = append(cargs, "--arch", a)
+			}
+			if o, _ := cmd.Flags().GetString("os"); o != "" {
+				cargs = append(cargs, "--os", o)
+			}
+			if s, _ := cmd.Flags().GetString("scheme"); s != "" {
+				cargs = append(cargs, "--scheme", s)
+			}
 			if q, _ := cmd.Flags().GetBool("quiet"); q {
 				cargs = append(cargs, "--progress", "none")
 			}
@@ -229,6 +244,9 @@ func newPushCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().String("platform", "", "Push a platform-specific manifest")
+	cmd.Flags().String("arch", "", "Push a platform-specific manifest by architecture")
+	cmd.Flags().String("os", "", "Push a platform-specific manifest by OS")
+	cmd.Flags().String("scheme", "", "Registry scheme: http, https, or auto")
 	cmd.Flags().BoolP("quiet", "q", false, "Suppress verbose output")
 	cmd.Flags().BoolP("all-tags", "a", false, "")
 	_ = cmd.Flags().MarkHidden("all-tags")
@@ -239,17 +257,29 @@ func newRmiCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "rmi [OPTIONS] IMAGE [IMAGE...]",
 		Short: "Remove one or more images",
-		Args:  cobra.MinimumNArgs(1),
+		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			all, _ := cmd.Flags().GetBool("all")
+			if all && len(args) > 0 {
+				return fmt.Errorf("--all cannot be combined with image arguments")
+			}
+			if !all && len(args) == 0 {
+				return fmt.Errorf("requires at least 1 image argument, or --all")
+			}
 			cargs := []string{"image", "delete"}
 			if f, _ := cmd.Flags().GetBool("force"); f {
 				cargs = append(cargs, "--force")
 			}
-			cargs = append(cargs, args...)
+			if all {
+				cargs = append(cargs, "--all")
+			} else {
+				cargs = append(cargs, args...)
+			}
 			return runtime.Run(cargs...)
 		},
 	}
 	cmd.Flags().BoolP("force", "f", false, "Force removal of the image")
+	cmd.Flags().BoolP("all", "a", false, "Delete all images (backend extra)")
 	cmd.Flags().Bool("no-prune", false, "Do not delete untagged parents (no-op)")
 	return cmd
 }
@@ -275,11 +305,16 @@ func newImageLoadCmd() *cobra.Command {
 			if i, _ := cmd.Flags().GetString("input"); i != "" {
 				cargs = append(cargs, "--input", i)
 			}
+			if f, _ := cmd.Flags().GetBool("force"); f {
+				cargs = append(cargs, "--force")
+			}
 			return runtime.Run(cargs...)
 		},
 	}
 	cmd.Flags().StringP("input", "i", "", "Read from tar archive file, instead of STDIN")
-	cmd.Flags().BoolP("quiet", "q", false, "Suppress the load output")
+	cmd.Flags().BoolP("force", "f", false, "Load even if the archive contains invalid files")
+	cmd.Flags().BoolP("quiet", "q", false, "Suppress the load output (no-op)")
+	_ = cmd.Flags().MarkHidden("quiet")
 	return cmd
 }
 

@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"dcon/internal/runtime"
 
@@ -15,15 +16,50 @@ func newBuildCmd() *cobra.Command {
 		Short: "Build an image from a Dockerfile",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runtime.Run(buildBuildArgs(cmd, args)...)
+			cargs, err := buildBuildArgs(cmd, args)
+			if err != nil {
+				return err
+			}
+			return runtime.Run(cargs...)
 		},
 	}
 	addBuildFlags(cmd)
 	return cmd
 }
 
+// translateOutput maps a Docker --output exporter spec onto what the container
+// backend accepts (oci|tar|local). docker/image become oci; registry errors.
+func translateOutput(spec string) (string, error) {
+	fields := strings.Split(spec, ",")
+	var typ string
+	for _, fld := range fields {
+		if strings.HasPrefix(fld, "type=") {
+			typ = strings.TrimPrefix(fld, "type=")
+		}
+	}
+	switch typ {
+	case "", "oci", "tar", "local":
+		return spec, nil
+	case "docker", "image":
+		// load into the local image store: remap to oci, keep other fields.
+		var out []string
+		for _, fld := range fields {
+			if strings.HasPrefix(fld, "type=") {
+				out = append(out, "type=oci")
+			} else if strings.HasPrefix(fld, "name=") {
+				continue // covered by --tag
+			} else {
+				out = append(out, fld)
+			}
+		}
+		return strings.Join(out, ","), nil
+	default:
+		return "", fmt.Errorf("--output type=%s is not supported by the backend (use docker, image, oci, tar, or local); push separately with 'dcon push'", typ)
+	}
+}
+
 // buildBuildArgs translates docker build flags on cmd into `container build …`.
-func buildBuildArgs(cmd *cobra.Command, args []string) []string {
+func buildBuildArgs(cmd *cobra.Command, args []string) ([]string, error) {
 	f := cmd.Flags()
 	cargs := []string{"build"}
 
@@ -58,7 +94,11 @@ func buildBuildArgs(cmd *cobra.Command, args []string) []string {
 		cargs = append(cargs, "--platform", p)
 	}
 	for _, o := range mustStringArray(f, "output") {
-		cargs = append(cargs, "--output", o)
+		mapped, err := translateOutput(o)
+		if err != nil {
+			return nil, err
+		}
+		cargs = append(cargs, "--output", mapped)
 	}
 	if pr, _ := f.GetString("progress"); pr != "" && pr != "auto" {
 		// docker has rawjson/quiet; container supports auto|plain|tty.
@@ -98,7 +138,7 @@ func buildBuildArgs(cmd *cobra.Command, args []string) []string {
 		ctx = args[0]
 	}
 	cargs = append(cargs, ctx)
-	return cargs
+	return cargs, nil
 }
 
 func addBuildFlags(cmd *cobra.Command) {
