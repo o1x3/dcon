@@ -200,6 +200,27 @@ func TestRunArgsDeterministic(t *testing.T) {
 	}
 }
 
+func TestRunArgsPerServiceNetworks(t *testing.T) {
+	p := &Project{Name: "proj", Dir: "/tmp", Nets: map[string]string{"frontend": "proj_frontend", "backend": "proj_backend"}}
+	svc := &Service{Image: "img", Networks: StringKeys{"frontend", "backend"}}
+	args := p.RunArgs("web", svc, 1, "proj_default", nil)
+	mustContainPair(t, args, "--network", "proj_frontend")
+	mustContainPair(t, args, "--network", "proj_backend")
+	// must NOT also attach to default when service declares networks
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--network" && args[i+1] == "proj_default" {
+			t.Errorf("should not attach default when networks declared: %v", args)
+		}
+	}
+}
+
+func TestRunArgsDefaultNetworkFallback(t *testing.T) {
+	p := &Project{Name: "proj", Dir: "/tmp"}
+	svc := &Service{Image: "img"}
+	args := p.RunArgs("web", svc, 1, "proj_default", nil)
+	mustContainPair(t, args, "--network", "proj_default")
+}
+
 func TestRunArgsUlimitsAndDeploy(t *testing.T) {
 	p := &Project{Name: "p", Dir: "/tmp"}
 	svc := &Service{Image: "img", Ulimits: Ulimits{"nofile=1024:65535"}}

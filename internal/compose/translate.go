@@ -107,7 +107,17 @@ func (p *Project) runArgs(service string, svc *Service, index int, netName strin
 		args = append(args, "--label", k+"="+svc.Labels[k])
 	}
 
-	if netName != "" {
+	// Attach to the service's declared networks (resolved to backend names via
+	// p.Nets) when present; otherwise attach to the default network.
+	if len(svc.Networks) > 0 && p.Nets != nil {
+		for _, key := range svc.Networks {
+			n := p.Nets[key]
+			if n == "" {
+				n = key
+			}
+			args = append(args, "--network", n)
+		}
+	} else if netName != "" {
 		args = append(args, "--network", netName)
 	}
 	if svc.WorkingDir != "" {
@@ -321,6 +331,15 @@ func (p *Project) BuildArgs(service string, svc *Service) []string {
 	}
 	args = append(args, ctx)
 	return args
+}
+
+// NetworkName resolves a declared network key to its backend network name,
+// honouring an explicit `name:` and otherwise prefixing the project name.
+func (p *Project) NetworkName(key string, spec *NetworkSpec) string {
+	if spec != nil && spec.Name != "" {
+		return spec.Name
+	}
+	return p.Name + "_" + key
 }
 
 // VolumeName resolves a declared volume key to its backend volume name,

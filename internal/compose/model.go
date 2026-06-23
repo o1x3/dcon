@@ -22,6 +22,10 @@ type Project struct {
 	// Dir is the directory the compose file lives in (for relative paths).
 	Dir  string `yaml:"-"`
 	File string `yaml:"-"`
+
+	// Nets maps a compose network key to its resolved backend network name,
+	// populated by the up/create flow before RunArgs is called.
+	Nets map[string]string `yaml:"-"`
 }
 
 // Service is a single compose service definition (subset of the spec that the

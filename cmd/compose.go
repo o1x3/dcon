@@ -100,18 +100,61 @@ func newComposeCmd() *cobra.Command {
 	return group
 }
 
-// ensureNetwork attempts to create the project network, returning the name to
-// attach (empty if creation is unavailable).
+// ensureOneNetwork inspects-then-creates a backend network, honoring internal/
+// labels/subnet. Returns false only on a genuine creation failure.
+func ensureOneNetwork(name string, internal bool, labels map[string]string, subnet string) bool {
+	if _, err := runtime.CaptureSilent("network", "inspect", name); err == nil {
+		return true
+	}
+	cargs := []string{"network", "create"}
+	if internal {
+		cargs = append(cargs, "--internal")
+	}
+	for k, v := range labels {
+		cargs = append(cargs, "--label", k+"="+v)
+	}
+	if subnet != "" {
+		cargs = append(cargs, "--subnet", subnet)
+	}
+	cargs = append(cargs, name)
+	if _, err := runtime.CaptureSilent(cargs...); err != nil {
+		return false
+	}
+	return true
+}
+
+// ensureNetworks creates the implicit default network plus every declared
+// (non-external) network, populates p.Nets (compose key -> backend name), and
+// returns the default network name for services that declare none.
+func ensureNetworks(p *compose.Project) string {
+	def := p.DefaultNetwork()
+	p.Nets = map[string]string{"default": def}
+	if !ensureOneNetwork(def, false, nil, "") {
+		fmt.Fprintf(os.Stderr, "dcon: warning: could not create project network %q; services may run without a shared network\n", def)
+		p.Nets["default"] = ""
+		def = ""
+	}
+	for key, spec := range p.Networks {
+		name := p.NetworkName(key, spec)
+		p.Nets[key] = name
+		if spec != nil && spec.External {
+			continue
+		}
+		internal := spec != nil && spec.Internal
+		var labels map[string]string
+		if spec != nil {
+			labels = spec.Labels
+		}
+		if !ensureOneNetwork(name, internal, labels, "") {
+			fmt.Fprintf(os.Stderr, "dcon: warning: could not create network %q\n", name)
+		}
+	}
+	return def
+}
+
+// ensureNetwork is the single-network entry point used by one-off run paths.
 func ensureNetwork(p *compose.Project) string {
-	net := p.DefaultNetwork()
-	if _, err := runtime.CaptureSilent("network", "inspect", net); err == nil {
-		return net
-	}
-	if _, err := runtime.CaptureSilent("network", "create", net); err != nil {
-		fmt.Fprintf(os.Stderr, "dcon: warning: could not create project network %q (%v); services will run without a shared network\n", net, err)
-		return ""
-	}
-	return net
+	return ensureNetworks(p)
 }
 
 func ensureVolumes(p *compose.Project) {
@@ -295,11 +338,19 @@ func composeDown() *cobra.Command {
 				fmt.Printf("Removing %s...\n", c.ID)
 				_, _ = runtime.CaptureSilent("delete", "--force", c.ID)
 			}
-			// Remove default network.
-			net := p.DefaultNetwork()
-			if _, err := runtime.CaptureSilent("network", "inspect", net); err == nil {
-				fmt.Printf("Removing network %s...\n", net)
-				_, _ = runtime.CaptureSilent("network", "delete", net)
+			// Remove the default network plus any declared (non-external) ones.
+			netNames := []string{p.DefaultNetwork()}
+			for key, spec := range p.Networks {
+				if spec != nil && spec.External {
+					continue
+				}
+				netNames = append(netNames, p.NetworkName(key, spec))
+			}
+			for _, net := range netNames {
+				if _, err := runtime.CaptureSilent("network", "inspect", net); err == nil {
+					fmt.Printf("Removing network %s...\n", net)
+					_, _ = runtime.CaptureSilent("network", "delete", net)
+				}
 			}
 			if rmVolumes {
 				for name, spec := range p.Volumes {
