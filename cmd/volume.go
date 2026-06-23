@@ -43,10 +43,10 @@ func newVolumeGroupCmd() *cobra.Command {
 				name = args[0]
 			}
 			cargs := []string{"volume", "create"}
-			for _, l := range mustStringSlice(cmd.Flags(), "label") {
+			for _, l := range mustStringArray(cmd.Flags(), "label") {
 				cargs = append(cargs, "--label", l)
 			}
-			for _, o := range mustStringSlice(cmd.Flags(), "opt") {
+			for _, o := range mustStringArray(cmd.Flags(), "opt") {
 				cargs = append(cargs, "--opt", o)
 			}
 			if s, _ := cmd.Flags().GetString("size"); s != "" {
@@ -63,8 +63,8 @@ func newVolumeGroupCmd() *cobra.Command {
 			return nil
 		},
 	}
-	create.Flags().StringSliceP("label", "l", nil, "Set metadata for a volume")
-	create.Flags().StringSliceP("opt", "o", nil, "Set driver specific options")
+	create.Flags().StringArrayP("label", "l", nil, "Set metadata for a volume")
+	create.Flags().StringArrayP("opt", "o", nil, "Set driver specific options")
 	create.Flags().StringP("driver", "d", "local", "Specify volume driver name")
 	create.Flags().StringP("size", "s", "", "Volume size, e.g. 512M, 10G (backend extra)")
 	create.Flags().String("name", "", "")

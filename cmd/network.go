@@ -45,10 +45,10 @@ func newNetworkGroupCmd() *cobra.Command {
 			if v, _ := cmd.Flags().GetBool("internal"); v {
 				cargs = append(cargs, "--internal")
 			}
-			for _, l := range mustStringSlice(cmd.Flags(), "label") {
+			for _, l := range mustStringArray(cmd.Flags(), "label") {
 				cargs = append(cargs, "--label", l)
 			}
-			for _, o := range mustStringSlice(cmd.Flags(), "opt") {
+			for _, o := range mustStringArray(cmd.Flags(), "opt") {
 				cargs = append(cargs, "--option", o)
 			}
 			if s, _ := cmd.Flags().GetString("subnet"); s != "" {
@@ -75,8 +75,8 @@ func newNetworkGroupCmd() *cobra.Command {
 	}
 	create.Flags().StringP("driver", "d", "bridge", "Driver to manage the network")
 	create.Flags().Bool("internal", false, "Restrict external access to the network")
-	create.Flags().StringSliceP("label", "l", nil, "Set metadata on a network")
-	create.Flags().StringSliceP("opt", "o", nil, "Set driver specific options")
+	create.Flags().StringArrayP("label", "l", nil, "Set metadata on a network")
+	create.Flags().StringArrayP("opt", "o", nil, "Set driver specific options")
 	create.Flags().String("subnet", "", "Subnet in CIDR format")
 	create.Flags().String("plugin", "", "Network plugin (backend extra)")
 	create.Flags().String("gateway", "", "IPv4 or IPv6 Gateway (unsupported)")

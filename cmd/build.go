@@ -27,19 +27,19 @@ func buildBuildArgs(cmd *cobra.Command, args []string) []string {
 	f := cmd.Flags()
 	cargs := []string{"build"}
 
-	for _, t := range mustStringSlice(f, "tag") {
+	for _, t := range mustStringArray(f, "tag") {
 		cargs = append(cargs, "--tag", t)
 	}
 	if file, _ := f.GetString("file"); file != "" {
 		cargs = append(cargs, "--file", file)
 	}
-	for _, b := range mustStringSlice(f, "build-arg") {
+	for _, b := range mustStringArray(f, "build-arg") {
 		cargs = append(cargs, "--build-arg", b)
 	}
-	for _, l := range mustStringSlice(f, "label") {
+	for _, l := range mustStringArray(f, "label") {
 		cargs = append(cargs, "--label", l)
 	}
-	for _, s := range mustStringSlice(f, "secret") {
+	for _, s := range mustStringArray(f, "secret") {
 		cargs = append(cargs, "--secret", s)
 	}
 	if v, _ := f.GetBool("no-cache"); v {
@@ -57,7 +57,7 @@ func buildBuildArgs(cmd *cobra.Command, args []string) []string {
 	if p, _ := f.GetString("platform"); p != "" {
 		cargs = append(cargs, "--platform", p)
 	}
-	for _, o := range mustStringSlice(f, "output") {
+	for _, o := range mustStringArray(f, "output") {
 		cargs = append(cargs, "--output", o)
 	}
 	if pr, _ := f.GetString("progress"); pr != "" && pr != "auto" {
@@ -80,10 +80,10 @@ func buildBuildArgs(cmd *cobra.Command, args []string) []string {
 		cargs = append(cargs, "--os", o)
 	}
 	// docker cache-from/to -> container hidden cache-in/out (best effort)
-	for _, cf := range mustStringSlice(f, "cache-from") {
+	for _, cf := range mustStringArray(f, "cache-from") {
 		cargs = append(cargs, "--cache-in", cf)
 	}
-	for _, ct := range mustStringSlice(f, "cache-to") {
+	for _, ct := range mustStringArray(f, "cache-to") {
 		cargs = append(cargs, "--cache-out", ct)
 	}
 
@@ -103,24 +103,24 @@ func buildBuildArgs(cmd *cobra.Command, args []string) []string {
 
 func addBuildFlags(cmd *cobra.Command) {
 	f := cmd.Flags()
-	f.StringSliceP("tag", "t", nil, "Name and optionally a tag (format: name:tag)")
+	f.StringArrayP("tag", "t", nil, "Name and optionally a tag (format: name:tag)")
 	f.StringP("file", "f", "", "Name of the Dockerfile (default: PATH/Dockerfile)")
-	f.StringSlice("build-arg", nil, "Set build-time variables")
-	f.StringSliceP("label", "l", nil, "Set metadata for an image")
-	f.StringSlice("secret", nil, "Secret to expose to the build")
+	f.StringArray("build-arg", nil, "Set build-time variables")
+	f.StringArrayP("label", "l", nil, "Set metadata for an image")
+	f.StringArray("secret", nil, "Secret to expose to the build")
 	f.Bool("no-cache", false, "Do not use cache when building the image")
 	f.Bool("pull", false, "Always attempt to pull a newer version of the image")
 	f.BoolP("quiet", "q", false, "Suppress the build output and print image ID on success")
 	f.String("target", "", "Set the target build stage to build")
 	f.String("platform", "", "Set platform if server is multi-platform capable")
-	f.StringSliceP("output", "o", nil, "Output destination (format: type=local,dest=path)")
+	f.StringArrayP("output", "o", nil, "Output destination (format: type=local,dest=path)")
 	f.String("progress", "auto", "Set type of progress output (auto, plain, tty, rawjson)")
 	f.StringP("cpus", "c", "", "CPUs to allocate to the builder (backend extra)")
 	f.StringP("memory", "m", "", "Memory for the builder (backend extra)")
 	f.StringP("arch", "a", "", "Target architecture (backend extra)")
 	f.String("os", "", "Target OS (backend extra)")
-	f.StringSlice("cache-from", nil, "External cache sources")
-	f.StringSlice("cache-to", nil, "Cache export destinations")
+	f.StringArray("cache-from", nil, "External cache sources")
+	f.StringArray("cache-to", nil, "Cache export destinations")
 	// Accepted-but-ignored docker build flags
 	f.String("network", "", "Networking mode for RUN instructions (unsupported)")
 	f.StringSlice("add-host", nil, "Add a custom host-to-IP mapping (unsupported)")

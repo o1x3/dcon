@@ -25,8 +25,8 @@ func newExecCmd() *cobra.Command {
 	f.BoolP("tty", "t", false, "Allocate a pseudo-TTY")
 	f.StringP("user", "u", "", "Username or UID (format: <name|uid>[:<group|gid>])")
 	f.StringP("workdir", "w", "", "Working directory inside the container")
-	f.StringSliceP("env", "e", nil, "Set environment variables")
-	f.StringSlice("env-file", nil, "Read in a file of environment variables")
+	f.StringArrayP("env", "e", nil, "Set environment variables")
+	f.StringArray("env-file", nil, "Read in a file of environment variables")
 	f.String("gid", "", "Group ID for the process")
 	f.String("uid", "", "User ID for the process")
 	f.Bool("privileged", false, "Give extended privileges to the command (unsupported)")
@@ -60,10 +60,10 @@ func buildExecArgs(cmd *cobra.Command, args []string) []string {
 	if u, _ := f.GetString("uid"); u != "" {
 		cargs = append(cargs, "--uid", u)
 	}
-	for _, e := range mustStringSlice(f, "env") {
+	for _, e := range mustStringArray(f, "env") {
 		cargs = append(cargs, "--env", e)
 	}
-	for _, e := range mustStringSlice(f, "env-file") {
+	for _, e := range mustStringArray(f, "env-file") {
 		cargs = append(cargs, "--env-file", e)
 	}
 	if v, _ := f.GetBool("privileged"); v {
@@ -72,9 +72,12 @@ func buildExecArgs(cmd *cobra.Command, args []string) []string {
 	return append(cargs, args...)
 }
 
-func mustStringSlice(f interface {
-	GetStringSlice(string) ([]string, error)
+// mustStringArray reads a repeatable StringArray flag (values are NOT
+// comma-split, unlike StringSlice) — required for mount/env/output/label specs
+// whose values legitimately contain commas.
+func mustStringArray(f interface {
+	GetStringArray(string) ([]string, error)
 }, name string) []string {
-	v, _ := f.GetStringSlice(name)
+	v, _ := f.GetStringArray(name)
 	return v
 }

@@ -37,21 +37,23 @@ func addRunFlags(cmd *cobra.Command) {
 	f.String("cidfile", "", "Write the container ID to the file")
 	f.String("shm-size", "", "Size of /dev/shm")
 	f.String("platform", "", "Set platform if server is multi-platform capable")
-	f.StringSliceP("env", "e", nil, "Set environment variables")
-	f.StringSlice("env-file", nil, "Read in a file of environment variables")
-	f.StringSliceP("volume", "v", nil, "Bind mount a volume")
-	f.StringSlice("mount", nil, "Attach a filesystem mount to the container")
-	f.StringSliceP("publish", "p", nil, "Publish a container's port(s) to the host")
-	f.StringSliceP("label", "l", nil, "Set metadata on a container")
-	f.StringSlice("label-file", nil, "Read in a line-delimited file of labels")
-	f.StringSlice("cap-add", nil, "Add Linux capabilities")
-	f.StringSlice("cap-drop", nil, "Drop Linux capabilities")
-	f.StringSlice("dns", nil, "Set custom DNS servers")
-	f.StringSlice("dns-search", nil, "Set custom DNS search domains")
-	f.StringSlice("dns-option", nil, "Set DNS options")
-	f.StringSlice("dns-opt", nil, "Set DNS options (Docker alias of --dns-option)")
-	f.StringSlice("tmpfs", nil, "Mount a tmpfs directory")
-	f.StringSlice("ulimit", nil, "Ulimit options (format: <type>=<soft>[:<hard>])")
+	// StringArray (not StringSlice): these values legitimately contain commas
+	// (mount/env/label specs), so they must NOT be comma-split.
+	f.StringArrayP("env", "e", nil, "Set environment variables")
+	f.StringArray("env-file", nil, "Read in a file of environment variables")
+	f.StringArrayP("volume", "v", nil, "Bind mount a volume")
+	f.StringArray("mount", nil, "Attach a filesystem mount to the container")
+	f.StringArrayP("publish", "p", nil, "Publish a container's port(s) to the host")
+	f.StringArrayP("label", "l", nil, "Set metadata on a container")
+	f.StringArray("label-file", nil, "Read in a line-delimited file of labels")
+	f.StringArray("cap-add", nil, "Add Linux capabilities")
+	f.StringArray("cap-drop", nil, "Drop Linux capabilities")
+	f.StringArray("dns", nil, "Set custom DNS servers")
+	f.StringArray("dns-search", nil, "Set custom DNS search domains")
+	f.StringArray("dns-option", nil, "Set DNS options")
+	f.StringArray("dns-opt", nil, "Set DNS options (Docker alias of --dns-option)")
+	f.StringArray("tmpfs", nil, "Mount a tmpfs directory")
+	f.StringArray("ulimit", nil, "Ulimit options (format: <type>=<soft>[:<hard>])")
 
 	// --privileged is approximated as cap-add ALL (container has no single
 	// privileged switch); flagged when used.
@@ -70,7 +72,7 @@ func addRunFlags(cmd *cobra.Command) {
 	f.String("runtime", "", "Runtime handler for the container")
 	f.String("gid", "", "Primary group ID for the process")
 	f.String("uid", "", "User ID for the process")
-	f.StringSlice("publish-socket", nil, "Publish a unix socket from container to host (host_path:container_path)")
+	f.StringArray("publish-socket", nil, "Publish a unix socket from container to host (host_path:container_path)")
 	f.String("scheme", "", "Registry scheme: http|https|auto")
 
 	// --- Accepted-but-unsupported Docker flags (warned once when used) ---
@@ -146,7 +148,7 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 		{"publish-socket", "--publish-socket"}, {"ulimit", "--ulimit"},
 	}
 	for _, s := range sliceMap {
-		vals, _ := f.GetStringSlice(s.name)
+		vals, _ := f.GetStringArray(s.name)
 		for _, v := range vals {
 			out = append(out, s.flag, v)
 		}
@@ -154,14 +156,14 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 
 	// --dns-option and its Docker alias --dns-opt
 	for _, name := range []string{"dns-option", "dns-opt"} {
-		vals, _ := f.GetStringSlice(name)
+		vals, _ := f.GetStringArray(name)
 		for _, v := range vals {
 			out = append(out, "--dns-option", v)
 		}
 	}
 
 	// tmpfs: Docker allows path[:options]; container takes just the path.
-	tmpfs, _ := f.GetStringSlice("tmpfs")
+	tmpfs, _ := f.GetStringArray("tmpfs")
 	for _, t := range tmpfs {
 		path := t
 		if i := strings.Index(t, ":"); i >= 0 {
@@ -171,7 +173,7 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 	}
 
 	// label-file: expand into individual --label flags.
-	lfiles, _ := f.GetStringSlice("label-file")
+	lfiles, _ := f.GetStringArray("label-file")
 	for _, lf := range lfiles {
 		labels, err := readKVFile(lf)
 		if err != nil {
