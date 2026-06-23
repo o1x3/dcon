@@ -47,8 +47,9 @@ func TestRunTranslationExact(t *testing.T) {
 	want := []string{
 		"run", "--interactive", "--tty", "--rm",
 		"--name", "web", "--memory", "512m", "--cpus", "2",
+		"--volume", "/d:/d",
 		"--env", "A=1", "--env", "B=2",
-		"--volume", "/d:/d", "--publish", "8080:80",
+		"--publish", "8080:80",
 		"nginx", "echo", "hi",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -91,11 +92,61 @@ func TestCreateSubcommand(t *testing.T) {
 	}
 }
 
-func TestRunTmpfsStripsOptions(t *testing.T) {
-	c := parse(t, newRunCmd(), []string{"--tmpfs", "/tmp:rw,size=64m", "alpine"})
+func TestRunTmpfsPathOnly(t *testing.T) {
+	c := parse(t, newRunCmd(), []string{"--tmpfs", "/tmp", "alpine"})
 	got, _ := buildContainerArgs(c, c.Flags().Args(), "run")
 	if !containsPair(got, "--tmpfs", "/tmp") {
-		t.Errorf("--tmpfs path should be stripped of options; got %v", got)
+		t.Errorf("path-only --tmpfs should stay --tmpfs; got %v", got)
+	}
+}
+
+func TestRunTmpfsSizeBecomesMount(t *testing.T) {
+	c := parse(t, newRunCmd(), []string{"--tmpfs", "/run:rw,size=64m,mode=1777", "alpine"})
+	got, _ := buildContainerArgs(c, c.Flags().Args(), "run")
+	if !containsPair(got, "--mount", "type=tmpfs,destination=/run,size=64m,mode=1777") {
+		t.Errorf("--tmpfs with size/mode should become a tmpfs --mount; got %v", got)
+	}
+}
+
+func TestRunCpusFloatRoundsUp(t *testing.T) {
+	c := parse(t, newRunCmd(), []string{"--cpus", "1.5", "alpine"})
+	got, _ := buildContainerArgs(c, c.Flags().Args(), "run")
+	if !containsPair(got, "--cpus", "2") {
+		t.Errorf("--cpus 1.5 should round up to 2; got %v", got)
+	}
+}
+
+func TestRunCpusInvalid(t *testing.T) {
+	c := parse(t, newRunCmd(), []string{"--cpus", "abc", "alpine"})
+	if _, err := buildContainerArgs(c, c.Flags().Args(), "run"); err == nil {
+		t.Error("--cpus abc should error")
+	}
+	c2 := parse(t, newRunCmd(), []string{"--cpus", "0", "alpine"})
+	if _, err := buildContainerArgs(c2, c2.Flags().Args(), "run"); err == nil {
+		t.Error("--cpus 0 should error")
+	}
+}
+
+func TestRunNetworkHostRejected(t *testing.T) {
+	c := parse(t, newRunCmd(), []string{"--network", "host", "alpine"})
+	if _, err := buildContainerArgs(c, c.Flags().Args(), "run"); err == nil {
+		t.Error("--network host should error")
+	}
+}
+
+func TestRunVolumeStripsSELinux(t *testing.T) {
+	c := parse(t, newRunCmd(), []string{"-v", "/h:/c:ro,z", "alpine"})
+	got, _ := buildContainerArgs(c, c.Flags().Args(), "run")
+	if !containsPair(got, "--volume", "/h:/c:ro") {
+		t.Errorf("SELinux :z should be stripped, ro kept; got %v", got)
+	}
+}
+
+func TestRunMountTmpfsKeysRewritten(t *testing.T) {
+	c := parse(t, newRunCmd(), []string{"--mount", "type=tmpfs,destination=/run,tmpfs-size=64m", "alpine"})
+	got, _ := buildContainerArgs(c, c.Flags().Args(), "run")
+	if !containsPair(got, "--mount", "type=tmpfs,destination=/run,size=64m") {
+		t.Errorf("tmpfs-size should be rewritten to size; got %v", got)
 	}
 }
 
