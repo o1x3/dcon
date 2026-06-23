@@ -70,6 +70,22 @@ func TestTargetDepthClamping(t *testing.T) {
 	}
 }
 
+func TestTTL(t *testing.T) {
+	cases := map[string]int{
+		"":     600, // default 10m
+		"0":    0,   // disabled
+		"30":   30,
+		"-5":   600, // negative ignored -> default
+		"junk": 600, // unparseable -> default
+	}
+	for in, wantSecs := range cases {
+		t.Setenv("DCON_WARM_TTL", in)
+		if got := TTL().Seconds(); int(got) != wantSecs {
+			t.Errorf("TTL() with DCON_WARM_TTL=%q = %vs, want %ds", in, got, wantSecs)
+		}
+	}
+}
+
 // TestStateRoundTrip exercises Add/Claim/List/AvailableDepth against a private
 // state dir (redirected via HOME) without touching the container backend.
 func TestStateRoundTrip(t *testing.T) {

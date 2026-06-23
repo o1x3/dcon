@@ -183,6 +183,39 @@ func TargetDepth() int {
 	return n
 }
 
+// TTL is how long an idle warm member may sit before opportunistic reaping in
+// auto mode. Overridable via DCON_WARM_TTL (seconds); 0 disables reaping.
+func TTL() time.Duration {
+	secs := 600 // 10 minutes
+	if v := os.Getenv("DCON_WARM_TTL"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p >= 0 {
+			secs = p
+		}
+	}
+	return time.Duration(secs) * time.Second
+}
+
+// ReapStale retires warm members that have sat idle past the TTL so a forgotten
+// pool can't pin memory indefinitely. Gated on auto mode: a manually seeded
+// pool is the user's to manage and is never reaped out from under them. The
+// teardown is detached, keeping callers off the critical path.
+func ReapStale() {
+	if !AutoEnabled() {
+		return
+	}
+	ttl := TTL()
+	if ttl <= 0 {
+		return
+	}
+	cutoff := time.Now().Unix() - int64(ttl.Seconds())
+	for _, m := range List() {
+		if m.BootedAt < cutoff {
+			forget(m.ID)
+			DestroyAsync(m.ID)
+		}
+	}
+}
+
 // AutoEnabled reports whether dcon should self-prime the pool after eligible
 // runs. Off by default to preserve the low idle-memory footprint; opt in with
 // DCON_WARM=auto (or =1/on/true).

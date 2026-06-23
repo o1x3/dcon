@@ -76,14 +76,27 @@ VM resident the whole time.
 
 <p align="center"><img src="assets/bench-memory.svg" alt="Idle engine memory: dcon 92 MB vs OrbStack 1094 MB vs Docker Desktop ~2000 MB" width="820"></p>
 
-### The honest tradeoff
+### Start latency — cold, or warmer-than-OrbStack
 
-dcon boots a **fresh microVM per container** — stronger isolation, but a higher
-cold start than a shared-VM engine. If you want maximum per-container isolation
-and a near-zero idle footprint, dcon wins. If you want the absolute fastest
-container churn, a shared-VM engine is faster today.
+A fresh microVM per container means a higher *cold* start than a shared-VM
+engine. dcon closes that gap with a **warm pool**: pre-boot a single-use microVM
+and `exec` the workload into it. Each member is handed out exactly once and then
+destroyed, so **isolation is identical to a cold run** — only the ~650 ms VM
+boot moves off your critical path. The result starts in ~90 ms, *under* an
+always-warm shared-VM engine, while still giving every container its own VM.
 
-<p align="center"><img src="assets/bench-startup.svg" alt="Cold container start: dcon 741 ms (per-container VM) vs OrbStack 207 ms (shared VM)" width="820"></p>
+```sh
+dcon warm alpine                       # pre-boot 1 warm microVM (~700 ms, once)
+dcon run --rm alpine echo hi           # served from the pool → ~90 ms
+export DCON_WARM=auto                  # or: self-prime after every eligible run
+```
+
+<p align="center"><img src="assets/bench-startup.svg" alt="Container start: dcon warm pool 90 ms vs OrbStack 212 ms (shared VM) vs dcon cold 769 ms — warm pool is fastest and keeps per-container isolation" width="820"></p>
+
+The warm path serves simple `--rm` runs (no bind mounts, ports, or resource
+limits — those still cold-boot, transparently). Each idle warm VM costs ~35 MB
+until claimed; in auto mode they’re reaped after an idle TTL so a forgotten pool
+can’t pin memory.
 
 ### Full numbers
 
@@ -93,10 +106,12 @@ container churn, a shared-VM engine is faster today.
 | **CLI** | **7.5 MB static binary** | app bundle (100s of MB) |
 | **isolation** | **per-container microVM** | shared Linux VM |
 | **background footprint** | launchd helper, on-demand | persistent VM |
-| container start (`run --rm alpine echo`) | 741 ms | 207 ms |
-| cold `pull alpine` | ~20 s¹ | ~3 s |
+| container start — **warm pool** (`run --rm alpine echo`) | **~90 ms**, still per-container | 212 ms (shared VM) |
+| container start — cold (fresh microVM) | 769 ms | 212 ms |
+| cold `pull alpine` | ~13 s¹ | ~3 s |
 
-¹ network/registry-bound on this run; dcon defaults to 3 concurrent layer downloads.
+¹ network/registry-bound; dcon now defaults to **8** concurrent layer downloads
+(tunable via `--max-concurrent-downloads` / `DCON_PULL_CONCURRENCY`).
 
 ## Install
 
@@ -159,6 +174,22 @@ extra · ⛔ genuinely unsupported by the backend (returns a clear message).
 `cp` `export` `stats` `top` `port` `attach` `wait` `container prune` — ✅, with
 full Docker→container flag translation and Docker-style `ps`/`stats` tables.
 `pause`/`unpause`, `rename`, `commit`, `diff`, `update` — ⛔ (backend can't).
+</details>
+
+<details>
+<summary><b>Warm pool — <code>dcon warm …</code> 🍏</b></summary>
+
+Pre-boot single-use microVMs so simple `--rm` runs start in **~90 ms** instead
+of cold-booting (~700 ms) — faster than a shared-VM engine, with the *same*
+per-container isolation (each member is handed out once, then destroyed).
+
+`dcon warm [-n N] IMAGE` · `dcon warm ls` · `dcon warm prune [IMAGE]`.
+
+Env knobs: `DCON_WARM=auto` self-primes after eligible runs (off by default to
+keep the ~92 MB idle footprint); `DCON_WARM=off` forces always-cold;
+`DCON_WARM_DEPTH` sets sustained pool depth; `DCON_WARM_TTL` the idle-reap
+window. Runs that need bind mounts, ports, resource limits, or custom networking
+transparently fall back to a cold boot.
 </details>
 
 <details>

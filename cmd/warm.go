@@ -96,6 +96,11 @@ func warmExecArgs(cmd *cobra.Command, id string, command []string) []string {
 // (ineligible, pooling disabled, empty pool, or a claimed VM turned out dead);
 // handled=true means the workload ran (err carries its exit status).
 func tryWarmRun(cmd *cobra.Command, args []string) (handled bool, err error) {
+	// Opportunistic hygiene: in auto mode, retire warm VMs that have idled past
+	// the TTL so a forgotten pool can't pin memory. No-op (one cheap state read)
+	// otherwise.
+	pool.ReapStale()
+
 	if pool.Disabled() || !warmEligible(cmd, args) {
 		// Even when not eligible to *use* the pool, auto mode may pre-warm so a
 		// later eligible run is fast.
