@@ -1,0 +1,324 @@
+// Package compose parses Docker Compose files and models them for translation
+// into Apple `container` invocations.
+package compose
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Project is a parsed compose file.
+type Project struct {
+	Name     string                  `yaml:"name"`
+	Services map[string]*Service     `yaml:"services"`
+	Volumes  map[string]*VolumeSpec  `yaml:"volumes"`
+	Networks map[string]*NetworkSpec `yaml:"networks"`
+
+	// Dir is the directory the compose file lives in (for relative paths).
+	Dir  string `yaml:"-"`
+	File string `yaml:"-"`
+}
+
+// Service is a single compose service definition (subset of the spec that the
+// container backend can act on).
+type Service struct {
+	Image         string      `yaml:"image"`
+	Build         Build       `yaml:"build"`
+	ContainerName string      `yaml:"container_name"`
+	Command       StringList  `yaml:"command"`
+	Entrypoint    StringList  `yaml:"entrypoint"`
+	Environment   MapList     `yaml:"environment"`
+	EnvFile       StringList  `yaml:"env_file"`
+	Ports         []string    `yaml:"ports"`
+	Expose        []string    `yaml:"expose"`
+	Volumes       []string    `yaml:"volumes"`
+	Networks      StringKeys  `yaml:"networks"`
+	DependsOn     DependsList `yaml:"depends_on"`
+	Restart       string      `yaml:"restart"`
+	Labels        MapList     `yaml:"labels"`
+	WorkingDir    string      `yaml:"working_dir"`
+	User          string      `yaml:"user"`
+	Platform      string      `yaml:"platform"`
+	CPUs          string      `yaml:"cpus"`
+	MemLimit      string      `yaml:"mem_limit"`
+	Privileged    bool        `yaml:"privileged"`
+	CapAdd        []string    `yaml:"cap_add"`
+	CapDrop       []string    `yaml:"cap_drop"`
+	DNS           StringList  `yaml:"dns"`
+	TTY           bool        `yaml:"tty"`
+	StdinOpen     bool        `yaml:"stdin_open"`
+	Init          *bool       `yaml:"init"`
+	ShmSize       string      `yaml:"shm_size"`
+	Tmpfs         StringList  `yaml:"tmpfs"`
+	ReadOnly      bool        `yaml:"read_only"`
+	Hostname      string      `yaml:"hostname"`
+	Scale         int         `yaml:"scale"`
+	Profiles      []string    `yaml:"profiles"`
+}
+
+// Build is `build:` which may be a string (context) or a mapping.
+type Build struct {
+	Context    string  `yaml:"context"`
+	Dockerfile string  `yaml:"dockerfile"`
+	Args       MapList `yaml:"args"`
+	Target     string  `yaml:"target"`
+	set        bool
+}
+
+func (b *Build) IsSet() bool { return b.set }
+
+func (b *Build) UnmarshalYAML(value *yaml.Node) error {
+	b.set = true
+	if value.Kind == yaml.ScalarNode {
+		return value.Decode(&b.Context)
+	}
+	type raw Build
+	var r raw
+	if err := value.Decode(&r); err != nil {
+		return err
+	}
+	*b = Build(r)
+	b.set = true
+	return nil
+}
+
+type VolumeSpec struct {
+	Driver     string            `yaml:"driver"`
+	DriverOpts map[string]string `yaml:"driver_opts"`
+	External   bool              `yaml:"external"`
+	Name       string            `yaml:"name"`
+	Labels     MapList           `yaml:"labels"`
+}
+
+type NetworkSpec struct {
+	Driver   string  `yaml:"driver"`
+	External bool    `yaml:"external"`
+	Name     string  `yaml:"name"`
+	Internal bool    `yaml:"internal"`
+	Labels   MapList `yaml:"labels"`
+}
+
+// StringList handles a YAML field that may be a scalar or a sequence.
+type StringList []string
+
+func (s *StringList) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		var str string
+		if err := value.Decode(&str); err != nil {
+			return err
+		}
+		*s = []string{str}
+		return nil
+	}
+	var list []string
+	if err := value.Decode(&list); err != nil {
+		return err
+	}
+	*s = list
+	return nil
+}
+
+// MapList handles environment/labels/args that may be a map or a `k=v` list.
+type MapList map[string]string
+
+func (m *MapList) UnmarshalYAML(value *yaml.Node) error {
+	out := map[string]string{}
+	switch value.Kind {
+	case yaml.MappingNode:
+		raw := map[string]yaml.Node{}
+		if err := value.Decode(&raw); err != nil {
+			return err
+		}
+		for k, v := range raw {
+			if v.Kind == yaml.ScalarNode {
+				out[k] = v.Value
+			}
+		}
+	case yaml.SequenceNode:
+		var list []string
+		if err := value.Decode(&list); err != nil {
+			return err
+		}
+		for _, item := range list {
+			kv := strings.SplitN(item, "=", 2)
+			if len(kv) == 2 {
+				out[kv[0]] = kv[1]
+			} else {
+				out[kv[0]] = ""
+			}
+		}
+	}
+	*m = out
+	return nil
+}
+
+// StringKeys handles networks which can be a list or a map (keyed by name).
+type StringKeys []string
+
+func (s *StringKeys) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.SequenceNode:
+		var list []string
+		if err := value.Decode(&list); err != nil {
+			return err
+		}
+		*s = list
+	case yaml.MappingNode:
+		raw := map[string]yaml.Node{}
+		if err := value.Decode(&raw); err != nil {
+			return err
+		}
+		keys := make([]string, 0, len(raw))
+		for k := range raw {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		*s = keys
+	}
+	return nil
+}
+
+// DependsList handles depends_on as a list or a conditions map.
+type DependsList []string
+
+func (d *DependsList) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.SequenceNode:
+		var list []string
+		if err := value.Decode(&list); err != nil {
+			return err
+		}
+		*d = list
+	case yaml.MappingNode:
+		raw := map[string]yaml.Node{}
+		if err := value.Decode(&raw); err != nil {
+			return err
+		}
+		keys := make([]string, 0, len(raw))
+		for k := range raw {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		*d = keys
+	}
+	return nil
+}
+
+// candidateFiles are the default compose filenames in priority order.
+var candidateFiles = []string{
+	"compose.yaml", "compose.yml",
+	"docker-compose.yaml", "docker-compose.yml",
+}
+
+// Find locates the compose file, honouring an explicit path.
+func Find(explicit string) (string, error) {
+	if explicit != "" {
+		abs, err := filepath.Abs(explicit)
+		if err != nil {
+			return "", err
+		}
+		if _, err := os.Stat(abs); err != nil {
+			return "", fmt.Errorf("compose file %q not found", explicit)
+		}
+		return abs, nil
+	}
+	for _, name := range candidateFiles {
+		if _, err := os.Stat(name); err == nil {
+			abs, _ := filepath.Abs(name)
+			return abs, nil
+		}
+	}
+	return "", fmt.Errorf("no compose file found (looked for %s)", strings.Join(candidateFiles, ", "))
+}
+
+// Load parses the compose file at path, defaulting the project name to the
+// containing directory when not set.
+func Load(path, projectOverride string) (*Project, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	// Expand ${VAR} / $VAR from the environment, like compose does.
+	expanded := os.Expand(string(data), func(key string) string {
+		// support ${VAR:-default}
+		if i := strings.Index(key, ":-"); i >= 0 {
+			name, def := key[:i], key[i+2:]
+			if v, ok := os.LookupEnv(name); ok {
+				return v
+			}
+			return def
+		}
+		return os.Getenv(key)
+	})
+
+	var p Project
+	if err := yaml.Unmarshal([]byte(expanded), &p); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	p.File = path
+	p.Dir = filepath.Dir(path)
+	if projectOverride != "" {
+		p.Name = projectOverride
+	}
+	if p.Name == "" {
+		p.Name = SanitizeName(filepath.Base(p.Dir))
+	}
+	return &p, nil
+}
+
+// SanitizeName makes a string safe for use as a container/network/volume name.
+func SanitizeName(s string) string {
+	s = strings.ToLower(s)
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else if r == '-' || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	out := b.String()
+	if out == "" {
+		out = "default"
+	}
+	return out
+}
+
+// Order returns service names in dependency (topological) order. Cycles fall
+// back to alphabetical to avoid deadlock.
+func (p *Project) Order() []string {
+	visited := map[string]bool{}
+	temp := map[string]bool{}
+	var order []string
+	var visit func(string)
+	visit = func(name string) {
+		if visited[name] || temp[name] {
+			return
+		}
+		temp[name] = true
+		if svc, ok := p.Services[name]; ok {
+			deps := append([]string{}, svc.DependsOn...)
+			sort.Strings(deps)
+			for _, d := range deps {
+				visit(d)
+			}
+		}
+		temp[name] = false
+		visited[name] = true
+		order = append(order, name)
+	}
+	names := make([]string, 0, len(p.Services))
+	for n := range p.Services {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		visit(n)
+	}
+	return order
+}
