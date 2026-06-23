@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -43,11 +44,34 @@ const (
 	keepAlive = "2147483647"
 )
 
-// Member is one available, pre-booted VM waiting to be claimed.
+// Member is one available, pre-booted VM waiting to be claimed. Entrypoint and
+// Cmd are the image's resolved defaults, captured at boot time so the hot path
+// can reproduce `docker run` semantics (prepend the image entrypoint; fall back
+// to the image cmd when the run gives no command) without an extra inspect.
 type Member struct {
-	ID       string `json:"id"`       // backend container ID
-	Image    string `json:"image"`    // normalized image ref it was booted from
-	BootedAt int64  `json:"bootedAt"` // unix seconds
+	ID         string   `json:"id"`         // backend container ID
+	Image      string   `json:"image"`      // normalized image ref it was booted from
+	Entrypoint []string `json:"entrypoint"` // image ENTRYPOINT (resolved at boot)
+	Cmd        []string `json:"cmd"`        // image CMD (resolved at boot)
+	BootedAt   int64    `json:"bootedAt"`   // unix seconds
+}
+
+// WarmCommand builds the process argv to exec into a warm member, applying
+// Docker's entrypoint/cmd rules: the image ENTRYPOINT is always prepended; the
+// user's command (if any) replaces the image CMD, otherwise the image CMD is
+// used. Returns nil when there is nothing to run (no entrypoint, no cmd, no user
+// args) — the caller then falls back to a cold run.
+func WarmCommand(m Member, userCmd []string) []string {
+	argv := append([]string{}, m.Entrypoint...)
+	if len(userCmd) > 0 {
+		argv = append(argv, userCmd...)
+	} else {
+		argv = append(argv, m.Cmd...)
+	}
+	if len(argv) == 0 {
+		return nil
+	}
+	return argv
 }
 
 type state struct {
@@ -308,16 +332,67 @@ func forget(id string) {
 	})
 }
 
-// Boot synchronously cold-boots one warm member for image and records it.
-// This is the slow operation (it pays the VM boot) and is meant to run in the
-// background or from an explicit `dcon warm`.
+// imageInspect is the slice of `container image inspect` output dcon needs to
+// reproduce a run's default command from a pre-booted VM.
+type imageInspect struct {
+	Variants []struct {
+		Platform struct {
+			OS           string `json:"os"`
+			Architecture string `json:"architecture"`
+		} `json:"platform"`
+		Config struct {
+			Config struct {
+				Entrypoint []string `json:"Entrypoint"`
+				Cmd        []string `json:"Cmd"`
+			} `json:"config"`
+		} `json:"config"`
+	} `json:"variants"`
+}
+
+// resolveImageConfig returns the image's ENTRYPOINT and CMD for the host
+// architecture (falling back to the first linux variant). Best effort: returns
+// nils if the image can't be inspected, which simply makes a no-command run
+// warm-ineligible.
+func resolveImageConfig(image string) (entrypoint, cmd []string) {
+	var imgs []imageInspect
+	if err := runtime.CaptureJSON(&imgs, "image", "inspect", image); err != nil || len(imgs) == 0 {
+		return nil, nil
+	}
+	vs := imgs[0].Variants
+	pick := -1
+	for i, v := range vs {
+		if v.Platform.OS != "linux" {
+			continue
+		}
+		if v.Platform.Architecture == goruntime.GOARCH {
+			pick = i
+			break
+		}
+		if pick == -1 {
+			pick = i
+		}
+	}
+	if pick == -1 {
+		return nil, nil
+	}
+	return vs[pick].Config.Config.Entrypoint, vs[pick].Config.Config.Cmd
+}
+
+// Boot synchronously cold-boots one warm member for image and records it. The
+// keepalive overrides any image entrypoint with `sleep` so the VM stays up
+// regardless of what the image runs by default; the image's real entrypoint/cmd
+// are resolved and stored for the hot path. This is the slow operation (it pays
+// the VM boot) and is meant to run in the background or from an explicit
+// `dcon warm`.
 func Boot(image string) (Member, error) {
 	norm := NormalizeRef(image)
+	ep, cmd := resolveImageConfig(image)
 	out, err := runtime.CaptureSilent(
 		"run", "-d",
+		"--entrypoint", "sleep", // override image entrypoint so keepalive always sleeps
 		"--label", LabelPool+"=1",
 		"--label", LabelImage+"="+norm,
-		image, "sleep", keepAlive,
+		image, keepAlive,
 	)
 	if err != nil {
 		return Member{}, err
@@ -326,7 +401,13 @@ func Boot(image string) (Member, error) {
 	if id == "" {
 		return Member{}, fmt.Errorf("backend returned no container ID for warm boot of %s", image)
 	}
-	m := Member{ID: id, Image: norm, BootedAt: time.Now().Unix()}
+	// Confirm the keepalive actually stuck (an image without a `sleep` binary
+	// boots then exits immediately); don't register a dead member.
+	if !IsRunning(id) {
+		_ = Destroy(id)
+		return Member{}, fmt.Errorf("warm VM for %s did not stay up (image may lack a 'sleep' binary)", image)
+	}
+	m := Member{ID: id, Image: norm, Entrypoint: ep, Cmd: cmd, BootedAt: time.Now().Unix()}
 	if err := Add(m); err != nil {
 		// Don't leak the VM if we couldn't record it.
 		_ = Destroy(id)

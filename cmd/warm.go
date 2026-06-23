@@ -36,8 +36,8 @@ var warmAllowed = map[string]bool{
 // needs an explicit command, --rm semantics (we destroy the VM after), no
 // detach, and only flags that exec can honor.
 func warmEligible(cmd *cobra.Command, args []string) bool {
-	if len(args) < 2 { // need IMAGE + at least one command token
-		return false
+	if len(args) < 1 { // need at least the IMAGE; a command is optional (image
+		return false // CMD/entrypoint is resolved from the pre-booted member)
 	}
 	f := cmd.Flags()
 	if rm, _ := f.GetBool("rm"); !rm {
@@ -108,7 +108,7 @@ func tryWarmRun(cmd *cobra.Command, args []string) (handled bool, err error) {
 		return false, nil
 	}
 	image := args[0]
-	command := args[1:]
+	userCmd := args[1:]
 
 	m, ok := pool.Claim(image)
 	if !ok {
@@ -117,7 +117,17 @@ func tryWarmRun(cmd *cobra.Command, args []string) (handled bool, err error) {
 		return false, nil
 	}
 
-	runErr := runtime.Run(warmExecArgs(cmd, m.ID, command)...)
+	// Reproduce docker's entrypoint/cmd semantics: prepend the image entrypoint,
+	// and use the image's default command when the run gave none.
+	execCmd := pool.WarmCommand(m, userCmd)
+	if len(execCmd) == 0 {
+		// Nothing to run (no entrypoint, no cmd, no user args) — retire the
+		// member and let the cold path handle it.
+		pool.DestroyAsync(m.ID)
+		return false, nil
+	}
+
+	runErr := runtime.Run(warmExecArgs(cmd, m.ID, execCmd)...)
 	if runErr != nil && !pool.IsRunning(m.ID) {
 		// The member was gone before our command could run — fall back to a
 		// genuine cold run so the user still gets their result. (A command that

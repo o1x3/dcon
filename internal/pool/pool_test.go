@@ -70,6 +70,56 @@ func TestTargetDepthClamping(t *testing.T) {
 	}
 }
 
+func TestWarmCommand(t *testing.T) {
+	cases := []struct {
+		name    string
+		member  Member
+		userCmd []string
+		want    []string
+	}{
+		{
+			name:    "entrypoint + user args (args replace cmd)",
+			member:  Member{Entrypoint: []string{"/app"}, Cmd: []string{"--default"}},
+			userCmd: []string{"serve", "--port=80"},
+			want:    []string{"/app", "serve", "--port=80"},
+		},
+		{
+			name:   "entrypoint + image cmd (no user args)",
+			member: Member{Entrypoint: []string{"/app"}, Cmd: []string{"--default"}},
+			want:   []string{"/app", "--default"},
+		},
+		{
+			name:    "no entrypoint, user args",
+			member:  Member{Cmd: []string{"/bin/sh"}},
+			userCmd: []string{"echo", "hi"},
+			want:    []string{"echo", "hi"},
+		},
+		{
+			name:   "no entrypoint, image cmd",
+			member: Member{Cmd: []string{"/bin/sh"}},
+			want:   []string{"/bin/sh"},
+		},
+		{
+			name:   "nothing to run -> nil (caller falls back to cold)",
+			member: Member{},
+			want:   nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := WarmCommand(tc.member, tc.userCmd)
+			if len(got) != len(tc.want) {
+				t.Fatalf("WarmCommand = %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("WarmCommand = %v, want %v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
 func TestTTL(t *testing.T) {
 	cases := map[string]int{
 		"":     600, // default 10m
