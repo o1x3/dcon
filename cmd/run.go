@@ -3,7 +3,9 @@ package cmd
 import (
 	"bufio"
 	"fmt"
+	"math"
 	"os"
+	"strconv"
 	"strings"
 
 	"dcon/internal/runtime"
@@ -118,7 +120,7 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 	// passthrough string flag -> container flag
 	strMap := []struct{ name, flag string }{
 		{"name", "--name"}, {"workdir", "--workdir"}, {"user", "--user"},
-		{"entrypoint", "--entrypoint"}, {"memory", "--memory"}, {"cpus", "--cpus"},
+		{"entrypoint", "--entrypoint"}, {"memory", "--memory"},
 		{"cidfile", "--cidfile"}, {"shm-size", "--shm-size"}, {"platform", "--platform"},
 		{"arch", "--arch"}, {"os", "--os"}, {"kernel", "--kernel"},
 		{"init-image", "--init-image"}, {"dns-domain", "--dns-domain"},
@@ -130,19 +132,51 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 		}
 	}
 
+	// --cpus: Docker accepts a fractional CPU quota (e.g. 1.5); the backend
+	// accepts only whole CPUs. Round up (so 0<f<1 never yields 0) and warn on
+	// any lossy rounding.
+	if cv, _ := f.GetString("cpus"); cv != "" {
+		fv, err := strconv.ParseFloat(cv, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --cpus value %q: must be a number", cv)
+		}
+		if fv <= 0 {
+			return nil, fmt.Errorf("invalid --cpus value %q: must be greater than 0", cv)
+		}
+		n := int(math.Ceil(fv))
+		if float64(n) != fv {
+			warnings = append(warnings, fmt.Sprintf("--cpus %s rounded up to %d (backend accepts whole CPUs only)", cv, n))
+		}
+		out = append(out, "--cpus", strconv.Itoa(n))
+	}
+
 	// --network / --net (alias)
 	net, _ := f.GetString("network")
 	if net == "" {
 		net, _ = f.GetString("net")
 	}
+	if net == "host" || strings.HasPrefix(net, "container:") {
+		return nil, fmt.Errorf("--network %s is not supported by the container backend (no host/container-namespace networking on macOS VMs)", net)
+	}
 	if net != "" && net != "default" && net != "bridge" {
 		out = append(out, "--network", net)
 	}
 
+	// --volume: strip macOS-irrelevant Docker mount options (SELinux :z/:Z,
+	// :cached/:delegated/:consistent) which the backend rejects.
+	for _, v := range mustStringArray(f, "volume") {
+		out = append(out, "--volume", normalizeVolume(v, &warnings))
+	}
+	// --mount: rewrite Docker tmpfs-size/tmpfs-mode keys and drop options the
+	// backend cannot honor.
+	for _, m := range mustStringArray(f, "mount") {
+		out = append(out, "--mount", normalizeMount(m, &warnings))
+	}
+
 	// repeatable string flags -> repeated container flags
 	sliceMap := []struct{ name, flag string }{
-		{"env", "--env"}, {"env-file", "--env-file"}, {"volume", "--volume"},
-		{"mount", "--mount"}, {"publish", "--publish"}, {"label", "--label"},
+		{"env", "--env"}, {"env-file", "--env-file"},
+		{"publish", "--publish"}, {"label", "--label"},
 		{"cap-add", "--cap-add"}, {"cap-drop", "--cap-drop"},
 		{"dns", "--dns"}, {"dns-search", "--dns-search"},
 		{"publish-socket", "--publish-socket"}, {"ulimit", "--ulimit"},
@@ -162,14 +196,10 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 		}
 	}
 
-	// tmpfs: Docker allows path[:options]; container takes just the path.
-	tmpfs, _ := f.GetStringArray("tmpfs")
-	for _, t := range tmpfs {
-		path := t
-		if i := strings.Index(t, ":"); i >= 0 {
-			path = t[:i]
-		}
-		out = append(out, "--tmpfs", path)
+	// tmpfs: Docker allows path[:options]. Map size=/mode= onto a tmpfs --mount;
+	// pass path-only specs through as --tmpfs; warn on other dropped options.
+	for _, t := range mustStringArray(f, "tmpfs") {
+		out = append(out, tmpfsArgs(t, &warnings)...)
 	}
 
 	// label-file: expand into individual --label flags.
@@ -209,6 +239,97 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 
 	out = append(out, posArgs...)
 	return out, nil
+}
+
+// macOS-irrelevant bind-mount options that the container backend rejects.
+var droppedVolumeOpts = map[string]bool{"z": true, "Z": true, "cached": true, "delegated": true, "consistent": true}
+
+// normalizeVolume strips SELinux/consistency options from a Docker -v spec's
+// third (options) field, preserving ro/rw and other tokens.
+func normalizeVolume(spec string, warnings *[]string) string {
+	parts := strings.Split(spec, ":")
+	if len(parts) < 3 {
+		return spec // src:dst or named:dst — nothing to strip
+	}
+	opts := strings.Split(parts[len(parts)-1], ",")
+	var kept []string
+	for _, o := range opts {
+		if droppedVolumeOpts[o] {
+			*warnings = append(*warnings, fmt.Sprintf("volume option ':%s' is ignored on macOS (no SELinux/virtiofs equivalent)", o))
+			continue
+		}
+		kept = append(kept, o)
+	}
+	base := strings.Join(parts[:len(parts)-1], ":")
+	if len(kept) == 0 {
+		return base
+	}
+	return base + ":" + strings.Join(kept, ",")
+}
+
+// normalizeMount rewrites Docker's tmpfs-size/tmpfs-mode keys to the backend's
+// size/mode and drops mount options the backend cannot honor.
+func normalizeMount(spec string, warnings *[]string) string {
+	fields := strings.Split(spec, ",")
+	var out []string
+	for _, fld := range fields {
+		key := fld
+		if i := strings.Index(fld, "="); i >= 0 {
+			key = fld[:i]
+		}
+		switch key {
+		case "tmpfs-size":
+			out = append(out, "size="+fld[len("tmpfs-size="):])
+		case "tmpfs-mode":
+			out = append(out, "mode="+fld[len("tmpfs-mode="):])
+		case "volume-driver", "volume-opt", "bind-propagation", "consistency":
+			*warnings = append(*warnings, fmt.Sprintf("--mount option %q is not supported by the container backend and was ignored", key))
+		default:
+			out = append(out, fld)
+		}
+	}
+	return strings.Join(out, ",")
+}
+
+// tmpfsArgs converts a Docker --tmpfs path[:options] spec into either a plain
+// --tmpfs (path only) or a tmpfs --mount (when size=/mode= are present).
+func tmpfsArgs(spec string, warnings *[]string) []string {
+	path := spec
+	var optStr string
+	if i := strings.Index(spec, ":"); i >= 0 {
+		path, optStr = spec[:i], spec[i+1:]
+	}
+	if optStr == "" {
+		return []string{"--tmpfs", path}
+	}
+	var size, mode string
+	var dropped []string
+	for _, o := range strings.Split(optStr, ",") {
+		kv := strings.SplitN(o, "=", 2)
+		k := strings.ToLower(kv[0])
+		switch {
+		case k == "size" && len(kv) == 2:
+			size = kv[1]
+		case k == "mode" && len(kv) == 2:
+			mode = kv[1]
+		default:
+			dropped = append(dropped, o)
+		}
+	}
+	if len(dropped) > 0 {
+		*warnings = append(*warnings, fmt.Sprintf("--tmpfs options %s are not supported by the backend and were dropped", strings.Join(dropped, ",")))
+	}
+	if size == "" && mode == "" {
+		return []string{"--tmpfs", path}
+	}
+	mnt := "type=tmpfs,destination=" + path
+	if size != "" {
+		mnt += ",size=" + size
+	}
+	if mode != "" {
+		mnt += ",mode=" + mode
+	}
+	return []string{"--mount", mnt}
 }
 
 func readKVFile(path string) ([]string, error) {
