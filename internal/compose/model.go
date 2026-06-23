@@ -33,7 +33,7 @@ type Service struct {
 	Command       StringList  `yaml:"command"`
 	Entrypoint    StringList  `yaml:"entrypoint"`
 	Environment   MapList     `yaml:"environment"`
-	EnvFile       StringList  `yaml:"env_file"`
+	EnvFile       EnvFile     `yaml:"env_file"`
 	Ports         []string    `yaml:"ports"`
 	Expose        []string    `yaml:"expose"`
 	Volumes       []string    `yaml:"volumes"`
@@ -61,6 +61,21 @@ type Service struct {
 	Profiles      []string    `yaml:"profiles"`
 	Ulimits       Ulimits     `yaml:"ulimits"`
 	Deploy        Deploy      `yaml:"deploy"`
+}
+
+// Enabled reports whether a service runs given the set of active profiles. A
+// service with no profiles always runs; one with profiles runs only if at least
+// one is active.
+func (s *Service) Enabled(active map[string]bool) bool {
+	if len(s.Profiles) == 0 {
+		return true
+	}
+	for _, p := range s.Profiles {
+		if active[p] {
+			return true
+		}
+	}
+	return false
 }
 
 // Deploy models the subset of compose `deploy:` dcon can honor (resource limits).
@@ -158,6 +173,50 @@ type NetworkSpec struct {
 	Name     string  `yaml:"name"`
 	Internal bool    `yaml:"internal"`
 	Labels   MapList `yaml:"labels"`
+}
+
+// EnvFileEntry is one env_file reference; Required defaults to true.
+type EnvFileEntry struct {
+	Path     string
+	Required bool
+}
+
+// EnvFile handles env_file in scalar, list-of-strings, and list-of-maps
+// ({path, required}) forms.
+type EnvFile []EnvFileEntry
+
+func (e *EnvFile) UnmarshalYAML(value *yaml.Node) error {
+	add := func(n yaml.Node) error {
+		switch n.Kind {
+		case yaml.ScalarNode:
+			*e = append(*e, EnvFileEntry{Path: n.Value, Required: true})
+		case yaml.MappingNode:
+			var m struct {
+				Path     string `yaml:"path"`
+				Required *bool  `yaml:"required"`
+			}
+			if err := n.Decode(&m); err != nil {
+				return err
+			}
+			req := true
+			if m.Required != nil {
+				req = *m.Required
+			}
+			*e = append(*e, EnvFileEntry{Path: m.Path, Required: req})
+		}
+		return nil
+	}
+	switch value.Kind {
+	case yaml.ScalarNode:
+		return add(*value)
+	case yaml.SequenceNode:
+		for _, it := range value.Content {
+			if err := add(*it); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // StringList handles a YAML field that may be a scalar or a sequence.

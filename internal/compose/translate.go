@@ -2,6 +2,7 @@ package compose
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -161,7 +162,13 @@ func (p *Project) runArgs(service string, svc *Service, index int, netName strin
 		args = append(args, "--env", k+"="+extraEnv[k])
 	}
 	for _, ef := range svc.EnvFile {
-		args = append(args, "--env-file", p.resolve(ef))
+		rp := p.resolve(ef.Path)
+		if !ef.Required {
+			if _, err := os.Stat(rp); err != nil {
+				continue // optional env_file absent — skip
+			}
+		}
+		args = append(args, "--env-file", rp)
 	}
 	for _, c := range svc.CapAdd {
 		args = append(args, "--cap-add", c)
@@ -220,12 +227,13 @@ func (p *Project) ImageRef(service string, svc *Service) string {
 }
 
 // OneOffArgs builds `container run --rm ...` for a `compose run` invocation:
-// the service config without the fixed name/detach, plus any extra `-e` env
-// (raw key=value or bare-key tokens) injected before the image, with an
-// optional command override. The image boundary is located positionally (by
-// index), never by string matching, so flag/command values equal to the image
-// reference cannot misplace the override.
-func (p *Project) OneOffArgs(service string, svc *Service, netName string, cmdOverride []string, extraEnv []string) []string {
+// the service config without the fixed name/detach, plus CLI override flag
+// tokens (overrides, e.g. ["--env","K=V","--volume","a:b"]) injected before the
+// image, an optional entrypoint override (replacing the service's), and an
+// optional command override. The image boundary is located positionally, never
+// by string matching, so flag/command values equal to the image reference
+// cannot misplace the override.
+func (p *Project) OneOffArgs(service string, svc *Service, netName string, cmdOverride, overrides []string, entrypoint string) []string {
 	base, imageIdx := p.runArgs(service, svc, 1, netName, nil)
 	flags := base[1:imageIdx] // the run flags span (after "run", before image)
 	image := base[imageIdx]
@@ -238,12 +246,18 @@ func (p *Project) OneOffArgs(service string, svc *Service, netName string, cmdOv
 		case "--name":
 			i++ // skip its value
 			continue
+		case "--entrypoint":
+			if entrypoint != "" {
+				i++ // drop the service entrypoint; the override replaces it
+				continue
+			}
 		}
 		out = append(out, flags[i])
 	}
-	for _, e := range extraEnv { // raw tokens, before the image
-		out = append(out, "--env", e)
+	if entrypoint != "" {
+		out = append(out, "--entrypoint", entrypoint)
 	}
+	out = append(out, overrides...) // raw CLI override tokens, before the image
 	out = append(out, image)
 	if len(cmdOverride) > 0 {
 		return append(out, cmdOverride...) // override replaces the service command

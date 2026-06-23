@@ -160,6 +160,49 @@ func TestEnvVarExpansion(t *testing.T) {
 	}
 }
 
+func TestEnvFileForms(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yaml")
+	yaml := `
+services:
+  scalar:
+    image: x
+    env_file: .env
+  list:
+    image: x
+    env_file:
+      - a.env
+      - path: b.env
+        required: false
+`
+	os.WriteFile(path, []byte(yaml), 0o644)
+	p, err := Load(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Services["scalar"].EnvFile) != 1 || !p.Services["scalar"].EnvFile[0].Required {
+		t.Errorf("scalar env_file wrong: %+v", p.Services["scalar"].EnvFile)
+	}
+	lf := p.Services["list"].EnvFile
+	if len(lf) != 2 || lf[0].Path != "a.env" || !lf[0].Required || lf[1].Path != "b.env" || lf[1].Required {
+		t.Errorf("list env_file wrong: %+v", lf)
+	}
+}
+
+func TestServiceEnabledProfiles(t *testing.T) {
+	noProf := &Service{}
+	if !noProf.Enabled(map[string]bool{}) {
+		t.Error("service without profiles should always be enabled")
+	}
+	prof := &Service{Profiles: []string{"debug"}}
+	if prof.Enabled(map[string]bool{}) {
+		t.Error("profiled service should be disabled when profile inactive")
+	}
+	if !prof.Enabled(map[string]bool{"debug": true}) {
+		t.Error("profiled service should be enabled when profile active")
+	}
+}
+
 func splitColon(s string) string {
 	for i := 0; i < len(s); i++ {
 		if s[i] == ':' {

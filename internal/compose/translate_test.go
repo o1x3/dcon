@@ -111,7 +111,7 @@ func indexOf(args []string, want string) int {
 func TestOneOffArgsEnvAndOverride(t *testing.T) {
 	p := &Project{Name: "proj", Dir: "/tmp"}
 	svc := &Service{Image: "nginx", Command: StringList{"orig"}}
-	got := p.OneOffArgs("web", svc, "proj_default", []string{"echo", "hi"}, []string{"FOO=bar"})
+	got := p.OneOffArgs("web", svc, "proj_default", []string{"echo", "hi"}, []string{"--env", "FOO=bar"}, "")
 	mustContain(t, got, "--rm")
 	mustContainPair(t, got, "--env", "FOO=bar")
 	// --name and --detach must be dropped for one-off
@@ -133,7 +133,7 @@ func TestOneOffArgsImageEqualFlagValue(t *testing.T) {
 	// regression: a flag value equal to the image ref must not break splitting
 	p := &Project{Name: "proj", Dir: "/tmp"}
 	svc := &Service{Image: "myimg", Platform: "myimg"} // platform value == image
-	got := p.OneOffArgs("web", svc, "", []string{"run-cmd"}, nil)
+	got := p.OneOffArgs("web", svc, "", []string{"run-cmd"}, nil, "")
 	img := indexOf(got, "myimg")
 	// the image is the LAST occurrence (platform value is earlier as a flag arg)
 	last := -1
@@ -147,6 +147,22 @@ func TestOneOffArgsImageEqualFlagValue(t *testing.T) {
 	}
 	if indexOf(got, "run-cmd") < last {
 		t.Errorf("override should be after image; got %v", got)
+	}
+}
+
+func TestOneOffArgsOverridesEntrypoint(t *testing.T) {
+	p := &Project{Name: "proj", Dir: "/tmp"}
+	svc := &Service{Image: "nginx", Entrypoint: StringList{"/svc-ep"}}
+	got := p.OneOffArgs("web", svc, "", nil, []string{"--volume", "/a:/b"}, "/override-ep")
+	// CLI entrypoint replaces the service entrypoint (no duplicate, no /svc-ep)
+	if indexOf(got, "/svc-ep") != -1 {
+		t.Errorf("service entrypoint should be replaced: %v", got)
+	}
+	mustContainPair(t, got, "--entrypoint", "/override-ep")
+	mustContainPair(t, got, "--volume", "/a:/b")
+	// override volume before the image
+	if indexOf(got, "/a:/b") > indexOf(got, "nginx") {
+		t.Errorf("override must precede image: %v", got)
 	}
 }
 

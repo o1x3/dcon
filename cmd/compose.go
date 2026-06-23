@@ -52,6 +52,32 @@ func projectContainers(project string) ([]dockerfmt.Container, error) {
 
 func serviceOf(c dockerfmt.Container) string { return c.Configuration.Labels[compose.LabelService] }
 
+// enabledProfiles collects active compose profiles from --profile and the
+// COMPOSE_PROFILES environment variable.
+func enabledProfiles(cmd *cobra.Command) map[string]bool {
+	active := map[string]bool{}
+	profs, _ := cmd.Flags().GetStringArray("profile")
+	for _, p := range profs {
+		active[p] = true
+	}
+	for _, p := range strings.Split(os.Getenv("COMPOSE_PROFILES"), ",") {
+		if p != "" {
+			active[p] = true
+		}
+	}
+	return active
+}
+
+// skipService reports whether a service should be skipped: not explicitly
+// selected AND not enabled by an active profile.
+func skipService(p *compose.Project, name string, selected map[string]bool, active map[string]bool) bool {
+	if selected != nil {
+		return !selected[name]
+	}
+	svc := p.Services[name]
+	return svc != nil && !svc.Enabled(active)
+}
+
 func newComposeCmd() *cobra.Command {
 	group := &cobra.Command{
 		Use:     "compose",
@@ -122,12 +148,13 @@ func composeUp() *cobra.Command {
 			scale := parseScale(scaleSpecs)
 
 			selected := serviceSet(args)
+			active := enabledProfiles(cmd)
 			net := ensureNetwork(p)
 			ensureVolumes(p)
 
 			var started []string
 			for _, name := range p.Order() {
-				if selected != nil && !selected[name] {
+				if skipService(p, name, selected, active) {
 					continue
 				}
 				svc := p.Services[name]
@@ -663,10 +690,11 @@ func composeCreate() *cobra.Command {
 				return err
 			}
 			selected := serviceSet(args)
+			active := enabledProfiles(cmd)
 			net := ensureNetwork(p)
 			ensureVolumes(p)
 			for _, name := range p.Order() {
-				if selected != nil && !selected[name] {
+				if skipService(p, name, selected, active) {
 					continue
 				}
 				svc := p.Services[name]
@@ -701,11 +729,15 @@ func composeExec() *cobra.Command {
 			}
 			svc := args[0]
 			rest := args[1:]
-			c, err := firstServiceContainer(p.Name, svc)
+			idx, _ := cmd.Flags().GetInt("index")
+			c, err := serviceContainerByIndex(p.Name, svc, idx)
 			if err != nil {
 				return err
 			}
 			cargs := []string{"exec"}
+			if v, _ := cmd.Flags().GetBool("detach"); v {
+				cargs = append(cargs, "--detach")
+			}
 			if v, _ := cmd.Flags().GetBool("interactive"); v && isTerminal(os.Stdin) {
 				cargs = append(cargs, "--interactive")
 			}
@@ -720,6 +752,9 @@ func composeExec() *cobra.Command {
 			if w, _ := cmd.Flags().GetString("workdir"); w != "" {
 				cargs = append(cargs, "--workdir", w)
 			}
+			for _, e := range mustStringArray(cmd.Flags(), "env") {
+				cargs = append(cargs, "--env", e)
+			}
 			cargs = append(cargs, c)
 			cargs = append(cargs, rest...)
 			return runtime.Run(cargs...)
@@ -731,7 +766,33 @@ func composeExec() *cobra.Command {
 	cmd.Flags().BoolP("detach", "d", false, "Detached mode")
 	cmd.Flags().StringP("user", "u", "", "Run the command as this user")
 	cmd.Flags().StringP("workdir", "w", "", "Path to workdir directory")
+	cmd.Flags().StringArrayP("env", "e", nil, "Set environment variables")
+	cmd.Flags().Int("index", 1, "Index of the container if service has multiple replicas")
 	return cmd
+}
+
+// serviceContainerByIndex resolves a project service's container by replica
+// index (1-based), preferring a running one.
+func serviceContainerByIndex(project, service string, idx int) (string, error) {
+	containers, err := projectContainers(project)
+	if err != nil {
+		return "", err
+	}
+	want := strconv.Itoa(idx)
+	var fallback string
+	for _, c := range containers {
+		if serviceOf(c) != service || c.Configuration.Labels[compose.LabelNumber] != want {
+			continue
+		}
+		if c.Status.State == "running" {
+			return c.ID, nil
+		}
+		fallback = c.ID
+	}
+	if fallback != "" {
+		return fallback, nil
+	}
+	return "", fmt.Errorf("no container for service %q (index %d)", service, idx)
 }
 
 func composeRun() *cobra.Command {
@@ -750,8 +811,30 @@ func composeRun() *cobra.Command {
 				return fmt.Errorf("no such service: %s", svcName)
 			}
 			net := ensureNetwork(p)
-			envs, _ := cmd.Flags().GetStringArray("env")
-			run := p.OneOffArgs(svcName, svc, net, args[1:], envs)
+
+			// Build CLI override flag tokens, inserted before the image.
+			var overrides []string
+			addEach := func(flag string, vals []string) {
+				for _, v := range vals {
+					overrides = append(overrides, flag, v)
+				}
+			}
+			addEach("--env", mustStringArray(cmd.Flags(), "env"))
+			addEach("--volume", mustStringArray(cmd.Flags(), "volume"))
+			addEach("--publish", mustStringArray(cmd.Flags(), "publish"))
+			addEach("--label", mustStringArray(cmd.Flags(), "label"))
+			if name, _ := cmd.Flags().GetString("name"); name != "" {
+				overrides = append(overrides, "--name", name)
+			}
+			if w, _ := cmd.Flags().GetString("workdir"); w != "" {
+				overrides = append(overrides, "--workdir", w)
+			}
+			if u, _ := cmd.Flags().GetString("user"); u != "" {
+				overrides = append(overrides, "--user", u)
+			}
+			entrypoint, _ := cmd.Flags().GetString("entrypoint")
+
+			run := p.OneOffArgs(svcName, svc, net, args[1:], overrides, entrypoint)
 			if rm, _ := cmd.Flags().GetBool("rm"); !rm {
 				run = dropFlag(run, "--rm")
 			}
@@ -765,6 +848,13 @@ func composeRun() *cobra.Command {
 	cmd.Flags().Bool("rm", true, "Remove container after run")
 	cmd.Flags().BoolP("detach", "d", false, "Run container in background")
 	cmd.Flags().StringArrayP("env", "e", nil, "Set environment variables")
+	cmd.Flags().StringArrayP("volume", "v", nil, "Bind mount a volume")
+	cmd.Flags().StringArrayP("publish", "p", nil, "Publish a container's port(s) to the host")
+	cmd.Flags().StringArrayP("label", "l", nil, "Add or override a label")
+	cmd.Flags().String("name", "", "Assign a name to the container")
+	cmd.Flags().StringP("workdir", "w", "", "Working directory inside the container")
+	cmd.Flags().StringP("user", "u", "", "Username or UID")
+	cmd.Flags().String("entrypoint", "", "Override the entrypoint of the image")
 	return cmd
 }
 
