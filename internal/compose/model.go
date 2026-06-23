@@ -59,6 +59,63 @@ type Service struct {
 	Hostname      string      `yaml:"hostname"`
 	Scale         int         `yaml:"scale"`
 	Profiles      []string    `yaml:"profiles"`
+	Ulimits       Ulimits     `yaml:"ulimits"`
+	Deploy        Deploy      `yaml:"deploy"`
+}
+
+// Deploy models the subset of compose `deploy:` dcon can honor (resource limits).
+type Deploy struct {
+	Resources struct {
+		Limits       ResourceSpec `yaml:"limits"`
+		Reservations ResourceSpec `yaml:"reservations"`
+	} `yaml:"resources"`
+}
+
+type ResourceSpec struct {
+	CPUs   string `yaml:"cpus"`
+	Memory string `yaml:"memory"`
+}
+
+// Ulimits normalizes compose `ulimits:` short (name: N) and long
+// (name: {soft, hard}) forms into sorted "name=value" / "name=soft:hard" specs.
+type Ulimits []string
+
+func (u *Ulimits) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.MappingNode {
+		return nil
+	}
+	raw := map[string]yaml.Node{}
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	keys := make([]string, 0, len(raw))
+	for k := range raw {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		n := raw[k]
+		switch n.Kind {
+		case yaml.ScalarNode:
+			out = append(out, k+"="+n.Value)
+		case yaml.MappingNode:
+			var m struct {
+				Soft string `yaml:"soft"`
+				Hard string `yaml:"hard"`
+			}
+			if err := n.Decode(&m); err != nil {
+				return err
+			}
+			spec := m.Soft
+			if m.Hard != "" {
+				spec += ":" + m.Hard
+			}
+			out = append(out, k+"="+spec)
+		}
+	}
+	*u = out
+	return nil
 }
 
 // Build is `build:` which may be a string (context) or a mapping.
@@ -300,13 +357,18 @@ func (p *Project) Order() []string {
 		if visited[name] || temp[name] {
 			return
 		}
+		svc, ok := p.Services[name]
+		if !ok {
+			// Undefined dependency (typo / external) — never emit it as a
+			// service to start, so callers don't index a nil *Service.
+			visited[name] = true
+			return
+		}
 		temp[name] = true
-		if svc, ok := p.Services[name]; ok {
-			deps := append([]string{}, svc.DependsOn...)
-			sort.Strings(deps)
-			for _, d := range deps {
-				visit(d)
-			}
+		deps := append([]string{}, svc.DependsOn...)
+		sort.Strings(deps)
+		for _, d := range deps {
+			visit(d)
 		}
 		temp[name] = false
 		visited[name] = true

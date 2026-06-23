@@ -7,9 +7,11 @@ import (
 	"os/exec"
 	"os/signal"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"dcon/internal/compose"
 	"dcon/internal/dockerfmt"
@@ -67,6 +69,7 @@ func newComposeCmd() *cobra.Command {
 		composePull(), composeStart(), composeStop(), composeRestart(), composeKill(),
 		composeRm(), composeConfig(), composeLs(), composeCreate(), composeExec(),
 		composeRun(), composeTop(), composeImages(), composeVersion(),
+		composeScale(), composeWait(), composeCp(),
 	)
 	return group
 }
@@ -90,10 +93,7 @@ func ensureVolumes(p *compose.Project) {
 		if spec != nil && spec.External {
 			continue
 		}
-		volName := p.Name + "_" + name
-		if spec != nil && spec.Name != "" {
-			volName = spec.Name
-		}
+		volName := p.VolumeName(name, spec)
 		if _, err := runtime.CaptureSilent("volume", "inspect", volName); err == nil {
 			continue
 		}
@@ -117,6 +117,9 @@ func composeUp() *cobra.Command {
 			noBuild, _ := cmd.Flags().GetBool("no-build")
 			noStart, _ := cmd.Flags().GetBool("no-start")
 			forceRecreate, _ := cmd.Flags().GetBool("force-recreate")
+			removeOrphans, _ := cmd.Flags().GetBool("remove-orphans")
+			scaleSpecs, _ := cmd.Flags().GetStringArray("scale")
+			scale := parseScale(scaleSpecs)
 
 			selected := serviceSet(args)
 			net := ensureNetwork(p)
@@ -128,7 +131,6 @@ func composeUp() *cobra.Command {
 					continue
 				}
 				svc := p.Services[name]
-				cname := p.ContainerName(name, 1, svc)
 
 				if svc.Build.IsSet() && !noBuild && (doBuild || svc.Image == "") {
 					fmt.Printf("Building %s...\n", name)
@@ -136,33 +138,40 @@ func composeUp() *cobra.Command {
 						return fmt.Errorf("build %s: %w", name, err)
 					}
 				}
-				// Recreate: remove any existing container with this name.
-				if forceRecreate {
-					_, _ = runtime.CaptureSilent("delete", "--force", cname)
-				} else if _, err := runtime.CaptureSilent("inspect", cname); err == nil {
-					// already exists; leave running container as-is
-					fmt.Printf("Container %s is up-to-date\n", cname)
-					started = append(started, cname)
-					continue
+
+				count := p.Replicas(svc, scale[name])
+				if count > 1 && svc.ContainerName != "" {
+					return fmt.Errorf("service %q has a container_name and cannot be scaled to %d", name, count)
 				}
-				if noStart {
-					rargs := p.RunArgs(name, svc, 1, net, nil)
-					rargs[0] = "create" // create instead of run
-					// drop --detach for create
-					rargs = dropFlag(rargs, "--detach")
-					fmt.Printf("Creating %s...\n", cname)
-					if err := runtime.Run(rargs...); err != nil {
-						return err
+				for i := 1; i <= count; i++ {
+					cname := p.ContainerName(name, i, svc)
+					if forceRecreate {
+						_, _ = runtime.CaptureSilent("delete", "--force", cname)
+					} else if _, err := runtime.CaptureSilent("inspect", cname); err == nil {
+						fmt.Printf("Container %s is up-to-date\n", cname)
+						started = append(started, cname)
+						continue
 					}
-					continue
+					if noStart {
+						rargs := dropFlag(p.RunArgs(name, svc, i, net, nil), "--detach")
+						rargs[0] = "create"
+						fmt.Printf("Creating %s...\n", cname)
+						if err := runtime.Run(rargs...); err != nil {
+							return err
+						}
+						continue
+					}
+					fmt.Printf("Creating %s...\n", cname)
+					if err := runtime.Run(p.RunArgs(name, svc, i, net, nil)...); err != nil {
+						return fmt.Errorf("start %s: %w", name, err)
+					}
+					started = append(started, cname)
 				}
-				fmt.Printf("Creating %s...\n", cname)
-				if err := runtime.Run(p.RunArgs(name, svc, 1, net, nil)...); err != nil {
-					return fmt.Errorf("start %s: %w", name, err)
-				}
-				started = append(started, cname)
 			}
 
+			if removeOrphans {
+				removeOrphanContainers(p)
+			}
 			if detach || noStart {
 				return nil
 			}
@@ -177,10 +186,26 @@ func composeUp() *cobra.Command {
 	f.Bool("no-start", false, "Don't start the services after creating them")
 	f.Bool("force-recreate", false, "Recreate containers even if their configuration hasn't changed")
 	f.Bool("remove-orphans", false, "Remove containers for services not defined in the compose file")
+	f.StringArray("scale", nil, "Scale SERVICE to NUM instances (format: service=num)")
 	f.String("pull", "", "Pull image before running (always|missing|never)")
 	f.IntP("timeout", "t", 10, "Use this timeout in seconds for container shutdown")
 	f.Bool("wait", false, "Wait for services to be running|healthy")
 	return cmd
+}
+
+// removeOrphanContainers deletes project containers whose service is no longer
+// defined in the compose file (compose up/down --remove-orphans).
+func removeOrphanContainers(p *compose.Project) {
+	containers, err := projectContainers(p.Name)
+	if err != nil {
+		return
+	}
+	for _, c := range containers {
+		if _, ok := p.Services[serviceOf(c)]; !ok {
+			fmt.Printf("Removing orphan %s...\n", c.ID)
+			_, _ = runtime.CaptureSilent("delete", "--force", c.ID)
+		}
+	}
 }
 
 func followAndWait(p *compose.Project, names []string) error {
@@ -251,7 +276,7 @@ func composeDown() *cobra.Command {
 					if spec != nil && spec.External {
 						continue
 					}
-					vol := p.Name + "_" + name
+					vol := p.VolumeName(name, spec)
 					fmt.Printf("Removing volume %s...\n", vol)
 					_, _ = runtime.CaptureSilent("volume", "delete", vol)
 				}
@@ -531,8 +556,9 @@ func composeRm() *cobra.Command {
 
 func composeConfig() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "config [OPTIONS]",
-		Short: "Parse, resolve and render compose file in canonical format",
+		Use:     "config [OPTIONS]",
+		Aliases: []string{"convert"},
+		Short:   "Parse, resolve and render compose file in canonical format",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			p, err := loadProject(cmd)
 			if err != nil {
@@ -717,7 +743,8 @@ func composeRun() *cobra.Command {
 				return fmt.Errorf("no such service: %s", svcName)
 			}
 			net := ensureNetwork(p)
-			run := p.OneOffArgs(svcName, svc, net, args[1:])
+			envs, _ := cmd.Flags().GetStringArray("env")
+			run := p.OneOffArgs(svcName, svc, net, args[1:], envs)
 			if rm, _ := cmd.Flags().GetBool("rm"); !rm {
 				run = dropFlag(run, "--rm")
 			}
@@ -732,6 +759,21 @@ func composeRun() *cobra.Command {
 	cmd.Flags().BoolP("detach", "d", false, "Run container in background")
 	cmd.Flags().StringArrayP("env", "e", nil, "Set environment variables")
 	return cmd
+}
+
+// parseScale turns ["web=3","db=2"] into {web:3, db:2}.
+func parseScale(specs []string) map[string]int {
+	out := map[string]int{}
+	for _, s := range specs {
+		kv := strings.SplitN(s, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		if n, err := strconv.Atoi(kv[1]); err == nil {
+			out[kv[0]] = n
+		}
+	}
+	return out
 }
 
 func composeTop() *cobra.Command {
@@ -788,6 +830,136 @@ func composeVersion() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fmt.Printf("dcon compose version v2 (Apple container backend)\n")
 			return nil
+		},
+	}
+}
+
+// composeScale scales services to N replicas: `compose scale web=3 db=2`.
+func composeScale() *cobra.Command {
+	return &cobra.Command{
+		Use:   "scale [SERVICE=NUM...]",
+		Short: "Scale services to a number of instances",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, err := loadProject(cmd)
+			if err != nil {
+				return err
+			}
+			net := ensureNetwork(p)
+			for svcName, n := range parseScale(args) {
+				svc, ok := p.Services[svcName]
+				if !ok {
+					return fmt.Errorf("no such service: %s", svcName)
+				}
+				if n > 1 && svc.ContainerName != "" {
+					return fmt.Errorf("service %q has a container_name and cannot be scaled", svcName)
+				}
+				// Start/create replicas 1..n.
+				for i := 1; i <= n; i++ {
+					cname := p.ContainerName(svcName, i, svc)
+					if _, err := runtime.CaptureSilent("inspect", cname); err == nil {
+						continue
+					}
+					fmt.Printf("Creating %s...\n", cname)
+					if err := runtime.Run(p.RunArgs(svcName, svc, i, net, nil)...); err != nil {
+						return err
+					}
+				}
+				// Remove surplus replicas (index > n).
+				containers, _ := projectContainers(p.Name)
+				for _, c := range containers {
+					if serviceOf(c) != svcName {
+						continue
+					}
+					if num, _ := strconv.Atoi(c.Configuration.Labels[compose.LabelNumber]); num > n {
+						fmt.Printf("Removing %s...\n", c.ID)
+						_, _ = runtime.CaptureSilent("delete", "--force", c.ID)
+					}
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// composeWait blocks until project containers stop, then prints exit codes.
+func composeWait() *cobra.Command {
+	return &cobra.Command{
+		Use:   "wait [SERVICE...]",
+		Short: "Block until containers stop, then print exit codes",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, err := loadProject(cmd)
+			if err != nil {
+				return err
+			}
+			containers, err := projectContainers(p.Name)
+			if err != nil {
+				return err
+			}
+			selected := serviceSet(args)
+			for _, c := range containers {
+				if selected != nil && !selected[serviceOf(c)] {
+					continue
+				}
+				for {
+					var list []dockerfmt.Container
+					if err := runtime.CaptureJSON(&list, "inspect", c.ID); err != nil {
+						break
+					}
+					st := ""
+					if len(list) > 0 {
+						st = list[0].Status.State
+					}
+					if st != "running" && st != "stopping" {
+						fmt.Println("0") // backend does not expose exit codes
+						break
+					}
+					time.Sleep(500 * time.Millisecond)
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// composeCp copies files between a service container and the local filesystem.
+func composeCp() *cobra.Command {
+	return &cobra.Command{
+		Use:   "cp SRC DST",
+		Short: "Copy files/folders between a service container and the local filesystem",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, err := loadProject(cmd)
+			if err != nil {
+				return err
+			}
+			rewrite := func(arg string) (string, bool, error) {
+				i := strings.IndexByte(arg, ':')
+				if i <= 0 {
+					return arg, false, nil
+				}
+				svcName := arg[:i]
+				if _, ok := p.Services[svcName]; !ok {
+					return arg, false, nil // not a service ref (e.g. a local path)
+				}
+				cid, err := firstServiceContainer(p.Name, svcName)
+				if err != nil {
+					return "", false, err
+				}
+				return cid + ":" + arg[i+1:], true, nil
+			}
+			src, srcCtr, err := rewrite(args[0])
+			if err != nil {
+				return err
+			}
+			dst, dstCtr, err := rewrite(args[1])
+			if err != nil {
+				return err
+			}
+			if srcCtr == dstCtr {
+				return fmt.Errorf("exactly one of SRC or DST must be SERVICE:PATH")
+			}
+			return runtime.Run("copy", src, dst)
 		},
 	}
 }

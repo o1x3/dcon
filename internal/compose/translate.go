@@ -3,8 +3,20 @@ package compose
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 )
+
+// sortedKeys returns the keys of m in lexical order so generated arg lists are
+// deterministic across runs (map iteration order is randomized in Go).
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
 
 // Compose label keys (compatible with Docker Compose so `dcon ps` and tooling
 // can recognise project membership).
@@ -71,7 +83,15 @@ func ShellSplit(s string) []string {
 // netName, when non-empty, is attached via --network. index is the replica
 // number (1-based).
 func (p *Project) RunArgs(service string, svc *Service, index int, netName string, extraEnv map[string]string) []string {
-	args := []string{"run", "--detach"}
+	a, _ := p.runArgs(service, svc, index, netName, extraEnv)
+	return a
+}
+
+// runArgs builds the run args and returns the index of the image token, so
+// callers can split flags / image / command positionally instead of by fragile
+// string matching.
+func (p *Project) runArgs(service string, svc *Service, index int, netName string, extraEnv map[string]string) (args []string, imageIdx int) {
+	args = []string{"run", "--detach"}
 	args = append(args, "--name", p.ContainerName(service, index, svc))
 
 	// compose identity labels
@@ -82,8 +102,8 @@ func (p *Project) RunArgs(service string, svc *Service, index int, netName strin
 		"--label", LabelOneoff+"=False",
 		"--label", LabelConfigDir+"="+p.Dir,
 	)
-	for k, v := range svc.Labels {
-		args = append(args, "--label", k+"="+v)
+	for _, k := range sortedKeys(svc.Labels) {
+		args = append(args, "--label", k+"="+svc.Labels[k])
 	}
 
 	if netName != "" {
@@ -98,11 +118,20 @@ func (p *Project) RunArgs(service string, svc *Service, index int, netName strin
 	if svc.Platform != "" {
 		args = append(args, "--platform", svc.Platform)
 	}
-	if svc.CPUs != "" {
-		args = append(args, "--cpus", svc.CPUs)
+	// cpus/memory: top-level wins, else fall back to deploy.resources.limits.
+	cpus := svc.CPUs
+	if cpus == "" {
+		cpus = svc.Deploy.Resources.Limits.CPUs
 	}
-	if svc.MemLimit != "" {
-		args = append(args, "--memory", svc.MemLimit)
+	if cpus != "" {
+		args = append(args, "--cpus", cpus)
+	}
+	mem := svc.MemLimit
+	if mem == "" {
+		mem = svc.Deploy.Resources.Limits.Memory
+	}
+	if mem != "" {
+		args = append(args, "--memory", mem)
 	}
 	if svc.ShmSize != "" {
 		args = append(args, "--shm-size", svc.ShmSize)
@@ -119,16 +148,17 @@ func (p *Project) RunArgs(service string, svc *Service, index int, netName strin
 	if svc.Privileged {
 		args = append(args, "--cap-add", "ALL")
 	}
-	if svc.Entrypoint != nil && len(svc.Entrypoint) > 0 {
-		// container --entrypoint takes a single command string.
+	// container --entrypoint takes a single command string; skip the empty/reset
+	// forms (entrypoint: "" or []).
+	if len(svc.Entrypoint) > 0 && svc.Entrypoint[0] != "" {
 		args = append(args, "--entrypoint", svc.Entrypoint[0])
 	}
 
-	for k, v := range svc.Environment {
-		args = append(args, "--env", k+"="+v)
+	for _, k := range sortedKeys(svc.Environment) {
+		args = append(args, "--env", k+"="+svc.Environment[k])
 	}
-	for k, v := range extraEnv {
-		args = append(args, "--env", k+"="+v)
+	for _, k := range sortedKeys(extraEnv) {
+		args = append(args, "--env", k+"="+extraEnv[k])
 	}
 	for _, ef := range svc.EnvFile {
 		args = append(args, "--env-file", p.resolve(ef))
@@ -141,6 +171,9 @@ func (p *Project) RunArgs(service string, svc *Service, index int, netName strin
 	}
 	for _, d := range svc.DNS {
 		args = append(args, "--dns", d)
+	}
+	for _, ul := range svc.Ulimits {
+		args = append(args, "--ulimit", ul)
 	}
 	for _, t := range svc.Tmpfs {
 		path := t
@@ -156,23 +189,20 @@ func (p *Project) RunArgs(service string, svc *Service, index int, netName strin
 		args = append(args, "--volume", p.resolveVolume(vol))
 	}
 
+	imageIdx = len(args)
 	args = append(args, p.imageRef(service, svc))
 
-	// command (after image = container init args)
+	// After the image: extra entrypoint tokens (beyond entrypoint[0]) become
+	// leading process args, then the command, matching Docker.
+	if len(svc.Entrypoint) > 1 {
+		args = append(args, svc.Entrypoint[1:]...)
+	}
 	if len(svc.Command) == 1 {
-		// string form -> shell-split
 		args = append(args, ShellSplit(svc.Command[0])...)
 	} else if len(svc.Command) > 1 {
 		args = append(args, svc.Command...)
 	}
-	// entrypoint extra args (beyond the executable) appended after command? In
-	// compose, entrypoint replaces the image entrypoint and command are its
-	// args. We already set --entrypoint to entrypoint[0]; pass remaining
-	// entrypoint tokens as leading args when command is empty.
-	if len(svc.Entrypoint) > 1 && len(svc.Command) == 0 {
-		args = append(args, svc.Entrypoint[1:]...)
-	}
-	return args
+	return args, imageIdx
 }
 
 // imageRef returns the image to run: explicit image, else the build-tagged
@@ -190,38 +220,35 @@ func (p *Project) ImageRef(service string, svc *Service) string {
 }
 
 // OneOffArgs builds `container run --rm ...` for a `compose run` invocation:
-// the service config without the fixed name/detach, with an optional command
-// override (when cmdOverride is empty the service's own command is used).
-func (p *Project) OneOffArgs(service string, svc *Service, netName string, cmdOverride []string) []string {
-	base := p.RunArgs(service, svc, 1, netName, nil)
-	// base = ["run","--detach","--name",NAME, ...flags..., IMAGE, ...cmd...]
-	image := p.imageRef(service, svc)
+// the service config without the fixed name/detach, plus any extra `-e` env
+// (raw key=value or bare-key tokens) injected before the image, with an
+// optional command override. The image boundary is located positionally (by
+// index), never by string matching, so flag/command values equal to the image
+// reference cannot misplace the override.
+func (p *Project) OneOffArgs(service string, svc *Service, netName string, cmdOverride []string, extraEnv []string) []string {
+	base, imageIdx := p.runArgs(service, svc, 1, netName, nil)
+	flags := base[1:imageIdx] // the run flags span (after "run", before image)
+	image := base[imageIdx]
+
 	out := []string{"run", "--rm"}
-	skipNext := false
-	pastImage := false
-	for i := 1; i < len(base); i++ {
-		a := base[i]
-		if skipNext {
-			skipNext = false
+	for i := 0; i < len(flags); i++ {
+		switch flags[i] {
+		case "--detach":
+			continue
+		case "--name":
+			i++ // skip its value
 			continue
 		}
-		if a == "--detach" {
-			continue
-		}
-		if a == "--name" {
-			skipNext = true
-			continue
-		}
-		out = append(out, a)
-		if a == image && !pastImage {
-			pastImage = true
-			if len(cmdOverride) > 0 {
-				// drop the service's own trailing command; use the override.
-				return append(out, cmdOverride...)
-			}
-		}
+		out = append(out, flags[i])
 	}
-	return out
+	for _, e := range extraEnv { // raw tokens, before the image
+		out = append(out, "--env", e)
+	}
+	out = append(out, image)
+	if len(cmdOverride) > 0 {
+		return append(out, cmdOverride...) // override replaces the service command
+	}
+	return append(out, base[imageIdx+1:]...) // keep the service's own command
 }
 
 // BuildImageName is the local tag used for services built from a Dockerfile.
@@ -269,8 +296,8 @@ func (p *Project) BuildArgs(service string, svc *Service) []string {
 	if svc.Build.Dockerfile != "" {
 		args = append(args, "--file", filepath.Join(ctx, svc.Build.Dockerfile))
 	}
-	for k, v := range svc.Build.Args {
-		args = append(args, "--build-arg", k+"="+v)
+	for _, k := range sortedKeys(svc.Build.Args) {
+		args = append(args, "--build-arg", k+"="+svc.Build.Args[k])
 	}
 	if svc.Build.Target != "" {
 		args = append(args, "--target", svc.Build.Target)
@@ -280,4 +307,26 @@ func (p *Project) BuildArgs(service string, svc *Service) []string {
 	}
 	args = append(args, ctx)
 	return args
+}
+
+// VolumeName resolves a declared volume key to its backend volume name,
+// honouring an explicit `name:` and otherwise prefixing the project name.
+func (p *Project) VolumeName(key string, spec *VolumeSpec) string {
+	if spec != nil && spec.Name != "" {
+		return spec.Name
+	}
+	return p.Name + "_" + key
+}
+
+// Replicas returns the number of instances to run for a service: the CLI/scale
+// override if > 0, else the service's `scale:`, else 1.
+func (p *Project) Replicas(svc *Service, override int) int {
+	n := svc.Scale
+	if override > 0 {
+		n = override
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
 }
