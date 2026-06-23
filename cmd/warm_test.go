@@ -104,6 +104,40 @@ func TestAgeAndShort(t *testing.T) {
 	}
 }
 
+// TestTryWarmRunFallthrough covers every path where tryWarmRun must decline to
+// handle the run (so run falls back to a normal cold boot) WITHOUT touching the
+// container backend: pooling disabled, ineligible flags, and an empty pool.
+func TestTryWarmRunFallthrough(t *testing.T) {
+	cases := []struct {
+		name string
+		warm string   // DCON_WARM value
+		argv []string // run argv
+	}{
+		{"disabled forces cold", "off", []string{"--rm", "alpine", "echo", "hi"}},
+		{"ineligible: no --rm", "", []string{"alpine", "echo", "hi"}},
+		{"ineligible: volume", "", []string{"--rm", "-v", "/a:/b", "alpine", "ls"}},
+		{"eligible but empty pool", "", []string{"--rm", "alpine", "echo", "hi"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir()) // empty, private pool state
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			t.Setenv("DCON_WARM", tc.warm)
+			cmd := newRunCmd()
+			if err := cmd.ParseFlags(tc.argv); err != nil {
+				t.Fatalf("ParseFlags: %v", err)
+			}
+			handled, err := tryWarmRun(cmd, cmd.Flags().Args())
+			if handled {
+				t.Errorf("tryWarmRun handled=true, want false (should fall through to cold)")
+			}
+			if err != nil {
+				t.Errorf("tryWarmRun err=%v, want nil on fall-through", err)
+			}
+		})
+	}
+}
+
 func indexOf(ss []string, target string) int {
 	for i, s := range ss {
 		if s == target {
