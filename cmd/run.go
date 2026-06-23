@@ -357,6 +357,12 @@ func newRunCmd() *cobra.Command {
 		Args:                  cobra.MinimumNArgs(1),
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Fast path: serve simple --rm runs from the warm pool (exec into a
+			// pre-booted single-use VM) when one is available. Falls through to a
+			// normal cold boot otherwise — transparently and with no behavior change.
+			if handled, err := tryWarmRun(cmd, args); handled {
+				return err
+			}
 			cArgs, err := buildContainerArgs(cmd, args, "run")
 			if err != nil {
 				return err
