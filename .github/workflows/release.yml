@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: build · package · publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: run tests
+        run: go test ./...
+
+      - name: build release binaries
+        env:
+          CGO_ENABLED: 0
+        run: |
+          TAG=${GITHUB_REF_NAME}
+          VERSION=${TAG#v}
+          COMMIT=$(git rev-parse --short HEAD)
+          DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          LDFLAGS="-s -w -X dcon/cmd.Version=${VERSION} -X dcon/cmd.Commit=${COMMIT} -X dcon/cmd.Date=${DATE}"
+          mkdir -p dist
+          for arch in arm64 amd64; do
+            out="dcon_${VERSION}_darwin_${arch}"
+            GOOS=darwin GOARCH=$arch go build -trimpath -ldflags "$LDFLAGS" -o "dist/dcon" .
+            tar -C dist -czf "dist/${out}.tar.gz" dcon
+            rm -f dist/dcon
+          done
+          cd dist && shasum -a 256 *.tar.gz > checksums.txt && cat checksums.txt
+
+      - name: generate release notes
+        id: notes
+        run: |
+          TAG=${GITHUB_REF_NAME}
+          PREV=$(git tag --list 'v*' --sort=-v:refname | grep -A1 -x "$TAG" | tail -1)
+          echo "## dcon ${TAG}" > notes.md
+          echo >> notes.md
+          echo "A drop-in Docker CLI for macOS, backed by Apple's container runtime." >> notes.md
+          echo >> notes.md
+          echo "### Install" >> notes.md
+          echo '```sh' >> notes.md
+          echo "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/install.sh | bash" >> notes.md
+          echo '```' >> notes.md
+          echo >> notes.md
+          echo "### Changes" >> notes.md
+          if [ -n "$PREV" ] && [ "$PREV" != "$TAG" ]; then
+            git log --pretty='- %s (%h)' "${PREV}..${TAG}" >> notes.md
+          else
+            git log --pretty='- %s (%h)' -n 30 >> notes.md
+          fi
+
+      - name: publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/checksums.txt
+          body_path: notes.md
+          generate_release_notes: false
