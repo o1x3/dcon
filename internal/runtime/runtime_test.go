@@ -58,3 +58,25 @@ func TestAppRootNonEmpty(t *testing.T) {
 		t.Error("AppRoot() empty")
 	}
 }
+
+func TestCaptureSilentError(t *testing.T) {
+	t.Setenv("DCON_CONTAINER_BIN", "/usr/bin/false")
+	if _, err := CaptureSilent("x"); err == nil {
+		t.Error("expected error from a failing backend command")
+	}
+}
+
+func TestRunSuccess(t *testing.T) {
+	t.Setenv("DCON_CONTAINER_BIN", "/usr/bin/true")
+	if err := Run("anything"); err != nil {
+		t.Errorf("Run on /usr/bin/true should succeed: %v", err)
+	}
+}
+
+func TestCaptureJSONEmpty(t *testing.T) {
+	t.Setenv("DCON_CONTAINER_BIN", "/usr/bin/true") // prints nothing
+	var v []int
+	if err := CaptureJSON(&v, "x"); err != nil {
+		t.Errorf("empty output should not error: %v", err)
+	}
+}
