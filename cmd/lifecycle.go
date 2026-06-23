@@ -30,14 +30,12 @@ func newStartCmd() *cobra.Command {
 					cargs = append(cargs, "--interactive")
 				}
 				cargs = append(cargs, id)
+				// The backend echoes the id on success, matching docker.
 				if err := runtime.Run(cargs...); err != nil {
 					if firstErr == nil {
 						firstErr = err
 					}
 					continue
-				}
-				if !attach {
-					fmt.Println(id)
 				}
 			}
 			return firstErr
@@ -66,13 +64,7 @@ func newStopCmd() *cobra.Command {
 				cargs = append(cargs, "--signal", s)
 			}
 			cargs = append(cargs, args...)
-			err := runtime.Run(cargs...)
-			if err == nil {
-				for _, id := range args {
-					fmt.Println(id)
-				}
-			}
-			return err
+			return runtime.Run(cargs...) // backend echoes stopped ids
 		},
 	}
 	cmd.Flags().BoolP("all", "a", false, "Stop all running containers")
@@ -96,15 +88,15 @@ func newRestartCmd() *cobra.Command {
 			for _, id := range args {
 				stopArgs := append([]string{"stop"}, tflag...)
 				stopArgs = append(stopArgs, id)
-				// Best-effort stop (ignore "not running"), then start.
-				_ = runtime.Run(stopArgs...)
+				// Best-effort stop (suppress its id echo), then start (which
+				// echoes the id once, matching docker restart).
+				_, _ = runtime.CaptureSilent(stopArgs...)
 				if err := runtime.Run("start", id); err != nil {
 					if firstErr == nil {
 						firstErr = err
 					}
 					continue
 				}
-				fmt.Println(id)
 			}
 			return firstErr
 		},
@@ -128,13 +120,7 @@ func newKillCmd() *cobra.Command {
 				cargs = append(cargs, "--signal", s)
 			}
 			cargs = append(cargs, args...)
-			err := runtime.Run(cargs...)
-			if err == nil {
-				for _, id := range args {
-					fmt.Println(id)
-				}
-			}
-			return err
+			return runtime.Run(cargs...) // backend echoes killed ids
 		},
 	}
 	cmd.Flags().BoolP("all", "a", false, "Kill all running containers")
@@ -159,13 +145,7 @@ func newRmCmd() *cobra.Command {
 				fmt.Fprintln(os.Stderr, "dcon: warning: -v/--volumes has no backend equivalent and was ignored")
 			}
 			cargs = append(cargs, args...)
-			err := runtime.Run(cargs...)
-			if err == nil {
-				for _, id := range args {
-					fmt.Println(id)
-				}
-			}
-			return err
+			return runtime.Run(cargs...) // backend echoes removed ids
 		},
 	}
 	cmd.Flags().BoolP("force", "f", false, "Force the removal of a running container")

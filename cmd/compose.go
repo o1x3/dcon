@@ -673,10 +673,12 @@ func composeExec() *cobra.Command {
 				return err
 			}
 			cargs := []string{"exec"}
-			if v, _ := cmd.Flags().GetBool("interactive"); v {
+			if v, _ := cmd.Flags().GetBool("interactive"); v && isTerminal(os.Stdin) {
 				cargs = append(cargs, "--interactive")
 			}
-			if v, _ := cmd.Flags().GetBool("tty"); v {
+			// Only allocate a PTY when one actually exists (docker behaviour),
+			// so `compose exec svc cmd | grep ...` works.
+			if v, _ := cmd.Flags().GetBool("tty"); v && haveTTY() {
 				cargs = append(cargs, "--tty")
 			}
 			if u, _ := cmd.Flags().GetString("user"); u != "" {
