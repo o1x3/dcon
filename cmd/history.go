@@ -91,7 +91,8 @@ func newHistoryCmd() *cobra.Command {
 	cmd.Flags().Bool("no-trunc", false, "Don't truncate output")
 	cmd.Flags().BoolP("quiet", "q", false, "Only show image IDs")
 	cmd.Flags().String("format", "", "Format output using a Go template")
-	cmd.Flags().BoolP("human", "H", true, "Print sizes and dates in human readable format")
+	// long-only: -H is taken by the root --host persistent flag
+	cmd.Flags().Bool("human", true, "Print sizes and dates in human readable format")
 	_ = cmd.Flags().MarkHidden("human")
 	return cmd
 }

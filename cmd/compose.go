@@ -84,9 +84,12 @@ func newComposeCmd() *cobra.Command {
 		Short:   "Define and run multi-container applications with a compose file",
 		Aliases: []string{},
 	}
+	// --file/--project-name are long-only here so they don't clobber the
+	// conventional subcommand shorthands (logs -f, rm -f, run -p), which cobra
+	// would otherwise refuse to merge. Same rationale as the root flags.
 	pf := group.PersistentFlags()
-	pf.StringArrayP("file", "f", nil, "Compose configuration files")
-	pf.StringP("project-name", "p", "", "Project name")
+	pf.StringArray("file", nil, "Compose configuration files")
+	pf.String("project-name", "", "Project name")
 	pf.String("project-directory", "", "Alternate working directory (accepted; default is compose file dir)")
 	pf.StringArray("profile", nil, "Specify a profile to enable")
 
