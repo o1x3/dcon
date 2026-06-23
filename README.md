@@ -1,215 +1,246 @@
-# dcon — a Docker CLI for Apple `container`
+<div align="center">
 
-`dcon` is a **drop-in Docker CLI replacement for macOS**. It speaks the Docker
-command surface you already know (`run`, `ps`, `images`, `build`, `compose`, …)
-and translates every invocation to **Apple's [`container`](https://github.com/apple/container)**
-runtime, which boots each Linux container inside a lightweight virtual machine.
+# dcon
 
+**A drop-in Docker CLI for macOS, powered by Apple's [`container`](https://github.com/apple/container) runtime.**
+
+Speak `docker`. Run on Apple's per-container virtual machines. No daemon of its own, no desktop app — one 7.5 MB static binary.
+
+[![CI](https://github.com/o1x3/dcon/actions/workflows/ci.yml/badge.svg)](https://github.com/o1x3/dcon/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/o1x3/dcon?sort=semver&color=blue)](https://github.com/o1x3/dcon/releases)
+<!--COVERAGE-->![coverage](https://img.shields.io/badge/coverage-39.7%25-yellow)<!--/COVERAGE-->
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+![macOS](https://img.shields.io/badge/macOS-Apple%20silicon-black?logo=apple)
+![Go](https://img.shields.io/badge/go-1.26-00ADD8?logo=go&logoColor=white)
+
+</div>
+
+---
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/o1x3/dcon/main/install.sh | bash
 ```
-┌────────────┐   docker-style args    ┌──────────┐   container args   ┌─────────────────┐
-│ you / CI   │ ─────────────────────► │   dcon   │ ─────────────────► │ Apple container │ ─► Linux VM
-│ docker ... │   (run, ps, compose)   │ (this)   │  (run, ls, build)  │   (apiserver)   │
-└────────────┘                        └──────────┘                    └─────────────────┘
+
+```sh
+dcon system start                              # start the backend (once)
+dcon system kernel set --recommended           # install a guest kernel (once)
+dcon run --rm alpine echo "hello from dcon"     # …and you're running containers
 ```
 
-There is **no daemon of its own and no desktop app** — `dcon` is a single static
-Go binary that shells out to the `container` engine already installed on your
-Mac. It also implements a **Compose engine** so `dcon compose up` works against
-the same backend.
+If your fingers and scripts already type `docker`, alias it and never look back:
 
-## Why
+```sh
+alias docker=dcon        # or: curl … | DCON_LINK_DOCKER=1 bash
+```
 
-Apple's `container` is great but its CLI is its own dialect (`container ls`,
-`container image list`, different flags). If your muscle memory, scripts, CI,
-Makefiles, and tools all speak `docker`, `dcon` lets them keep working unchanged
-on Apple's runtime.
+---
 
-## Requirements
+## Why dcon
 
-- macOS on Apple silicon
-- Apple `container` installed (`/usr/local/bin/container`) and its services
-  running: `container system start` (one time). `dcon` will surface the same
-  hint if they are not.
-- A guest kernel installed for actually booting containers
-  (`dcon system kernel set --recommended`, or it is offered during
-  `container system start`). Read-only commands (`ps`, `images`, …) work without
-  it.
+Apple's `container` runs real Linux containers in lightweight per-container VMs on
+Apple silicon — fast, isolated, no always-on daemon. But its CLI is its own
+dialect (`container ls`, `container image list`, different flags). Every Docker
+muscle-memory command, script, CI pipeline, and Makefile speaks `docker`.
+
+**dcon is the missing translation layer.** It implements the Docker command
+surface — `run`, `ps`, `images`, `build`, `compose`, … — and maps each call to
+`container`, re-rendering output in the familiar Docker format.
+
+```mermaid
+flowchart LR
+    A["you / CI / Makefile<br/>docker run · compose up · build"] -->|docker-style args| B["dcon<br/>(this, 7.5 MB static binary)"]
+    B -->|container args| C["Apple container<br/>apiserver + plugins"]
+    C -->|Virtualization.framework| D["per-container<br/>Linux microVM"]
+```
+
+## Benchmarks
+
+Measured on this host — Apple silicon (Mac16,12), macOS 26 — comparing dcon
+(Apple `container`) against the docker engine installed here (**OrbStack**, one of
+the leanest docker backends; vs Docker Desktop the memory gap is *larger*).
+Reproduce with `make bench`.
+
+| metric | dcon (Apple container) | docker (OrbStack) |
+|---|---|---|
+| **idle engine memory** | **92 MB** | 1094 MB |
+| **CLI** | **7.5 MB static binary** | app bundle (100s of MB) |
+| **isolation** | **per-container microVM** | shared Linux VM |
+| **background footprint** | launchd helper, on-demand | persistent VM |
+| container start (`run --rm alpine echo`) | 741 ms | 207 ms |
+| cold `pull alpine` | ~20 s¹ | ~3 s |
+
+¹ network/registry-bound on this run; dcon defaults to 3 concurrent layer downloads.
+
+### Idle memory — ~12× lighter
+
+When no containers are running, Apple `container`'s services idle at ~90 MB and
+microVMs exist only while a container is up. The docker engine keeps a full Linux
+VM resident the whole time.
+
+```mermaid
+xychart-beta
+    title "Idle engine memory — MB, lower is better"
+    x-axis ["dcon (Apple container)", "docker (OrbStack)", "Docker Desktop (typical)"]
+    y-axis "resident MB" 0 --> 2200
+    bar [92, 1094, 2000]
+```
+
+### The honest tradeoff
+
+dcon boots a **fresh microVM per container** — stronger isolation, but a higher
+cold start than a shared-VM engine. If you want maximum per-container isolation
+and a near-zero idle footprint, dcon wins. If you want the absolute fastest
+container churn, a shared-VM engine is faster today.
+
+```mermaid
+xychart-beta
+    title "Container start — ms, lower is faster"
+    x-axis ["dcon (per-container VM)", "docker (shared VM)"]
+    y-axis "milliseconds" 0 --> 900
+    bar [741, 207]
+```
 
 ## Install
 
-```sh
-make install                 # builds and installs /usr/local/bin/dcon
-make link-docker             # optional: symlink `docker` -> `dcon` (true drop-in)
-```
-
-or just build locally:
+**One-liner (recommended):**
 
 ```sh
-go build -o dcon .
+curl -fsSL https://raw.githubusercontent.com/o1x3/dcon/main/install.sh | bash
 ```
 
-### Make it a true drop-in
+Knobs: `DCON_VERSION=v1.2.3`, `DCON_PREFIX=/usr/local`, `DCON_LINK_DOCKER=1`
+(also symlink `docker`), `DCON_FROM_SOURCE=1` (build with Go).
 
-Any of these work:
+**From source:**
 
 ```sh
-make link-docker             # /usr/local/bin/docker -> dcon
-# or
-alias docker=dcon            # add to your ~/.zshrc
+git clone https://github.com/o1x3/dcon.git && cd dcon
+make install            # builds + installs /usr/local/bin/dcon
+make link-docker        # optional: symlink docker -> dcon
 ```
 
-After that, `docker run …`, `docker compose up`, `docker build …` all run on
-Apple's engine.
-
-## How translation works
-
-`dcon` parses the Docker flag set with the same libraries the real Docker CLI
-uses (cobra + pflag), then maps each flag to its `container` equivalent. Where
-output differs, `dcon` asks `container` for `--format json` and re-renders the
-familiar Docker tables (`CONTAINER ID  IMAGE  COMMAND  CREATED  STATUS …`).
-
-Set `DCON_DEBUG=1` (or pass `-D`) to echo every underlying `container` command:
+**Homebrew-style manual:**
 
 ```sh
-$ DCON_DEBUG=1 dcon run -it --rm -p 8080:80 --name web nginx
-+ container [run --interactive --tty --rm --name web --publish 8080:80 nginx]
+go build -o dcon . && sudo mv dcon /usr/local/bin/
 ```
 
-Point `dcon` at a different backend binary with `DCON_CONTAINER_BIN`.
+## Setup
+
+dcon needs Apple's `container` runtime present (it is the engine):
+
+1. **Install Apple `container`** from <https://github.com/apple/container/releases>
+   (or `brew install --cask container`).
+2. **Start the backend** (one time): `dcon system start`
+3. **Install a guest kernel** (one time): `dcon system kernel set --recommended`
+
+Read-only commands (`ps`, `images`, `volume ls`, …) work without a kernel;
+booting containers needs it.
 
 ## Command parity
 
-Everything below is a real `dcon` command. ✅ = full Docker behaviour,
-≈ = best-effort/approximated, 🍏 = Apple-native extra also exposed,
-⛔ = genuinely unsupported by the backend (clean error).
+Every entry below is a real dcon command. ✅ full · ≈ best-effort · 🍏 Apple-native
+extra · ⛔ genuinely unsupported by the backend (returns a clear message).
 
-### Containers
+<details open>
+<summary><b>Containers</b></summary>
 
-| Docker command | Backend mapping | Status |
-|---|---|---|
-| `dcon run` | `container run` | ✅ (full flag translation; `--privileged`≈`--cap-add ALL`) |
-| `dcon create` | `container create` | ✅ |
-| `dcon ps [-a -q --format --filter -n -l]` | `container ls --format json` → Docker table | ✅ |
-| `dcon exec [-it -e -u -w]` | `container exec` | ✅ |
-| `dcon start / stop / restart / kill` | `container start/stop/kill` (restart = stop+start) | ✅ |
-| `dcon rm [-f]` | `container delete` | ✅ |
-| `dcon logs [-f --tail]` | `container logs` | ✅ |
-| `dcon inspect [--format --type]` | `container inspect` / `container image inspect` (auto) | ✅ |
-| `dcon cp` | `container copy` | ✅ |
-| `dcon export [-o]` | `container export` | ✅ |
-| `dcon stats [--no-stream --format]` | `container stats` → Docker table (CPU% from deltas) | ✅ |
-| `dcon top` | `container exec … ps -ef` | ≈ |
-| `dcon port` | derived from `inspect` | ✅ |
-| `dcon attach` | `container logs -f` | ≈ (stdout/stderr only; no stdin) |
-| `dcon wait` | polls `inspect` | ≈ (exit code reported as 0) |
-| `dcon pause / unpause` | — | ⛔ |
-| `dcon rename` | — | ⛔ (id is immutable) |
-| `dcon commit / diff / update` | — | ⛔ |
-| `dcon container prune` | `container prune` | ✅ |
+`run` `create` `ps` `exec` `start` `stop` `restart` `kill` `rm` `logs` `inspect`
+`cp` `export` `stats` `top` `port` `attach` `wait` `container prune` — ✅, with
+full Docker→container flag translation and Docker-style `ps`/`stats` tables.
+`pause`/`unpause`, `rename`, `commit`, `diff`, `update` — ⛔ (backend can't).
+</details>
 
-### Images & registry
+<details>
+<summary><b>Images &amp; registry</b></summary>
 
-| Docker command | Backend mapping | Status |
-|---|---|---|
-| `dcon images [-q --format --digests]` | `container image list --format json` → Docker table | ✅ |
-| `dcon pull [--platform -q]` | `container image pull` | ✅ |
-| `dcon push [--platform]` | `container image push` | ✅ |
-| `dcon rmi [-f]` | `container image delete` | ✅ |
-| `dcon tag` | `container image tag` | ✅ |
-| `dcon build [-t -f --build-arg --target --platform -o …]` | `container build` | ✅ |
-| `dcon save / load` | `container image save / load` | ✅ |
-| `dcon image prune [-a]` | `container image prune` | ✅ |
-| `dcon history` | derived from OCI config in `image inspect` | ≈ (per-layer size N/A) |
-| `dcon login / logout` | `container registry login / logout` | ✅ (`-p` fed via stdin) |
-| `dcon search` | — | ⛔ |
+`images` `pull` `push` `rmi` `tag` `build` `save` `load` `image prune`
+`login` `logout` — ✅. `history` — ≈ (from OCI config). `search` — ⛔.
+Docker `--mount`/`--output`/`--cache-from` comma-bearing values handled
+correctly via non-splitting flags.
+</details>
 
-### Volumes / networks / system
+<details>
+<summary><b>Volumes · networks · system</b></summary>
 
-| Docker command | Backend mapping | Status |
-|---|---|---|
-| `dcon volume create/ls/rm/inspect/prune` | `container volume …` | ✅ (driver fixed to `local`; `--size` extra 🍏) |
-| `dcon network create/ls/rm/inspect/prune` | `container network …` | ✅ (`nat`→`bridge`, `--internal`) |
-| `dcon network connect/disconnect` | — | ⛔ (attach at `run --network`) |
-| `dcon version` / `dcon info` | synthesized from `container system version/status` | ✅ |
-| `dcon system df` | `container system df` (same columns) | ✅ |
-| `dcon system prune [-a --volumes]` | container + image + network (+ volume) prune | ✅ |
-| `dcon events` | — | ⛔ |
+`volume create/ls/rm/inspect/prune`, `network create/ls/rm/inspect/prune` — ✅.
+`version` `info` `system df` `system prune` — ✅ (synthesized Docker output).
+`network connect/disconnect`, `events` — ⛔.
+</details>
 
-### Compose (`dcon compose …`)
+<details>
+<summary><b>Compose — <code>dcon compose …</code></b></summary>
 
-A built-in Compose engine parses `compose.yaml` / `docker-compose.yml` and maps
-services onto `container`:
+A built-in engine parses `compose.yaml` / `docker-compose.yml` and maps services
+onto `container`:
 
-| Command | Behaviour |
-|---|---|
-| `up [-d --build --no-start --force-recreate]` | creates project network + volumes, builds, starts services in `depends_on` order; foreground mode streams aggregated, service-prefixed logs and stops on Ctrl-C |
-| `down [-v]` | stops & removes project containers + network (+ volumes) |
-| `ps [-a -q --services --format]` | lists project containers (Compose `NAME IMAGE COMMAND SERVICE …` table) |
-| `logs [-f] [svc…]` | aggregated, service-prefixed logs |
-| `build / pull [svc…]` | build/pull service images |
-| `start / stop / restart / kill / rm [svc…]` | lifecycle on project containers |
-| `run [--rm -d] svc [cmd]` | one-off container from a service definition |
-| `exec [-it -u -w] svc cmd` | exec into a running service container |
-| `create` | `up --no-start` |
-| `config [--services --volumes]` | parse/validate and render the resolved project |
-| `ls` | list Compose projects across the engine |
-| `top / images / version` | supported |
+`up` (`-d`, `--build`, `--no-start`, `--force-recreate`) · `down` (`-v`) · `ps` ·
+`logs` (`-f`, aggregated & service-prefixed) · `build` · `pull` ·
+`start`/`stop`/`restart`/`kill`/`rm` · `run` · `exec` · `create` · `config` ·
+`ls` · `top` · `images` · `version`.
 
-Supported service keys include: `image`, `build` (context/dockerfile/args/target),
-`command`, `entrypoint`, `environment`, `env_file`, `ports`, `volumes` (with
-relative-path resolution), `networks`, `depends_on`, `labels`, `working_dir`,
-`user`, `platform`, `cpus`, `mem_limit`, `privileged`, `cap_add`/`cap_drop`,
-`dns`, `tty`, `init`, `shm_size`, `tmpfs`, `read_only`, `container_name`.
-`${VAR}` / `${VAR:-default}` interpolation is applied from the environment.
+Honors `image`, `build` (context/dockerfile/args/target), `command`/`entrypoint`,
+`environment`, `env_file`, `ports`, `volumes` (relative-path resolution),
+`networks`, `depends_on` (ordering), `labels`, `working_dir`, `user`, `platform`,
+`cpus`, `mem_limit`, `privileged`, `cap_add/drop`, `dns`, `tty`, `init`,
+`shm_size`, `tmpfs`, `read_only`, `container_name`, plus `${VAR:-default}`
+interpolation. Standard `com.docker.compose.*` labels make `dcon ps` /
+`dcon compose ls` project-aware.
+</details>
 
-Containers are labelled with the standard `com.docker.compose.*` keys, so
-`dcon ps`, `dcon compose ps`, and `dcon compose ls` all recognise project
-membership.
+<details>
+<summary><b>Apple-native extras (🍏 beyond Docker)</b></summary>
 
-### Apple-native extras (🍏 — beyond Docker)
+`dcon machine …`, `dcon builder start/status/stop/rm`,
+`dcon system dns/kernel/property/logs/start/stop/status`, and run/build extras
+`--rosetta` `--ssh` `--virtualization` `--os` `--arch` `--kernel` `--init-image`
+`--publish-socket` `--no-dns` `--dns-domain`.
+</details>
 
-These have no Docker analogue and are exposed as passthroughs so no backend
-feature is lost:
+### Compatibility shims
 
-- `dcon machine …` — manage the container machine(s)
-- `dcon builder start/status/stop/rm` — manage the build VM
-- `dcon system dns / kernel / property / logs / start / stop / status`
-- `dcon registry …`, `dcon image …` management groups (Apple-style)
-- run/build extras: `--rosetta`, `--ssh`, `--virtualization`, `--os`, `--arch`,
-  `--kernel`, `--init-image`, `--publish-socket`, `--no-dns`, `--dns-domain`
-
-## Limitations
-
-These are limits of the **backend**, not of `dcon` — they are the only things it
-won't do, and each returns a clear message rather than failing silently:
-
-- `pause`/`unpause`, `rename`, `commit`, `diff`, `update`, `search`, `events`
-- `network connect`/`disconnect` after creation (attach networks at `run` time)
-- Docker run flags with no engine equivalent are **accepted and ignored with a
-  warning** so scripts/compose don't break: `--restart`, `--hostname`,
-  `-P/--publish-all`, `--add-host`, `--device`, `--gpus`, `--sysctl`,
-  `--memory-swap`, `--cpu-shares`, … 
-- `--privileged` is approximated as `--cap-add ALL` (no device passthrough)
-- `wait` reports exit code `0` (the engine does not surface process exit codes)
+Docker flags the backend can't honor are **accepted and ignored with a warning**
+(not errors), so scripts and compose files keep working: `--restart`,
+`--hostname`, `-P/--publish-all`, `--add-host`, `--device`, `--gpus`, `--sysctl`,
+`--memory-swap`, `--cpu-shares`. `--privileged` is approximated as `--cap-add ALL`.
 
 ## Development
 
 ```sh
-make build      # build ./dcon
-make test       # go test ./...
-make vet fmt    # static checks / formatting
+make build        # build ./dcon (version injected via ldflags)
+make test         # go test ./...
+make cover        # coverage summary
+make bench        # dcon vs docker benchmark (scripts/bench-results.md)
+make vet fmt
 ```
 
 Layout:
 
 ```
-main.go                     entrypoint
-cmd/                        one file per command group (cobra)
-internal/runtime/           locate + drive the `container` binary
-internal/dockerfmt/         JSON models + Docker-style table/template rendering
-internal/compose/           compose file parser + service→container translation
+main.go                 entrypoint
+cmd/                    one file per command group (cobra)
+internal/runtime/       locate + drive the `container` binary
+internal/dockerfmt/     JSON models + Docker-style table/template rendering
+internal/compose/       compose parser + service→container translation
+scripts/                install / bump-version / coverage / bench
+.github/workflows/      CI (test+coverage) and tagged Release pipeline
 ```
+
+## Releases & versioning
+
+- CI runs vet + race tests + coverage + cross-build on every push/PR, and
+  auto-refreshes the coverage badge above on `main`.
+- Cutting a release is one command:
+
+  ```sh
+  scripts/bump-version.sh patch     # or minor | major | vX.Y.Z
+  ```
+
+  It tags and pushes; the **Release** workflow then builds `darwin/arm64` +
+  `darwin/amd64` binaries, generates checksums and notes, and publishes a GitHub
+  Release that `install.sh` consumes.
 
 ## License
 
-Provided as-is. Apple `container` is © Apple, under its own license.
+[MIT](LICENSE). dcon is an independent project, not affiliated with Apple or
+Docker.
