@@ -66,38 +66,40 @@ func newInspectCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if format == "" {
-				fmt.Println(strings.TrimRight(raw, "\n"))
-				return nil
-			}
-			// Apply a Go template over each element, like docker inspect --format.
-			// NOTE: field names follow the backend (container) JSON schema.
-			var items []json.RawMessage
-			if err := json.Unmarshal([]byte(raw), &items); err != nil {
-				return err
-			}
-			if format == "json" {
-				fmt.Println(raw)
-				return nil
-			}
-			tmpl, err := template.New("inspect").Parse(format + "\n")
-			if err != nil {
-				return err
-			}
-			for _, it := range items {
-				var v any
-				_ = json.Unmarshal(it, &v)
-				if err := tmpl.Execute(os.Stdout, v); err != nil {
-					return err
-				}
-			}
-			return nil
+			return renderInspect(raw, format)
 		},
 	}
 	cmd.Flags().StringP("format", "f", "", "Format output using a Go template (backend JSON schema)")
 	cmd.Flags().String("type", "", "Return JSON for specified type: container|image")
 	cmd.Flags().BoolP("size", "s", false, "Display total file sizes (no-op)")
 	return cmd
+}
+
+// renderInspect prints inspect JSON honouring docker's --format conventions.
+// With no format it passes the pretty JSON through; "json" prints it raw;
+// otherwise it executes a Go template per element. Template field names follow
+// the backend (container) JSON schema, not docker's PascalCase inspect schema.
+func renderInspect(raw, format string) error {
+	if format == "" || format == "json" {
+		fmt.Println(strings.TrimRight(raw, "\n"))
+		return nil
+	}
+	var items []json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &items); err != nil {
+		return err
+	}
+	tmpl, err := template.New("inspect").Parse(format + "\n")
+	if err != nil {
+		return err
+	}
+	for _, it := range items {
+		var v any
+		_ = json.Unmarshal(it, &v)
+		if err := tmpl.Execute(os.Stdout, v); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // inspectRaw returns the pretty JSON array for the given ids, auto-detecting
@@ -118,7 +120,7 @@ func inspectRaw(typ string, ids []string) (string, error) {
 		if err2 == nil {
 			return out2, nil
 		}
-		return "", err
+		return "", fmt.Errorf("no such object %v: %v; %v", ids, err, err2)
 	}
 }
 

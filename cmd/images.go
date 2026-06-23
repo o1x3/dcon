@@ -331,19 +331,14 @@ func newImageInspectCmd() *cobra.Command {
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			format, _ := cmd.Flags().GetString("format")
-			cmd.Flags().Set("type", "image")
-			_ = format
-			raw, err := runtime.CaptureSilent(append([]string{"image", "inspect"}, args...)...)
+			raw, err := inspectRaw("image", args)
 			if err != nil {
 				return err
 			}
-			fmt.Println(strings.TrimRight(raw, "\n"))
-			return nil
+			return renderInspect(raw, format)
 		},
 	}
-	cmd.Flags().StringP("format", "f", "", "Format output using a Go template")
-	cmd.Flags().String("type", "", "")
-	_ = cmd.Flags().MarkHidden("type")
+	cmd.Flags().StringP("format", "f", "", "Format output using a Go template or 'json'")
 	return cmd
 }
 

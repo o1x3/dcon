@@ -44,6 +44,24 @@ type psView struct {
 	State      string
 }
 
+// matchStatusFilter maps Docker's status-filter vocabulary
+// (created|running|exited|dead|paused|…) onto the backend's state names
+// (unknown|running|stopped|stopping).
+func matchStatusFilter(state, want string) bool {
+	switch strings.ToLower(want) {
+	case "running":
+		return state == "running"
+	case "exited", "dead":
+		return state == "stopped"
+	case "created":
+		return state == "" || state == "unknown"
+	case "stopping", "removing", "restarting":
+		return state == "stopping"
+	default:
+		return strings.EqualFold(state, want)
+	}
+}
+
 func portsString(c dockerfmt.Container) string {
 	var parts []string
 	for _, p := range c.Configuration.Ports {
@@ -51,11 +69,23 @@ func portsString(c dockerfmt.Container) string {
 		if host == "" {
 			host = "0.0.0.0"
 		}
+		if strings.Contains(host, ":") { // bracket IPv6 host addresses
+			host = "[" + host + "]"
+		}
 		proto := p.Proto
 		if proto == "" {
 			proto = "tcp"
 		}
-		parts = append(parts, fmt.Sprintf("%s:%d->%d/%s", host, p.HostPort, p.ContainerPort, proto))
+		cnt := p.Count
+		if cnt < 1 {
+			cnt = 1
+		}
+		if cnt > 1 {
+			parts = append(parts, fmt.Sprintf("%s:%d-%d->%d-%d/%s",
+				host, p.HostPort, p.HostPort+cnt-1, p.ContainerPort, p.ContainerPort+cnt-1, proto))
+		} else {
+			parts = append(parts, fmt.Sprintf("%s:%d->%d/%s", host, p.HostPort, p.ContainerPort, proto))
+		}
 	}
 	return strings.Join(parts, ", ")
 }
@@ -154,7 +184,7 @@ func applyFilters(list []dockerfmt.Container, filters []string) []dockerfmt.Cont
 			key, val := kv[0], kv[1]
 			switch key {
 			case "status":
-				if !strings.EqualFold(c.Status.State, val) {
+				if !matchStatusFilter(c.Status.State, val) {
 					keep = false
 				}
 			case "name":
