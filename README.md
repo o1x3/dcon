@@ -8,7 +8,7 @@ Speak `docker`. Run on Apple's per-container virtual machines. No daemon of its 
 
 [![CI](https://github.com/o1x3/dcon/actions/workflows/ci.yml/badge.svg)](https://github.com/o1x3/dcon/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/o1x3/dcon?sort=semver&color=blue)](https://github.com/o1x3/dcon/releases)
-<!--COVERAGE-->![coverage](https://img.shields.io/badge/coverage-39.9%25-yellow)<!--/COVERAGE-->
+<!--COVERAGE-->![coverage](https://img.shields.io/badge/coverage-39.0%25-yellow)<!--/COVERAGE-->
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 ![macOS](https://img.shields.io/badge/macOS-Apple%20silicon-black?logo=apple)
 ![Go](https://img.shields.io/badge/go-1.26-00ADD8?logo=go&logoColor=white)

@@ -131,6 +131,9 @@ func composeUp() *cobra.Command {
 					continue
 				}
 				svc := p.Services[name]
+				if svc.Hostname != "" {
+					fmt.Fprintf(os.Stderr, "dcon: warning: service %q hostname is not supported by the backend and was ignored\n", name)
+				}
 
 				if svc.Build.IsSet() && !noBuild && (doBuild || svc.Image == "") {
 					fmt.Printf("Building %s...\n", name)
@@ -395,7 +398,11 @@ func composeLogs() *cobra.Command {
 			}
 			for _, c := range targets {
 				out, _ := runtime.CaptureSilent("logs", c.ID)
-				for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+				trimmed := strings.TrimRight(out, "\n")
+				if trimmed == "" {
+					continue
+				}
+				for _, line := range strings.Split(trimmed, "\n") {
 					fmt.Printf("%s | %s\n", serviceOf(c), line)
 				}
 			}
@@ -785,7 +792,10 @@ func composeTop() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			containers, _ := projectContainers(p.Name)
+			containers, err := projectContainers(p.Name)
+			if err != nil {
+				return err
+			}
 			selected := serviceSet(args)
 			for _, c := range containers {
 				if c.Status.State != "running" {
@@ -811,7 +821,10 @@ func composeImages() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			containers, _ := projectContainers(p.Name)
+			containers, err := projectContainers(p.Name)
+			if err != nil {
+				return err
+			}
 			w := dockerfmt.NewTabWriter()
 			fmt.Fprintln(w, "CONTAINER\tREPOSITORY\tTAG\tSIZE")
 			for _, c := range containers {
@@ -866,7 +879,10 @@ func composeScale() *cobra.Command {
 					}
 				}
 				// Remove surplus replicas (index > n).
-				containers, _ := projectContainers(p.Name)
+				containers, err := projectContainers(p.Name)
+				if err != nil {
+					return err
+				}
 				for _, c := range containers {
 					if serviceOf(c) != svcName {
 						continue

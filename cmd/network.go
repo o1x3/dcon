@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"dcon/internal/dockerfmt"
 	"dcon/internal/runtime"
@@ -27,6 +28,41 @@ func driverForMode(mode string) string {
 	default:
 		return mode
 	}
+}
+
+// matchNetworkFilters implements docker network ls --filter (name/id/driver/scope/label).
+func matchNetworkFilters(n dockerfmt.Network, filters []string) bool {
+	for _, fl := range filters {
+		kv := strings.SplitN(fl, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		switch kv[0] {
+		case "name":
+			if !strings.Contains(n.Configuration.Name, kv[1]) {
+				return false
+			}
+		case "id":
+			if !strings.HasPrefix(n.ID, kv[1]) {
+				return false
+			}
+		case "driver":
+			if !strings.EqualFold(driverForMode(n.Configuration.Mode), kv[1]) {
+				return false
+			}
+		case "scope":
+			if !strings.EqualFold("local", kv[1]) {
+				return false
+			}
+		case "label":
+			lkv := strings.SplitN(kv[1], "=", 2)
+			got, ok := n.Configuration.Labels[lkv[0]]
+			if !ok || (len(lkv) == 2 && got != lkv[1]) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func newNetworkGroupCmd() *cobra.Command {
@@ -93,6 +129,7 @@ func newNetworkGroupCmd() *cobra.Command {
 			quiet, _ := cmd.Flags().GetBool("quiet")
 			noTrunc, _ := cmd.Flags().GetBool("no-trunc")
 			format, _ := cmd.Flags().GetString("format")
+			filters, _ := cmd.Flags().GetStringSlice("filter")
 			var list []dockerfmt.Network
 			if err := runtime.CaptureJSON(&list, "network", "list", "--format", "json"); err != nil {
 				return err
@@ -106,6 +143,9 @@ func newNetworkGroupCmd() *cobra.Command {
 				subnet := n.Status.IPv4Subnet
 				if subnet == "" {
 					subnet = n.Configuration.IPv4Subnet
+				}
+				if !matchNetworkFilters(n, filters) {
+					continue
 				}
 				views = append(views, networkView{
 					ID:     id,

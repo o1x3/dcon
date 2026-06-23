@@ -130,12 +130,20 @@ func newCpCmd() *cobra.Command {
 		Short: "Copy files/folders between a container and the local filesystem",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			src, dst := args[0], args[1]
+			if src == "-" || dst == "-" {
+				return fmt.Errorf("streaming copy (-) is not supported by the backend; copy to/from a file path instead")
+			}
+			isCtr := func(p string) bool { return strings.IndexByte(p, ':') > 0 }
+			if !isCtr(src) && !isCtr(dst) {
+				return fmt.Errorf("copying between two local paths is not supported; one of SRC or DEST must be CONTAINER:PATH")
+			}
 			for _, flag := range []string{"archive", "follow-link"} {
 				if cmd.Flags().Changed(flag) {
 					fmt.Fprintf(os.Stderr, "dcon: warning: --%s is not supported by the backend and was ignored\n", flag)
 				}
 			}
-			return runtime.Run("copy", args[0], args[1])
+			return runtime.Run("copy", src, dst)
 		},
 	}
 	cmd.Flags().BoolP("archive", "a", false, "Archive mode (unsupported)")

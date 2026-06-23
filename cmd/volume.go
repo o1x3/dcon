@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strings"
 
 	"dcon/internal/dockerfmt"
 	"dcon/internal/runtime"
@@ -13,9 +14,37 @@ import (
 )
 
 func randomName() string {
-	b := make([]byte, 16)
+	// 32 bytes -> 64 hex chars, matching Docker's anonymous-volume id width.
+	b := make([]byte, 32)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// matchVolumeFilters implements docker volume ls --filter (name/driver/label).
+func matchVolumeFilters(v dockerfmt.Volume, driver string, filters []string) bool {
+	for _, fl := range filters {
+		kv := strings.SplitN(fl, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		switch kv[0] {
+		case "name":
+			if !strings.Contains(v.Configuration.Name, kv[1]) {
+				return false
+			}
+		case "driver":
+			if !strings.EqualFold(driver, kv[1]) {
+				return false
+			}
+		case "label":
+			lkv := strings.SplitN(kv[1], "=", 2)
+			got, ok := v.Configuration.Labels[lkv[0]]
+			if !ok || (len(lkv) == 2 && got != lkv[1]) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 type volumeView struct {
@@ -78,6 +107,7 @@ func newVolumeGroupCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			quiet, _ := cmd.Flags().GetBool("quiet")
 			format, _ := cmd.Flags().GetString("format")
+			filters, _ := cmd.Flags().GetStringSlice("filter")
 			var list []dockerfmt.Volume
 			if err := runtime.CaptureJSON(&list, "volume", "list", "--format", "json"); err != nil {
 				return err
@@ -87,6 +117,9 @@ func newVolumeGroupCmd() *cobra.Command {
 				drv := v.Configuration.Driver
 				if drv == "" {
 					drv = "local"
+				}
+				if !matchVolumeFilters(v, drv, filters) {
+					continue
 				}
 				views = append(views, volumeView{
 					Name:       v.Configuration.Name,
