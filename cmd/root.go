@@ -11,9 +11,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Version is the dcon CLI version (the Docker-compatibility layer's own
-// version, distinct from the backend container engine version).
-const Version = "1.0.0"
+// Build metadata for the dcon CLI (the Docker-compatibility layer, distinct
+// from the backend container engine version). These are overridden at build
+// time via -ldflags, e.g.:
+//
+//	go build -ldflags "-X dcon/cmd.Version=1.2.3 -X dcon/cmd.Commit=$(git rev-parse --short HEAD) -X dcon/cmd.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+var (
+	Version = "1.0.0-dev"
+	Commit  = "none"
+	Date    = "unknown"
+)
 
 var rootCmd = &cobra.Command{
 	Use:   "dcon",

@@ -60,6 +60,12 @@ func newVersionCmd() *cobra.Command {
 			}
 			fmt.Printf("Client: dcon (Docker-compatible)\n")
 			fmt.Printf(" Version:    %s\n", info.Client.Version)
+			if Commit != "none" {
+				fmt.Printf(" Git commit: %s\n", Commit)
+			}
+			if Date != "unknown" {
+				fmt.Printf(" Built:      %s\n", Date)
+			}
 			fmt.Printf(" OS/Arch:    %s\n", info.Client.Platform)
 			fmt.Printf("\nServer: Apple container\n")
 			fmt.Printf(" Engine:\n")

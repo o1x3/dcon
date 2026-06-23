@@ -2,12 +2,21 @@ BINARY := dcon
 PREFIX ?= /usr/local
 BINDIR := $(PREFIX)/bin
 
-.PHONY: all build install uninstall clean test vet fmt link-docker unlink-docker
+# Version metadata injected at build time.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 1.0.0-dev)
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS := -s -w \
+	-X dcon/cmd.Version=$(VERSION) \
+	-X dcon/cmd.Commit=$(COMMIT) \
+	-X dcon/cmd.Date=$(DATE)
+
+.PHONY: all build install uninstall clean test test-race cover vet fmt lint link-docker unlink-docker bench
 
 all: build
 
 build:
-	go build -o $(BINARY) .
+	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) .
 
 install: build
 	install -d $(BINDIR)
@@ -32,8 +41,18 @@ clean:
 test:
 	go test ./...
 
+test-race:
+	go test -race ./...
+
+cover:
+	go test ./... -coverprofile=coverage.out
+	go tool cover -func=coverage.out | tail -1
+
 vet:
 	go vet ./...
 
 fmt:
 	gofmt -w .
+
+bench:
+	./scripts/bench.sh
