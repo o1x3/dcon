@@ -18,7 +18,7 @@
   <g transform="translate(217,8)">
     <rect width="185" height="134" rx="14" fill="#0d1117" stroke="#21262d"/>
     <rect x="0" y="0" width="185" height="4" rx="2" fill="url(#tB)"/>
-    <text x="20" y="64" fill="#58a6ff" font-size="38" font-weight="800">7.5<tspan font-size="18" fill="#7d8590"> MB</tspan></text>
+    <text x="20" y="64" fill="#58a6ff" font-size="38" font-weight="800">5.3<tspan font-size="18" fill="#7d8590"> MB</tspan></text>
     <text x="20" y="92" fill="#e6edf3" font-size="14" font-weight="600">single static CLI</text>
     <text x="20" y="113" fill="#7d8590" font-size="12">no app bundle, no daemon</text>
   </g>

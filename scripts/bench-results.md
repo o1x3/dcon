@@ -7,7 +7,7 @@ _docker engine on this host: OrbStack (29.4.0)_
 
 | metric | dcon (Apple container 1.0.0-dev) | docker (OrbStack) |
 |---|---|---|
-| CLI binary (single static file) | 7.7 MB | app bundle (100s of MB) |
+| CLI binary (single static file) | 5.3 MB | app bundle (100s of MB) |
 | `run --rm alpine:latest echo` — cold (fresh microVM) | 700 ms | 206 ms |
 | `run --rm alpine:latest echo` — **warm pool** (still per-container) | **92 ms** | 206 ms |
 | cold `pull alpine:latest` | 12712 ms | 3266 ms |

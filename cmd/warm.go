@@ -159,11 +159,11 @@ func maybeAutoPrime(args []string) {
 func newWarmCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "warm [OPTIONS] IMAGE",
-		Short: "Pre-boot single-use microVMs so `run` starts in ~70 ms instead of cold-booting",
+		Short: "Pre-boot single-use microVMs so `run` starts in ~90 ms instead of cold-booting",
 		Long: `Pre-boot one or more single-use microVMs for an image and keep them idle.
 
 A later 'dcon run --rm IMAGE COMMAND' that needs no bind mounts, ports, or
-resource limits is served by exec-ing into a pre-booted VM (~70 ms) instead of
+resource limits is served by exec-ing into a pre-booted VM (~90 ms) instead of
 cold-booting a fresh one (~700 ms). Each warm VM is handed out exactly once and
 then destroyed, so isolation is identical to a normal run — the boot cost is
 just paid here, ahead of time.
