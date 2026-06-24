@@ -92,6 +92,73 @@ func addRunFlags(cmd *cobra.Command) {
 	f.String("memory-swap", "", "Swap limit (unsupported by backend)")
 	f.String("cpu-shares", "", "CPU shares (unsupported by backend)")
 	f.String("detach-keys", "", "Override the key sequence for detaching (accepted; ignored)")
+
+	// --- Extended Docker flags the backend cannot honor. Accepted so existing
+	// scripts and compose files keep working; each warns once when actually
+	// used (see the unsupported map in buildContainerArgs). ---
+	// Healthcheck (backend has no healthcheck mechanism)
+	f.String("health-cmd", "", "Command to run to check health (unsupported by backend)")
+	f.String("health-interval", "", "Time between running the check (unsupported by backend)")
+	f.String("health-timeout", "", "Maximum time to allow one check to run (unsupported by backend)")
+	f.Int("health-retries", 0, "Consecutive failures needed to report unhealthy (unsupported by backend)")
+	f.String("health-start-period", "", "Start period for the container to initialize (unsupported by backend)")
+	f.String("health-start-interval", "", "Time between checks during the start period (unsupported by backend)")
+	f.Bool("no-healthcheck", false, "Disable any container-specified HEALTHCHECK (unsupported by backend)")
+	// Namespaces / cgroups
+	f.String("pid", "", "PID namespace to use (unsupported by backend)")
+	f.String("ipc", "", "IPC mode to use (unsupported by backend)")
+	f.String("uts", "", "UTS namespace to use (unsupported by backend)")
+	f.String("userns", "", "User namespace to use (unsupported by backend)")
+	f.String("cgroupns", "", "Cgroup namespace to use (unsupported by backend)")
+	f.String("cgroup-parent", "", "Optional parent cgroup for the container (unsupported by backend)")
+	f.String("isolation", "", "Container isolation technology (unsupported by backend)")
+	// Networking extras
+	f.String("ip", "", "IPv4 address (unsupported by backend)")
+	f.String("ip6", "", "IPv6 address (unsupported by backend)")
+	f.String("mac-address", "", "Container MAC address (unsupported by backend)")
+	f.StringSlice("link", nil, "Add link to another container (unsupported by backend)")
+	f.StringSlice("link-local-ip", nil, "Container IPv4/IPv6 link-local addresses (unsupported by backend)")
+	f.StringSlice("network-alias", nil, "Add network-scoped alias for the container (unsupported by backend)")
+	// Logging
+	f.String("log-driver", "", "Logging driver for the container (unsupported by backend)")
+	f.StringArray("log-opt", nil, "Log driver options (unsupported by backend)")
+	// Security / OCI metadata
+	f.StringArray("security-opt", nil, "Security options (unsupported by backend)")
+	f.StringArray("annotation", nil, "Add an OCI annotation to the container (unsupported by backend)")
+	f.Bool("disable-content-trust", true, "Skip image signing verification (no-op; backend has no content trust)")
+	// Resource limits the backend cannot honor
+	f.Int("pids-limit", 0, "Tune container pids limit, -1 for unlimited (unsupported by backend)")
+	f.String("cpuset-cpus", "", "CPUs in which to allow execution (unsupported by backend)")
+	f.String("cpuset-mems", "", "MEMs in which to allow execution (unsupported by backend)")
+	f.Int("cpu-period", 0, "Limit CPU CFS (Completely Fair Scheduler) period (unsupported by backend)")
+	f.Int("cpu-quota", 0, "Limit CPU CFS (Completely Fair Scheduler) quota (unsupported by backend)")
+	f.Int("cpu-rt-period", 0, "Limit CPU real-time period in microseconds (unsupported by backend)")
+	f.Int("cpu-rt-runtime", 0, "Limit CPU real-time runtime in microseconds (unsupported by backend)")
+	f.Int("cpu-count", 0, "CPU count (Windows only; unsupported by backend)")
+	f.Int("cpu-percent", 0, "CPU percent (Windows only; unsupported by backend)")
+	f.Uint16("blkio-weight", 0, "Block IO (relative weight), between 10 and 1000, or 0 to disable (unsupported by backend)")
+	f.StringArray("blkio-weight-device", nil, "Block IO weight (relative device weight) (unsupported by backend)")
+	f.StringArray("device-read-bps", nil, "Limit read rate (bytes per second) from a device (unsupported by backend)")
+	f.StringArray("device-write-bps", nil, "Limit write rate (bytes per second) to a device (unsupported by backend)")
+	f.StringArray("device-read-iops", nil, "Limit read rate (IO per second) from a device (unsupported by backend)")
+	f.StringArray("device-write-iops", nil, "Limit write rate (IO per second) to a device (unsupported by backend)")
+	f.StringArray("device-cgroup-rule", nil, "Add a rule to the cgroup allowed devices list (unsupported by backend)")
+	f.String("memory-reservation", "", "Memory soft limit (unsupported by backend)")
+	f.Int("memory-swappiness", -1, "Tune container memory swappiness, 0 to 100 (unsupported by backend)")
+	f.String("kernel-memory", "", "Kernel memory limit (unsupported by backend)")
+	f.Bool("oom-kill-disable", false, "Disable OOM Killer (unsupported by backend)")
+	f.Int("oom-score-adj", 0, "Tune host's OOM preferences, -1000 to 1000 (unsupported by backend)")
+	// Storage / volumes / misc
+	f.StringSlice("volumes-from", nil, "Mount volumes from the specified container(s) (unsupported by backend)")
+	f.String("volume-driver", "", "Optional volume driver for the container (unsupported by backend)")
+	f.StringArray("storage-opt", nil, "Storage driver options for the container (unsupported by backend)")
+	f.Int("stop-timeout", 0, "Timeout (in seconds) to stop a container (unsupported by backend)")
+	f.String("domainname", "", "Container NIS domain name (unsupported by backend)")
+	f.Bool("sig-proxy", true, "Proxy received signals to the process (no-op)")
+	// --attach/-a: Docker's -a is taken by dcon's native --arch shorthand, so
+	// --attach is registered long-only.
+	f.StringSlice("attach", nil, "Attach to STDIN, STDOUT or STDERR (unsupported by backend)")
+
 	_ = f.MarkHidden("net")
 	_ = f.MarkHidden("dns-opt")
 	_ = f.MarkHidden("detach-keys")
@@ -226,6 +293,37 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 		"stop-signal": "--stop-signal", "add-host": "--add-host", "device": "--device",
 		"group-add": "--group-add", "sysctl": "--sysctl", "gpus": "--gpus",
 		"memory-swap": "--memory-swap", "cpu-shares": "--cpu-shares",
+		// Healthcheck
+		"health-cmd": "--health-cmd", "health-interval": "--health-interval",
+		"health-timeout": "--health-timeout", "health-retries": "--health-retries",
+		"health-start-period": "--health-start-period", "health-start-interval": "--health-start-interval",
+		"no-healthcheck": "--no-healthcheck",
+		// Namespaces / cgroups
+		"pid": "--pid", "ipc": "--ipc", "uts": "--uts", "userns": "--userns",
+		"cgroupns": "--cgroupns", "cgroup-parent": "--cgroup-parent", "isolation": "--isolation",
+		// Networking extras
+		"ip": "--ip", "ip6": "--ip6", "mac-address": "--mac-address",
+		"link": "--link", "link-local-ip": "--link-local-ip", "network-alias": "--network-alias",
+		// Logging
+		"log-driver": "--log-driver", "log-opt": "--log-opt",
+		// Security / OCI metadata
+		"security-opt": "--security-opt", "annotation": "--annotation",
+		// Resource limits
+		"pids-limit": "--pids-limit", "cpuset-cpus": "--cpuset-cpus", "cpuset-mems": "--cpuset-mems",
+		"cpu-period": "--cpu-period", "cpu-quota": "--cpu-quota",
+		"cpu-rt-period": "--cpu-rt-period", "cpu-rt-runtime": "--cpu-rt-runtime",
+		"cpu-count": "--cpu-count", "cpu-percent": "--cpu-percent",
+		"blkio-weight": "--blkio-weight", "blkio-weight-device": "--blkio-weight-device",
+		"device-read-bps": "--device-read-bps", "device-write-bps": "--device-write-bps",
+		"device-read-iops": "--device-read-iops", "device-write-iops": "--device-write-iops",
+		"device-cgroup-rule": "--device-cgroup-rule",
+		"memory-reservation": "--memory-reservation", "memory-swappiness": "--memory-swappiness",
+		"kernel-memory": "--kernel-memory", "oom-kill-disable": "--oom-kill-disable",
+		"oom-score-adj": "--oom-score-adj",
+		// Storage / volumes / misc
+		"volumes-from": "--volumes-from", "volume-driver": "--volume-driver",
+		"storage-opt": "--storage-opt", "stop-timeout": "--stop-timeout",
+		"domainname": "--domainname", "attach": "--attach",
 	}
 	for name, label := range unsupported {
 		if f.Changed(name) {
