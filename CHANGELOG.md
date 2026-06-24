@@ -6,7 +6,21 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-06-25
+
+Warm-pool start latency, a setup doctor, and a sweeping Docker/Compose
+command-and-flag parity pass.
+
 ### Added
+- **Warm-VM pool** — pre-boots single-use microVMs so an eligible `--rm` run
+  `exec`s into a ready VM in **~90 ms** instead of a ~769 ms cold boot, while
+  still handing each run a fresh VM (isolation preserved). New `dcon warm
+  [-n N] IMAGE`, `dcon warm ls`, `dcon warm prune`; opt-in `DCON_WARM=auto`
+  self-priming after eligible runs and `DCON_WARM_TTL` idle reaping. Ineligible
+  runs transparently fall back to the cold path.
+- **`dcon doctor`** (also `dcon system doctor`) — setup diagnostic that probes
+  CLI/backend/kernel/builder/`docker` symlink/warm-pool health and exits
+  non-zero when something needs attention.
 - **Full `docker run`/`create` flag surface.** The complete Docker flag set is
   now accepted; flags the backend can't honor (`--security-opt`, `--pids-limit`,
   `--volumes-from`, `--health-*`, namespace flags, `--log-driver`/`--log-opt`,
@@ -29,20 +43,36 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `docker info`/`version --format` now honor Go templates and `json` output
   (`docker info -f '{{.ServerVersion}}'` works); inspect templates gained the
   `json`/`prettyjson`/`join`/`split` helper funcs.
+- **Pull concurrency** — `--max-concurrent-downloads` plus `DCON_PULL_CONCURRENCY`;
+  default raised to 8 concurrent layer downloads (backend default is 3).
+- **Parallel Compose startup** — `compose up` brings independent services up
+  concurrently within each dependency level (cap via `DCON_COMPOSE_PARALLEL`,
+  default 8); `depends_on` ordering is preserved across levels.
+- `compose logs --tail` is now wired to the backend; `--no-log-prefix` added.
 - Root TLS flags (`--tls`/`--tlsverify`/`--tlscacert`/`--tlscert`/`--tlskey`)
-  accepted for compatibility.
-- Hand-crafted SVG benchmark graphics and an authentic terminal demo GIF.
-- `SECONDARY.md` cookbook with 15 end-to-end scenarios.
+  accepted for compatibility; `system`/`network`/`volume prune --filter` accepted.
+- `install.sh` now auto-installs the Apple `container` prerequisite (signed
+  `.pkg`), elevates `sudo`, strips quarantine, starts the backend, optionally
+  installs the guest kernel, and runs `dcon doctor`; knobs `DCON_SKIP_PREREQS`,
+  `DCON_CONTAINER_VERSION`, `DCON_SKIP_SETUP`, `DCON_YES`.
 - Homebrew tap + `dcon completion` documentation.
-- Contributor docs, issue/PR templates, dependabot.
+- Hand-crafted SVG benchmark graphics and an authentic terminal demo GIF;
+  `SECONDARY.md` cookbook with 15 end-to-end scenarios; contributor docs,
+  issue/PR templates, dependabot.
+
+### Changed
+- `compose pull` now **fails by default** on a pull error (matching Docker
+  Compose); pass `--ignore-pull-failures` for the previous best-effort behavior.
 
 ### Fixed
 - Compose `build --no-cache`/`--pull` and `down --rmi` were registered but never
   applied; they now take effect.
 - `network create --subnet <ipv6-cidr>` (with `--ipv6`) now routes to the
   backend's `--subnet-v6`; `network`/`volume inspect` honor `-f/--format`.
-- Compose `pull` now fails by default on a pull error (use
-  `--ignore-pull-failures` to keep the previous best-effort behavior).
+- `compose logs --since`/`--until`/`--timestamps` now warn instead of silently
+  doing nothing.
+- Warm path applies the image's `ENTRYPOINT`/`CMD` so warmed runs match
+  `docker run` semantics.
 
 ## [1.0.0] — 2026-06-24
 
