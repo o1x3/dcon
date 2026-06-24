@@ -21,6 +21,68 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// composeValueFlags are the compose GLOBAL flags that consume a following
+// value token; used to find the subcommand boundary without mistaking a flag's
+// value for the subcommand.
+var composeValueFlags = map[string]bool{
+	"--file": true, "--project-name": true, "--project-directory": true,
+	"--profile": true, "--env-file": true, "--parallel": true,
+	"--progress": true, "--ansi": true,
+}
+
+// rewriteComposeGlobalShorthands rewrites the global `-f`/`-p` shorthands that
+// appear BEFORE the compose subcommand into their long forms (--file /
+// --project-name), so `dcon compose -f x.yml up` works like Docker.
+//
+// cobra cannot register -f/-p as persistent shorthands on the compose group:
+// subcommands reuse -f (logs --follow, rm --force) and -p (run --publish), and
+// pflag panics when an inherited persistent shorthand collides with a local
+// one. Rewriting the leading tokens before parsing sidesteps that while leaving
+// post-subcommand shorthands (the `-f` in `compose logs -f`) untouched.
+func rewriteComposeGlobalShorthands(args []string) []string {
+	if len(args) == 0 || args[0] != "compose" {
+		return args
+	}
+	out := []string{"compose"}
+	i := 1
+	for i < len(args) {
+		a := args[i]
+		if !strings.HasPrefix(a, "-") {
+			// First bare token is the subcommand; stop rewriting from here.
+			return append(out, args[i:]...)
+		}
+		switch {
+		case a == "-f":
+			out = append(out, "--file")
+			a = "--file" // normalize so the value-consume check below fires
+		case a == "-p":
+			out = append(out, "--project-name")
+			a = "--project-name"
+		case strings.HasPrefix(a, "-f") && !strings.HasPrefix(a, "--"):
+			out = append(out, "--file", strings.TrimPrefix(strings.TrimPrefix(a, "-f"), "="))
+			i++
+			continue
+		case strings.HasPrefix(a, "-p") && !strings.HasPrefix(a, "--"):
+			out = append(out, "--project-name", strings.TrimPrefix(strings.TrimPrefix(a, "-p"), "="))
+			i++
+			continue
+		default:
+			out = append(out, a)
+		}
+		name := a
+		if eq := strings.IndexByte(a, '='); eq >= 0 {
+			name = a[:eq]
+		}
+		if composeValueFlags[name] && !strings.Contains(a, "=") && i+1 < len(args) {
+			out = append(out, args[i+1])
+			i += 2
+			continue
+		}
+		i++
+	}
+	return out
+}
+
 func loadProject(cmd *cobra.Command) (*compose.Project, error) {
 	files, _ := cmd.Flags().GetStringArray("file")
 	project, _ := cmd.Flags().GetString("project-name")

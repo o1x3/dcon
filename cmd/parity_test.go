@@ -115,6 +115,49 @@ func TestComposeGlobalFlagsParse(t *testing.T) {
 	})
 }
 
+func TestRewriteComposeGlobalShorthands(t *testing.T) {
+	cases := []struct {
+		in   []string
+		want []string
+	}{
+		// -f before the subcommand becomes --file
+		{[]string{"compose", "-f", "x.yml", "up"}, []string{"compose", "--file", "x.yml", "up"}},
+		{[]string{"compose", "-p", "proj", "down"}, []string{"compose", "--project-name", "proj", "down"}},
+		// attached value forms
+		{[]string{"compose", "-fx.yml", "up"}, []string{"compose", "--file", "x.yml", "up"}},
+		{[]string{"compose", "-f=x.yml", "up"}, []string{"compose", "--file", "x.yml", "up"}},
+		// multiple files + project
+		{[]string{"compose", "-f", "a.yml", "-f", "b.yml", "-p", "x", "up", "-d"},
+			[]string{"compose", "--file", "a.yml", "--file", "b.yml", "--project-name", "x", "up", "-d"}},
+		// the subcommand's own -f (logs --follow) must NOT be rewritten
+		{[]string{"compose", "logs", "-f"}, []string{"compose", "logs", "-f"}},
+		{[]string{"compose", "-f", "x.yml", "logs", "-f", "web"}, []string{"compose", "--file", "x.yml", "logs", "-f", "web"}},
+		// rm -f (force) after subcommand untouched
+		{[]string{"compose", "rm", "-f"}, []string{"compose", "rm", "-f"}},
+		// run -p (publish) after subcommand untouched
+		{[]string{"compose", "run", "-p", "8080:80", "web"}, []string{"compose", "run", "-p", "8080:80", "web"}},
+		// long forms pass through; boolean global doesn't swallow the subcommand
+		{[]string{"compose", "--dry-run", "up"}, []string{"compose", "--dry-run", "up"}},
+		{[]string{"compose", "--profile", "dev", "-f", "x.yml", "up"}, []string{"compose", "--profile", "dev", "--file", "x.yml", "up"}},
+		// not a compose invocation: leave untouched (e.g. running an image named compose)
+		{[]string{"run", "-f", "compose"}, []string{"run", "-f", "compose"}},
+		{[]string{"ps", "-a"}, []string{"ps", "-a"}},
+	}
+	for _, tc := range cases {
+		got := rewriteComposeGlobalShorthands(tc.in)
+		if len(got) != len(tc.want) {
+			t.Errorf("rewrite(%v) = %v; want %v", tc.in, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("rewrite(%v) = %v; want %v", tc.in, got, tc.want)
+				break
+			}
+		}
+	}
+}
+
 func TestCurrentContextHonorsEnv(t *testing.T) {
 	t.Setenv("DOCKER_CONTEXT", "")
 	if got := currentContextName(); got != defaultContextName {

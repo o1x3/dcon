@@ -41,6 +41,9 @@ Set up a true drop-in by aliasing docker:  alias docker=dcon`,
 // Execute runs the root command and maps errors to a process exit code that
 // mirrors the underlying container invocation where possible.
 func Execute() {
+	// Rewrite `compose -f/-p` global shorthands to long forms before cobra
+	// parses (see rewriteComposeGlobalShorthands for why this can't be a flag).
+	rootCmd.SetArgs(rewriteComposeGlobalShorthands(os.Args[1:]))
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(runtime.ExitCode(err))
