@@ -95,10 +95,11 @@ func newComposeCmd() *cobra.Command {
 
 	group.AddCommand(
 		composeUp(), composeDown(), composePs(), composeLogs(), composeBuild(),
-		composePull(), composeStart(), composeStop(), composeRestart(), composeKill(),
-		composeRm(), composeConfig(), composeLs(), composeCreate(), composeExec(),
-		composeRun(), composeTop(), composeImages(), composeVersion(),
-		composeScale(), composeWait(), composeCp(),
+		composePull(), composePush(), composeStart(), composeStop(), composeRestart(),
+		composeKill(), composeRm(), composeConfig(), composeLs(), composeCreate(),
+		composeExec(), composeRun(), composeTop(), composeImages(), composeVersion(),
+		composeScale(), composeWait(), composeCp(), composePort(), composeAttach(),
+		composePause(), composeUnpause(), composeEvents(), composeWatch(),
 	)
 	return group
 }
@@ -1220,6 +1221,177 @@ func composeCp() *cobra.Command {
 			return runtime.Run("copy", src, dst)
 		},
 	}
+}
+
+// composePush pushes the image of each (selected) service to its registry.
+func composePush() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "push [SERVICE...]",
+		Short: "Push service images",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, err := loadProject(cmd)
+			if err != nil {
+				return err
+			}
+			selected := serviceSet(args)
+			ignoreFail, _ := cmd.Flags().GetBool("ignore-push-failures")
+			quiet, _ := cmd.Flags().GetBool("quiet")
+			names := make([]string, 0, len(p.Services))
+			for n := range p.Services {
+				names = append(names, n)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				if selected != nil && !selected[name] {
+					continue
+				}
+				svc := p.Services[name]
+				if svc.Image == "" {
+					continue // nothing to push for build-only services
+				}
+				if !quiet {
+					fmt.Printf("Pushing %s (%s)...\n", name, svc.Image)
+				}
+				if err := runtime.Run("image", "push", svc.Image); err != nil {
+					if ignoreFail {
+						fmt.Fprintf(os.Stderr, "dcon: warning: push %s failed: %v\n", svc.Image, err)
+						continue
+					}
+					return err
+				}
+			}
+			return nil
+		},
+	}
+	cmd.Flags().Bool("ignore-push-failures", false, "Push what it can and ignore images with push failures")
+	cmd.Flags().BoolP("quiet", "q", false, "Push without printing progress information")
+	return cmd
+}
+
+// composePort prints the host binding for a service container's private port.
+func composePort() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "port [OPTIONS] SERVICE PRIVATE_PORT",
+		Short: "Print the public port for a port binding",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, err := loadProject(cmd)
+			if err != nil {
+				return err
+			}
+			idx, _ := cmd.Flags().GetInt("index")
+			proto, _ := cmd.Flags().GetString("protocol")
+			cid, err := serviceContainerByIndex(p.Name, args[0], idx)
+			if err != nil {
+				return err
+			}
+			var list []dockerfmt.Container
+			if err := runtime.CaptureJSON(&list, "inspect", cid); err != nil {
+				return err
+			}
+			if len(list) == 0 {
+				return fmt.Errorf("no such container: %s", cid)
+			}
+			for _, pt := range list[0].Configuration.Ports {
+				pr := pt.Proto
+				if pr == "" {
+					pr = "tcp"
+				}
+				if fmt.Sprint(pt.ContainerPort) != args[1] || pr != proto {
+					continue
+				}
+				host := pt.HostAddress
+				if host == "" {
+					host = "0.0.0.0"
+				}
+				fmt.Printf("%s:%d\n", host, pt.HostPort)
+				return nil
+			}
+			return nil
+		},
+	}
+	cmd.Flags().Int("index", 1, "Index of the container if service has multiple replicas")
+	cmd.Flags().String("protocol", "tcp", "tcp or udp")
+	return cmd
+}
+
+// composeAttach streams a service container's output. As with the top-level
+// attach, the backend forwards stdout/stderr only (no STDIN).
+func composeAttach() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "attach [OPTIONS] SERVICE",
+		Short: "Attach local standard output and error streams to a service's running container",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, err := loadProject(cmd)
+			if err != nil {
+				return err
+			}
+			idx, _ := cmd.Flags().GetInt("index")
+			cid, err := serviceContainerByIndex(p.Name, args[0], idx)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(os.Stderr, "dcon: note: backend supports stdout/stderr streaming only; STDIN is not forwarded on attach")
+			return runtime.Run("logs", "--follow", cid)
+		},
+	}
+	cmd.Flags().Int("index", 1, "Index of the container if service has multiple replicas")
+	cmd.Flags().Bool("no-stdin", false, "Do not attach STDIN (no-op)")
+	cmd.Flags().String("detach-keys", "", "Override the key sequence for detaching (no-op)")
+	cmd.Flags().Bool("sig-proxy", true, "Proxy all received signals to the process (no-op)")
+	return cmd
+}
+
+// composePause / composeUnpause: the backend has no freezer, so these are
+// genuinely unsupported. Registered so the commands exist and report clearly
+// rather than failing as "unknown command".
+func composePause() *cobra.Command {
+	return &cobra.Command{
+		Use:   "pause [SERVICE...]",
+		Short: "Pause services",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return fmt.Errorf("pause is not supported by the container backend")
+		},
+	}
+}
+
+func composeUnpause() *cobra.Command {
+	return &cobra.Command{
+		Use:   "unpause [SERVICE...]",
+		Short: "Unpause services",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return fmt.Errorf("unpause is not supported by the container backend")
+		},
+	}
+}
+
+// composeEvents: the backend exposes no event stream.
+func composeEvents() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "events [OPTIONS] [SERVICE...]",
+		Short: "Receive real time events from containers",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return fmt.Errorf("events stream is not supported by the container backend")
+		},
+	}
+	cmd.Flags().Bool("json", false, "Output events as a stream of json objects")
+	return cmd
+}
+
+// composeWatch: the backend has no file-sync/live-reload mechanism.
+func composeWatch() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "watch [SERVICE...]",
+		Short: "Watch build context for changes and rebuild/refresh services",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return fmt.Errorf("watch is not supported: the container backend has no file-sync/live-reload; rebuild manually with `dcon compose build` then `dcon compose up`")
+		},
+	}
+	cmd.Flags().Bool("no-up", false, "Do not build & start services before watching")
+	cmd.Flags().Bool("quiet", false, "Hide build output")
+	cmd.Flags().Bool("prune", true, "Prune dangling images on rebuild")
+	return cmd
 }
 
 // --- helpers ---
