@@ -6,7 +6,7 @@ A drop-in Docker CLI for macOS, powered by Apple container. Speak `docker`, run 
 
 [![CI](https://github.com/o1x3/dcon/actions/workflows/ci.yml/badge.svg)](https://github.com/o1x3/dcon/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/o1x3/dcon?sort=semver&color=blue)](https://github.com/o1x3/dcon/releases)
-[![coverage](https://img.shields.io/badge/coverage-45.8%25-yellowgreen)](https://github.com/o1x3/dcon/actions/workflows/ci.yml)
+[![coverage](https://img.shields.io/badge/coverage-45.7%25-yellowgreen)](https://github.com/o1x3/dcon/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 ![macOS](https://img.shields.io/badge/macOS-Apple%20silicon-black?logo=apple)
 ![Go](https://img.shields.io/badge/go-1.26-00ADD8?logo=go&logoColor=white)
