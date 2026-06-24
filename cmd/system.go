@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"text/template"
 
+	"dcon/internal/dockerfmt"
 	rt "dcon/internal/runtime"
 
 	"github.com/spf13/cobra"
@@ -52,7 +54,15 @@ func newVersionCmd() *cobra.Command {
 				Server: backendVersion(),
 			}
 			if format, _ := cmd.Flags().GetString("format"); format != "" {
-				tmpl, err := template.New("v").Parse(format + "\n")
+				if format == "json" {
+					b, err := json.Marshal(info)
+					if err != nil {
+						return err
+					}
+					fmt.Println(string(b))
+					return nil
+				}
+				tmpl, err := template.New("v").Funcs(dockerfmt.TemplateFuncs()).Parse(format + "\n")
 				if err != nil {
 					return err
 				}
@@ -84,6 +94,27 @@ func newVersionCmd() *cobra.Command {
 	return cmd
 }
 
+// infoData mirrors the subset of `docker info` JSON keys that scripts commonly
+// read (e.g. `docker info -f '{{.ServerVersion}}'`), so --format works.
+type infoData struct {
+	ID                string
+	Containers        int
+	ContainersRunning int
+	ContainersPaused  int
+	ContainersStopped int
+	Images            int
+	Driver            string
+	ServerVersion     string
+	OperatingSystem   string
+	OSType            string
+	Architecture      string
+	NCPU              int
+	Name              string
+	DockerRootDir     string
+	Isolation         string
+	ServerState       string
+}
+
 func newInfoCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "info [OPTIONS]",
@@ -109,6 +140,38 @@ func newInfoCmd() *cobra.Command {
 				serverState = "stopped"
 			}
 
+			if format, _ := cmd.Flags().GetString("format"); format != "" {
+				data := infoData{
+					ID:                "apple-container",
+					Containers:        len(all),
+					ContainersRunning: running,
+					ContainersStopped: stopped,
+					Images:            len(imgs),
+					Driver:            "virtualization.framework",
+					ServerVersion:     ver.Version,
+					OperatingSystem:   "macOS",
+					OSType:            "linux",
+					Architecture:      runtime.GOARCH,
+					NCPU:              runtime.NumCPU(),
+					Name:              hostnameOrUnknown(),
+					Isolation:         "vm",
+					ServerState:       serverState,
+				}
+				if format == "json" {
+					b, err := json.Marshal(data)
+					if err != nil {
+						return err
+					}
+					fmt.Println(string(b))
+					return nil
+				}
+				tmpl, err := template.New("info").Funcs(dockerfmt.TemplateFuncs()).Parse(format + "\n")
+				if err != nil {
+					return err
+				}
+				return tmpl.Execute(os.Stdout, data)
+			}
+
 			fmt.Printf("Client:\n")
 			fmt.Printf(" Version:    %s\n", Version)
 			fmt.Printf(" Context:    default\n")
@@ -129,7 +192,7 @@ func newInfoCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringP("format", "f", "", "Format the output (no-op for now)")
+	cmd.Flags().StringP("format", "f", "", "Format output using a Go template or 'json'")
 	return cmd
 }
 
@@ -192,6 +255,7 @@ func newSystemGroupCmd() *cobra.Command {
 	prune.Flags().BoolP("all", "a", false, "Remove all unused images, not just dangling ones")
 	prune.Flags().BoolP("force", "f", false, "Do not prompt for confirmation (no-op)")
 	prune.Flags().Bool("volumes", false, "Prune volumes too")
+	prune.Flags().String("filter", "", "Provide filter values (unsupported)")
 
 	events := &cobra.Command{
 		Use:   "events",

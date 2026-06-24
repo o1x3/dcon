@@ -55,7 +55,19 @@ func init() {
 	rootCmd.PersistentFlags().String("context", "", "Context to use (accepted for compatibility; ignored)")
 	rootCmd.PersistentFlags().String("log-level", "", "Logging level (accepted for compatibility)")
 	rootCmd.PersistentFlags().String("config", "", "Location of client config files (accepted for compatibility)")
+	// TLS flags: dcon never dials a TCP daemon, so these are accepted and ignored
+	// to keep `docker --tlsverify …`-style invocations working.
+	rootCmd.PersistentFlags().Bool("tls", false, "Use TLS (accepted for compatibility; ignored)")
+	rootCmd.PersistentFlags().Bool("tlsverify", false, "Use TLS and verify the remote (accepted for compatibility; ignored)")
+	rootCmd.PersistentFlags().String("tlscacert", "", "Trust certs signed only by this CA (accepted; ignored)")
+	rootCmd.PersistentFlags().String("tlscert", "", "Path to TLS certificate file (accepted; ignored)")
+	rootCmd.PersistentFlags().String("tlskey", "", "Path to TLS key file (accepted; ignored)")
 	_ = rootCmd.PersistentFlags().MarkHidden("log-level")
+	_ = rootCmd.PersistentFlags().MarkHidden("tls")
+	_ = rootCmd.PersistentFlags().MarkHidden("tlsverify")
+	_ = rootCmd.PersistentFlags().MarkHidden("tlscacert")
+	_ = rootCmd.PersistentFlags().MarkHidden("tlscert")
+	_ = rootCmd.PersistentFlags().MarkHidden("tlskey")
 
 	rootCmd.PersistentPreRun = func(cmd *cobra.Command, args []string) {
 		if d, _ := cmd.Flags().GetBool("debug"); d {
