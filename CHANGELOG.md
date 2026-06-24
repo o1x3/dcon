@@ -6,6 +6,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- `dcon system kernel set` is now idempotent. Apple's `container system kernel
+  set` re-downloads and copies the kernel with no overwrite path, so re-running
+  it (or running it when the kernel is already present) failed with an EEXIST
+  error. dcon now treats that specific failure as a successful no-op, which also
+  removes the misleading "kernel install skipped" warning from `install.sh` when
+  the kernel is already installed.
+
 ## [1.1.0] — 2026-06-25
 
 Warm-pool start latency, a setup doctor, and a sweeping Docker/Compose

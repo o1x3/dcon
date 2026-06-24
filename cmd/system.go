@@ -269,7 +269,7 @@ func newSystemGroupCmd() *cobra.Command {
 	// Backend-native passthroughs
 	group.AddCommand(
 		newPassthrough("dns [SUBCOMMAND]", "Manage local DNS domains (backend)", []string{"system", "dns"}),
-		newPassthrough("kernel [SUBCOMMAND]", "Manage the default kernel (backend)", []string{"system", "kernel"}),
+		newKernelCmd(),
 		newPassthrough("property [SUBCOMMAND]", "Manage system property values (backend)", []string{"system", "property"}),
 		newPassthrough("logs", "Fetch backend service logs", []string{"system", "logs"}),
 		newPassthrough("start", "Start backend container services", []string{"system", "start"}),
@@ -277,6 +277,55 @@ func newSystemGroupCmd() *cobra.Command {
 		newPassthrough("status", "Show backend service status", []string{"system", "status"}),
 	)
 	return group
+}
+
+// newKernelCmd forwards `dcon system kernel …` to the backend, but makes
+// `kernel set` idempotent. Apple's `container system kernel set` always
+// re-downloads the kernel and copies it into place with a plain copy that has
+// no overwrite path, so re-running it (or running it when the kernel is already
+// present, e.g. from install.sh) fails with NSCocoa 516 / POSIX EEXIST even
+// though nothing is wrong. dcon treats that one specific failure as a
+// successful no-op; every other error and every other subcommand passes
+// through unchanged.
+func newKernelCmd() *cobra.Command {
+	prefix := []string{"system", "kernel"}
+	return &cobra.Command{
+		Use:                "kernel [SUBCOMMAND]",
+		Short:              "Manage the default kernel (backend)",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
+				return rt.Run(append(prefix, "--help")...)
+			}
+			if len(args) >= 1 && args[0] == "set" {
+				cargs := append(append([]string{}, prefix...), args...)
+				out, err := rt.CaptureSilent(cargs...)
+				if out != "" {
+					fmt.Print(out)
+				}
+				if err != nil {
+					if kernelAlreadyInstalled(err) {
+						fmt.Fprintln(os.Stderr, "dcon: the requested kernel is already installed; nothing to do")
+						return nil
+					}
+					return err
+				}
+				return nil
+			}
+			return rt.Run(append(append([]string{}, prefix...), args...)...)
+		},
+	}
+}
+
+// kernelAlreadyInstalled reports whether a `kernel set` error is the backend's
+// non-idempotent "the kernel file already exists" failure (NSCocoa 516 /
+// POSIX EEXIST) rather than a genuine problem.
+func kernelAlreadyInstalled(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "already exists") || strings.Contains(s, "file exists")
 }
 
 func newBuilderGroupCmd() *cobra.Command {

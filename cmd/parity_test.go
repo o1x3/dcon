@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -154,6 +155,28 @@ func TestRewriteComposeGlobalShorthands(t *testing.T) {
 				t.Errorf("rewrite(%v) = %v; want %v", tc.in, got, tc.want)
 				break
 			}
+		}
+	}
+}
+
+func TestKernelAlreadyInstalled(t *testing.T) {
+	// The real backend EEXIST failure (NSCocoa 516 wrapping POSIX 17).
+	cocoa := errors.New(`Error Domain=NSCocoaErrorDomain Code=516 "vmlinux-6.18.15-186 couldn't be copied to "kernels" because an item with the same name already exists." UserInfo={NSUnderlyingError=0x0 {Error Domain=NSPOSIXErrorDomain Code=17 "File exists"}}`)
+	if !kernelAlreadyInstalled(cocoa) {
+		t.Error("the backend's already-exists EEXIST error should be detected as already-installed")
+	}
+	if !kernelAlreadyInstalled(errors.New("copy failed: File exists")) {
+		t.Error("a POSIX 'File exists' error should be detected")
+	}
+	// Genuine failures must NOT be swallowed.
+	for _, e := range []error{
+		nil,
+		errors.New("network error: could not download kernel"),
+		errors.New("no space left on device"),
+		errors.New("Error Domain=NSURLErrorDomain Code=-1009 offline"),
+	} {
+		if kernelAlreadyInstalled(e) {
+			t.Errorf("a genuine error must not be treated as already-installed: %v", e)
 		}
 	}
 }
