@@ -78,7 +78,7 @@ func init() {
 		// management groups
 		newContainerGroupCmd(), newImageGroupCmd(), newVolumeGroupCmd(),
 		newNetworkGroupCmd(), newSystemGroupCmd(), newBuilderGroupCmd(),
-		newRegistryGroupCmd(), newMachineGroupCmd(),
+		newRegistryGroupCmd(), newMachineGroupCmd(), newContextGroupCmd(),
 		newBuildxCmd(), newComposeCmd(),
 
 		// unsupported-but-recognised
@@ -88,6 +88,9 @@ func init() {
 		stub("commit CONTAINER", "Create a new image from a container's changes", "commit is not supported by the backend"),
 		stub("update CONTAINER", "Update configuration of one or more containers", "update is not supported by the backend"),
 	)
+
+	// manifest, import, and recognised-but-unsupported Swarm/orchestration cmds.
+	rootCmd.AddCommand(unsupportedTopLevelCmds()...)
 
 	// top-level `save`/`load` aliases
 	save := newImageSaveCmd()

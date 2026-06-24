@@ -138,9 +138,15 @@ var tmplFuncs = template.FuncMap{
 		b, _ := json.Marshal(v)
 		return string(b)
 	},
+	"prettyjson": func(v any) string {
+		b, _ := json.MarshalIndent(v, "", "    ")
+		return string(b)
+	},
 	"upper": strings.ToUpper,
 	"lower": strings.ToLower,
 	"title": strings.Title,
+	"join":  strings.Join,
+	"split": strings.Split,
 	"truncate": func(s string, n int) string {
 		if len(s) > n {
 			return s[:n]
@@ -148,3 +154,8 @@ var tmplFuncs = template.FuncMap{
 		return s
 	},
 }
+
+// TemplateFuncs returns the Docker-compatible template helper functions
+// (json, upper, lower, …) so other packages can honour --format templates that
+// use them, matching `docker inspect --format '{{json .}}'`.
+func TemplateFuncs() template.FuncMap { return tmplFuncs }

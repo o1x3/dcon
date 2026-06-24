@@ -8,6 +8,7 @@ import (
 	"strings"
 	"text/template"
 
+	"dcon/internal/dockerfmt"
 	"dcon/internal/runtime"
 
 	"github.com/spf13/cobra"
@@ -88,7 +89,7 @@ func renderInspect(raw, format string) error {
 	if err := json.Unmarshal([]byte(raw), &items); err != nil {
 		return err
 	}
-	tmpl, err := template.New("inspect").Parse(format + "\n")
+	tmpl, err := template.New("inspect").Funcs(dockerfmt.TemplateFuncs()).Parse(format + "\n")
 	if err != nil {
 		return err
 	}
