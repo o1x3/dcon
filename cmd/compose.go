@@ -514,6 +514,15 @@ func composeLogs() *cobra.Command {
 				return err
 			}
 			follow, _ := cmd.Flags().GetBool("follow")
+			noPrefix, _ := cmd.Flags().GetBool("no-log-prefix")
+			tail := composeLogsTail(cmd)
+			// Flags Docker honors but the container backend cannot: warn once,
+			// like the top-level `dcon logs`, rather than ignoring them silently.
+			for _, flag := range []string{"since", "until", "timestamps"} {
+				if cmd.Flags().Changed(flag) {
+					fmt.Fprintf(os.Stderr, "dcon: warning: --%s is not supported by the container backend and was ignored\n", flag)
+				}
+			}
 			containers, err := projectContainers(p.Name)
 			if err != nil {
 				return err
@@ -526,16 +535,21 @@ func composeLogs() *cobra.Command {
 				}
 			}
 			if follow {
-				return followAndWaitNoStop(targets)
+				return followLogs(targets, tail, noPrefix)
 			}
 			for _, c := range targets {
-				out, _ := runtime.CaptureSilent("logs", c.ID)
+				cargs := []string{"logs"}
+				if tail != "" {
+					cargs = append(cargs, "-n", tail)
+				}
+				cargs = append(cargs, c.ID)
+				out, _ := runtime.CaptureSilent(cargs...)
 				trimmed := strings.TrimRight(out, "\n")
 				if trimmed == "" {
 					continue
 				}
 				for _, line := range strings.Split(trimmed, "\n") {
-					fmt.Printf("%s | %s\n", serviceOf(c), line)
+					printLogLine(serviceOf(c), line, noPrefix)
 				}
 			}
 			return nil
@@ -543,17 +557,50 @@ func composeLogs() *cobra.Command {
 	}
 	cmd.Flags().BoolP("follow", "f", false, "Follow log output")
 	cmd.Flags().String("tail", "all", "Number of lines to show from the end of the logs")
-	cmd.Flags().BoolP("timestamps", "t", false, "Show timestamps")
+	cmd.Flags().Bool("no-log-prefix", false, "Don't print the service-name prefix on each line")
+	cmd.Flags().BoolP("timestamps", "t", false, "Show timestamps (unsupported by backend)")
+	cmd.Flags().String("since", "", "Show logs since timestamp (unsupported by backend)")
+	cmd.Flags().String("until", "", "Show logs before timestamp (unsupported by backend)")
 	return cmd
 }
 
-func followAndWaitNoStop(targets []dockerfmt.Container) error {
+// composeLogsTail returns the validated --tail value to pass to `container
+// logs -n`, or "" for the Docker default ("all" = everything).
+func composeLogsTail(cmd *cobra.Command) string {
+	t, _ := cmd.Flags().GetString("tail")
+	if t == "" || t == "all" {
+		return ""
+	}
+	if _, err := strconv.Atoi(t); err != nil {
+		return ""
+	}
+	return t
+}
+
+// printLogLine writes one aggregated log line, with the Docker-style
+// "service | …" prefix unless --no-log-prefix was given.
+func printLogLine(svc, line string, noPrefix bool) {
+	if noPrefix {
+		fmt.Println(line)
+	} else {
+		fmt.Printf("%s | %s\n", svc, line)
+	}
+}
+
+// followLogs streams `container logs --follow` for each target concurrently,
+// honoring --tail (seed the last N lines) and --no-log-prefix, until interrupted.
+func followLogs(targets []dockerfmt.Container, tail string, noPrefix bool) error {
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
 	var wg sync.WaitGroup
 	for _, c := range targets {
 		svc := serviceOf(c)
-		cc := exec.Command(runtime.Bin(), "logs", "--follow", c.ID)
+		cargs := []string{"logs", "--follow"}
+		if tail != "" {
+			cargs = append(cargs, "-n", tail)
+		}
+		cargs = append(cargs, c.ID)
+		cc := exec.Command(runtime.Bin(), cargs...)
 		stdout, _ := cc.StdoutPipe()
 		cc.Stderr = cc.Stdout
 		if err := cc.Start(); err != nil {
@@ -565,7 +612,7 @@ func followAndWaitNoStop(targets []dockerfmt.Container) error {
 			sc := bufio.NewScanner(stdout)
 			sc.Buffer(make([]byte, 1024*1024), 1024*1024)
 			for sc.Scan() {
-				fmt.Printf("%s | %s\n", svc, sc.Text())
+				printLogLine(svc, sc.Text(), noPrefix)
 			}
 		}()
 	}

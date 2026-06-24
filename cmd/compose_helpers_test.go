@@ -63,6 +63,23 @@ func TestEnabledProfiles(t *testing.T) {
 	}
 }
 
+func TestComposeLogsTail(t *testing.T) {
+	cases := map[string]string{
+		"all": "", // Docker default -> no -n
+		"":    "",
+		"50":  "50",
+		"1":   "1",
+		"abc": "", // non-numeric -> ignored
+	}
+	for in, want := range cases {
+		cmd := composeLogs()
+		_ = cmd.ParseFlags([]string{"--tail", in})
+		if got := composeLogsTail(cmd); got != want {
+			t.Errorf("composeLogsTail(--tail %q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestSkipService(t *testing.T) {
 	p := &compose.Project{Services: map[string]*compose.Service{
 		"web": {},
