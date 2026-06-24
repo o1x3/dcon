@@ -160,20 +160,33 @@ func newVolumeGroupCmd() *cobra.Command {
 		Short: "Display detailed information on one or more volumes",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runtime.Run(append([]string{"volume", "inspect"}, args...)...)
+			format, _ := cmd.Flags().GetString("format")
+			if format == "" {
+				return runtime.Run(append([]string{"volume", "inspect"}, args...)...)
+			}
+			raw, err := runtime.CaptureSilent(append([]string{"volume", "inspect"}, args...)...)
+			if err != nil {
+				return err
+			}
+			return renderInspect(raw, format)
 		},
 	}
+	inspect.Flags().StringP("format", "f", "", "Format output using a Go template or 'json'")
 
 	prune := &cobra.Command{
 		Use:   "prune [OPTIONS]",
 		Short: "Remove all unused local volumes",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("filter") {
+				fmt.Fprintln(os.Stderr, "dcon: warning: --filter is not supported by the backend and was ignored")
+			}
 			return runtime.Run("volume", "prune")
 		},
 	}
 	prune.Flags().BoolP("force", "f", false, "Do not prompt for confirmation (no-op)")
 	prune.Flags().BoolP("all", "a", false, "Remove all unused volumes (no-op)")
+	prune.Flags().String("filter", "", "Provide filter values (unsupported)")
 
 	group.AddCommand(create, ls, rm, inspect, prune)
 	return group

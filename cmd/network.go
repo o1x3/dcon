@@ -87,13 +87,25 @@ func newNetworkGroupCmd() *cobra.Command {
 			for _, o := range mustStringArray(cmd.Flags(), "opt") {
 				cargs = append(cargs, "--option", o)
 			}
+			// Docker passes IPv4 and IPv6 subnets through the same --subnet flag;
+			// the backend splits them into --subnet / --subnet-v6. Route by family.
 			if s, _ := cmd.Flags().GetString("subnet"); s != "" {
-				cargs = append(cargs, "--subnet", s)
+				if strings.Contains(s, ":") {
+					cargs = append(cargs, "--subnet-v6", s)
+				} else {
+					cargs = append(cargs, "--subnet", s)
+				}
+			}
+			if v6, _ := cmd.Flags().GetBool("ipv6"); v6 {
+				s, _ := cmd.Flags().GetString("subnet")
+				if !strings.Contains(s, ":") {
+					fmt.Fprintln(os.Stderr, "dcon: warning: --ipv6 has no effect without an IPv6 --subnet (e.g. --subnet 2001:db8::/64)")
+				}
 			}
 			if p, _ := cmd.Flags().GetString("plugin"); p != "" {
 				cargs = append(cargs, "--plugin", p)
 			}
-			for _, name := range []string{"gateway", "ip-range", "aux-address"} {
+			for _, name := range []string{"gateway", "ip-range", "aux-address", "attachable", "scope", "ingress", "config-only", "config-from"} {
 				if cmd.Flags().Changed(name) {
 					fmt.Fprintf(os.Stderr, "dcon: warning: --%s is not supported by the backend and was ignored\n", name)
 				}
@@ -118,7 +130,12 @@ func newNetworkGroupCmd() *cobra.Command {
 	create.Flags().String("gateway", "", "IPv4 or IPv6 Gateway (unsupported)")
 	create.Flags().String("ip-range", "", "Allocate IPs from a sub-range (unsupported)")
 	create.Flags().String("aux-address", "", "Auxiliary IPv4/IPv6 addresses (unsupported)")
-	create.Flags().Bool("ipv6", false, "Enable IPv6 networking")
+	create.Flags().Bool("ipv6", false, "Enable IPv6 networking (provide an IPv6 --subnet)")
+	create.Flags().Bool("attachable", false, "Enable manual container attachment (unsupported)")
+	create.Flags().String("scope", "", "Control the network's scope (unsupported)")
+	create.Flags().Bool("ingress", false, "Create swarm routing-mesh network (unsupported)")
+	create.Flags().Bool("config-only", false, "Create a configuration only network (unsupported)")
+	create.Flags().String("config-from", "", "The network from which to copy the configuration (unsupported)")
 
 	ls := &cobra.Command{
 		Use:     "ls [OPTIONS]",
@@ -186,36 +203,58 @@ func newNetworkGroupCmd() *cobra.Command {
 		Short: "Display detailed information on one or more networks",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runtime.Run(append([]string{"network", "inspect"}, args...)...)
+			if cmd.Flags().Changed("verbose") {
+				fmt.Fprintln(os.Stderr, "dcon: warning: --verbose is not supported by the backend and was ignored")
+			}
+			format, _ := cmd.Flags().GetString("format")
+			if format == "" {
+				return runtime.Run(append([]string{"network", "inspect"}, args...)...)
+			}
+			raw, err := runtime.CaptureSilent(append([]string{"network", "inspect"}, args...)...)
+			if err != nil {
+				return err
+			}
+			return renderInspect(raw, format)
 		},
 	}
+	inspect.Flags().StringP("format", "f", "", "Format output using a Go template or 'json'")
+	inspect.Flags().BoolP("verbose", "v", false, "Verbose output for diagnostics (unsupported)")
 
 	prune := &cobra.Command{
 		Use:   "prune [OPTIONS]",
 		Short: "Remove all unused networks",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("filter") {
+				fmt.Fprintln(os.Stderr, "dcon: warning: --filter is not supported by the backend and was ignored")
+			}
 			return runtime.Run("network", "prune")
 		},
 	}
 	prune.Flags().BoolP("force", "f", false, "Do not prompt for confirmation (no-op)")
+	prune.Flags().String("filter", "", "Provide filter values (unsupported)")
 
 	connect := &cobra.Command{
-		Use:   "connect NETWORK CONTAINER",
+		Use:   "connect [OPTIONS] NETWORK CONTAINER",
 		Short: "Connect a container to a network",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("network connect is not supported: attach networks at creation with `dcon run --network`")
 		},
 	}
+	connect.Flags().String("ip", "", "IPv4 address (unsupported)")
+	connect.Flags().String("ip6", "", "IPv6 address (unsupported)")
+	connect.Flags().StringSlice("alias", nil, "Add network-scoped alias for the container (unsupported)")
+	connect.Flags().StringSlice("link", nil, "Add link to another container (unsupported)")
 	disconnect := &cobra.Command{
-		Use:   "disconnect NETWORK CONTAINER",
+		Use:   "disconnect [OPTIONS] NETWORK CONTAINER",
 		Short: "Disconnect a container from a network",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("network disconnect is not supported by the backend")
 		},
 	}
+	disconnect.Flags().BoolP("force", "f", false, "Force the container to disconnect from a network (unsupported)")
 
 	group.AddCommand(create, ls, rm, inspect, prune, connect, disconnect)
 	return group

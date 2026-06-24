@@ -100,6 +100,7 @@ func addImagesFlags(cmd *cobra.Command) {
 	f.String("format", "", "Format output using a Go template or 'json'")
 	f.StringSliceP("filter", "f", nil, "Filter output based on conditions provided")
 	f.Bool("digests", false, "Show digests")
+	f.Bool("tree", false, "List multi-platform images as a tree (unsupported; falls back to flat list)")
 }
 
 func runImages(cmd *cobra.Command, args []string) error {
@@ -108,6 +109,9 @@ func runImages(cmd *cobra.Command, args []string) error {
 	format, _ := cmd.Flags().GetString("format")
 	digests, _ := cmd.Flags().GetBool("digests")
 	filters, _ := cmd.Flags().GetStringSlice("filter")
+	if cmd.Flags().Changed("tree") {
+		fmt.Fprintln(os.Stderr, "dcon: warning: --tree is not supported by the backend; showing a flat list")
+	}
 
 	list, err := getImages()
 	if err != nil {
@@ -230,6 +234,7 @@ func newPullCmd() *cobra.Command {
 	cmd.Flags().BoolP("quiet", "q", false, "Suppress verbose output")
 	cmd.Flags().BoolP("all-tags", "a", false, "Download all tagged images (unsupported)")
 	cmd.Flags().Int("max-concurrent-downloads", 0, "Max concurrent layer downloads (0 = dcon default of 8)")
+	cmd.Flags().Bool("disable-content-trust", true, "Skip image verification (no-op; backend has no content trust)")
 	return cmd
 }
 
@@ -290,6 +295,7 @@ func newPushCmd() *cobra.Command {
 	cmd.Flags().BoolP("quiet", "q", false, "Suppress verbose output")
 	cmd.Flags().BoolP("all-tags", "a", false, "")
 	_ = cmd.Flags().MarkHidden("all-tags")
+	cmd.Flags().Bool("disable-content-trust", true, "Skip image signing (no-op; backend has no content trust)")
 	return cmd
 }
 

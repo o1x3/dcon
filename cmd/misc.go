@@ -148,6 +148,7 @@ func newCpCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolP("archive", "a", false, "Archive mode (unsupported)")
 	cmd.Flags().BoolP("follow-link", "L", false, "Always follow symbol link (unsupported)")
+	cmd.Flags().BoolP("quiet", "q", false, "Suppress progress output during copy (no-op)")
 	return cmd
 }
 

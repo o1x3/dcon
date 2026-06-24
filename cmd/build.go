@@ -130,7 +130,15 @@ func buildBuildArgs(cmd *cobra.Command, args []string) ([]string, error) {
 		cargs = append(cargs, "--cache-out", ct)
 	}
 
-	for _, name := range []string{"network", "add-host", "ssh", "squash", "iidfile", "build-context"} {
+	if f.Changed("push") {
+		fmt.Fprintln(os.Stderr, "dcon: warning: --push is not supported by the backend; build, then push separately with 'dcon push'")
+	}
+	for _, name := range []string{
+		"network", "add-host", "ssh", "squash", "iidfile", "build-context",
+		"no-cache-filter", "cgroup-parent", "isolation", "shm-size", "ulimit",
+		"memory-swap", "security-opt", "metadata-file", "allow", "builder",
+		"provenance", "sbom", "attest", "annotation", "compress",
+	} {
 		if f.Changed(name) {
 			fmt.Fprintf(os.Stderr, "dcon: warning: --%s is not supported by the backend and was ignored\n", name)
 		}
@@ -173,6 +181,28 @@ func addBuildFlags(cmd *cobra.Command) {
 	f.StringArray("build-context", nil, "Additional build contexts (unsupported)")
 	f.Bool("rm", true, "Remove intermediate containers after a successful build (no-op)")
 	f.Bool("force-rm", false, "Always remove intermediate containers (no-op)")
+	// --load is the backend's default (the build lands in the local image store),
+	// so it is accepted as a silent no-op for buildx compatibility.
+	f.Bool("load", false, "Shorthand for --output=type=docker (default behavior; no-op)")
+	f.Bool("push", false, "Shorthand for --output=type=registry (unsupported; push separately)")
+	f.Bool("disable-content-trust", true, "Skip image verification (no-op; backend has no content trust)")
+	// Accepted-but-ignored buildx/BuildKit flags so buildx-style invocations
+	// don't hard-fail on an unknown flag.
+	f.StringArray("no-cache-filter", nil, "Do not cache specified stages (unsupported)")
+	f.String("cgroup-parent", "", "Set the parent cgroup for RUN instructions (unsupported)")
+	f.String("isolation", "", "Container isolation technology (unsupported)")
+	f.String("shm-size", "", "Size of /dev/shm for RUN instructions (unsupported)")
+	f.StringSlice("ulimit", nil, "Ulimit options for RUN instructions (unsupported)")
+	f.String("memory-swap", "", "Swap limit equal to memory plus swap (unsupported)")
+	f.StringArray("security-opt", nil, "Security options (unsupported)")
+	f.String("metadata-file", "", "Write build result metadata to a file (unsupported)")
+	f.StringSlice("allow", nil, "Allow extra privileged entitlements (unsupported)")
+	f.String("builder", "", "Override the configured builder instance (unsupported)")
+	f.String("provenance", "", "Add a provenance attestation (unsupported)")
+	f.String("sbom", "", "Add an SBOM attestation (unsupported)")
+	f.StringArray("attest", nil, "Attestation parameters (unsupported)")
+	f.StringArray("annotation", nil, "Add an OCI annotation to the image (unsupported)")
+	f.Bool("compress", false, "Compress the build context using gzip (unsupported)")
 	_ = f.MarkHidden("rm")
 	_ = f.MarkHidden("force-rm")
 }
