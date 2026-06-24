@@ -193,6 +193,11 @@ func composeUp() *cobra.Command {
 			removeOrphans, _ := cmd.Flags().GetBool("remove-orphans")
 			scaleSpecs, _ := cmd.Flags().GetStringArray("scale")
 			scale := parseScale(scaleSpecs)
+			for _, flag := range []string{"abort-on-container-exit", "abort-on-container-failure", "exit-code-from"} {
+				if cmd.Flags().Changed(flag) {
+					fmt.Fprintf(os.Stderr, "dcon: warning: --%s is not supported by the backend; foreground exit is driven by Ctrl-C\n", flag)
+				}
+			}
 
 			selected := serviceSet(args)
 			active := enabledProfiles(cmd)
@@ -303,6 +308,27 @@ func composeUp() *cobra.Command {
 	f.String("pull", "", "Pull image before running (always|missing|never)")
 	f.IntP("timeout", "t", 10, "Use this timeout in seconds for container shutdown")
 	f.Bool("wait", false, "Wait for services to be running|healthy")
+	// Additional Docker Compose `up` flags. Registered so real-world invocations
+	// don't hard-fail; those whose semantics the backend can't reproduce warn.
+	// --no-recreate / --no-deps already match dcon's default behavior (existing
+	// containers are kept; only named services start), so they are silent.
+	f.Bool("no-recreate", false, "If containers already exist, don't recreate them")
+	f.Bool("no-deps", false, "Don't start linked services")
+	f.BoolP("renew-anon-volumes", "V", false, "Recreate anonymous volumes instead of retrieving data (no-op)")
+	f.Bool("quiet-pull", false, "Pull without printing progress information")
+	f.Bool("no-color", false, "Produce monochrome output (no-op)")
+	f.Bool("no-log-prefix", false, "Don't print prefix in logs")
+	f.Bool("always-recreate-deps", false, "Recreate dependent containers (no-op)")
+	f.Bool("recreate-deps", false, "Recreate dependent containers (no-op)")
+	f.Bool("abort-on-container-exit", false, "Stop all containers if any container stopped")
+	f.Bool("abort-on-container-failure", false, "Stop all containers if any container exited with failure")
+	f.String("exit-code-from", "", "Return the exit code of the selected service container")
+	f.StringArray("attach", nil, "Restrict attaching to the specified services")
+	f.StringArray("no-attach", nil, "Do not attach (stream logs) to the specified services")
+	f.Bool("attach-dependencies", false, "Automatically attach to log output of dependent services (no-op)")
+	f.Int("wait-timeout", 0, "Maximum duration in seconds to wait for the project to be running|healthy")
+	f.BoolP("yes", "y", false, "Assume \"yes\" as answer to all prompts (no-op)")
+	f.Bool("menu", false, "Enable interactive shortcuts when running attached (no-op)")
 	return cmd
 }
 
@@ -417,6 +443,29 @@ func composeDown() *cobra.Command {
 					_, _ = runtime.CaptureSilent("volume", "delete", vol)
 				}
 			}
+			// --rmi all removes every service image; --rmi local removes only
+			// images for services built from a Dockerfile (no pinned registry image).
+			if rmi, _ := cmd.Flags().GetString("rmi"); rmi != "" {
+				if rmi != "all" && rmi != "local" {
+					return fmt.Errorf("invalid --rmi value %q: must be 'all' or 'local'", rmi)
+				}
+				seen := map[string]bool{}
+				for name, svc := range p.Services {
+					var ref string
+					switch {
+					case rmi == "all":
+						ref = p.ImageRef(name, svc)
+					case rmi == "local" && svc.Build.IsSet():
+						ref = p.BuildImageName(name)
+					}
+					if ref == "" || seen[ref] {
+						continue
+					}
+					seen[ref] = true
+					fmt.Printf("Removing image %s...\n", ref)
+					_, _ = runtime.CaptureSilent("image", "delete", ref)
+				}
+			}
 			return nil
 		},
 	}
@@ -502,6 +551,10 @@ func composePs() *cobra.Command {
 	cmd.Flags().BoolP("all", "a", false, "Show all stopped containers")
 	cmd.Flags().Bool("services", false, "Display services")
 	cmd.Flags().String("format", "", "Format output using a Go template or 'json'")
+	cmd.Flags().String("filter", "", "Filter services by a property (unsupported)")
+	cmd.Flags().String("status", "", "Filter services by status (accepted)")
+	cmd.Flags().Bool("no-trunc", false, "Don't truncate output (no-op)")
+	cmd.Flags().Bool("orphans", true, "Include orphaned services (no-op)")
 	return cmd
 }
 
@@ -562,6 +615,8 @@ func composeLogs() *cobra.Command {
 	cmd.Flags().BoolP("timestamps", "t", false, "Show timestamps (unsupported by backend)")
 	cmd.Flags().String("since", "", "Show logs since timestamp (unsupported by backend)")
 	cmd.Flags().String("until", "", "Show logs before timestamp (unsupported by backend)")
+	cmd.Flags().Bool("no-color", false, "Produce monochrome output (no-op)")
+	cmd.Flags().Int("index", 0, "Index of the container if service has multiple replicas (no-op)")
 	return cmd
 }
 
@@ -630,6 +685,10 @@ func composeBuild() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			noCache, _ := cmd.Flags().GetBool("no-cache")
+			pull, _ := cmd.Flags().GetBool("pull")
+			quiet, _ := cmd.Flags().GetBool("quiet")
+			extraArgs, _ := cmd.Flags().GetStringArray("build-arg")
 			selected := serviceSet(args)
 			for _, name := range p.Order() {
 				if selected != nil && !selected[name] {
@@ -639,8 +698,23 @@ func composeBuild() *cobra.Command {
 				if !svc.Build.IsSet() {
 					continue
 				}
-				fmt.Printf("Building %s...\n", name)
-				if err := runtime.Run(p.BuildArgs(name, svc)...); err != nil {
+				if !quiet {
+					fmt.Printf("Building %s...\n", name)
+				}
+				bargs := p.BuildArgs(name, svc)
+				if noCache {
+					bargs = append(bargs, "--no-cache")
+				}
+				if pull {
+					bargs = append(bargs, "--pull")
+				}
+				if quiet {
+					bargs = append(bargs, "--quiet")
+				}
+				for _, ba := range extraArgs {
+					bargs = append(bargs, "--build-arg", ba)
+				}
+				if err := runtime.Run(bargs...); err != nil {
 					return err
 				}
 			}
@@ -649,11 +723,18 @@ func composeBuild() *cobra.Command {
 	}
 	cmd.Flags().Bool("no-cache", false, "Do not use cache when building the image")
 	cmd.Flags().Bool("pull", false, "Always attempt to pull a newer version of the image")
+	cmd.Flags().BoolP("quiet", "q", false, "Don't print anything to STDOUT")
+	cmd.Flags().StringArray("build-arg", nil, "Set build-time variables for services")
+	cmd.Flags().String("progress", "", "Set type of progress output (accepted)")
+	cmd.Flags().Bool("with-dependencies", false, "Also build dependencies (transitively) (no-op)")
+	cmd.Flags().Bool("push", false, "Push service images (unsupported; use 'dcon compose push')")
+	cmd.Flags().StringArray("ssh", nil, "Set SSH authentications used when building (unsupported)")
+	cmd.Flags().StringP("memory", "m", "", "Set memory limit for the build container (accepted)")
 	return cmd
 }
 
 func composePull() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "pull [SERVICE...]",
 		Short: "Pull service images",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -661,6 +742,8 @@ func composePull() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			quiet, _ := cmd.Flags().GetBool("quiet")
+			ignoreFail, _ := cmd.Flags().GetBool("ignore-pull-failures")
 			selected := serviceSet(args)
 			for name, svc := range p.Services {
 				if selected != nil && !selected[name] {
@@ -669,14 +752,30 @@ func composePull() *cobra.Command {
 				if svc.Image == "" {
 					continue
 				}
-				fmt.Printf("Pulling %s (%s)...\n", name, svc.Image)
-				if err := runtime.Run("image", "pull", svc.Image); err != nil {
+				if !quiet {
+					fmt.Printf("Pulling %s (%s)...\n", name, svc.Image)
+				}
+				pargs := []string{"image", "pull"}
+				if quiet {
+					pargs = append(pargs, "--progress", "none")
+				}
+				pargs = append(pargs, svc.Image)
+				if err := runtime.Run(pargs...); err != nil {
+					if !ignoreFail {
+						return fmt.Errorf("pull %s (%s): %w", name, svc.Image, err)
+					}
 					fmt.Fprintf(os.Stderr, "dcon: warning: pull %s failed: %v\n", svc.Image, err)
 				}
 			}
 			return nil
 		},
 	}
+	cmd.Flags().BoolP("quiet", "q", false, "Pull without printing progress information")
+	cmd.Flags().Bool("ignore-pull-failures", false, "Pull what it can and ignores images with pull failures")
+	cmd.Flags().Bool("include-deps", false, "Also pull services declared as dependencies (no-op)")
+	cmd.Flags().String("policy", "", "Apply pull policy: missing|always (accepted)")
+	cmd.Flags().Bool("no-parallel", false, "Disable parallel pulling (no-op)")
+	return cmd
 }
 
 // lifecycleOnProject applies a simple verb to all (or selected) project
@@ -834,7 +933,7 @@ func composeLs() *cobra.Command {
 }
 
 func composeCreate() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "create [SERVICE...]",
 		Short: "Create containers for a service (without starting them)",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -842,6 +941,7 @@ func composeCreate() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			forceRecreate, _ := cmd.Flags().GetBool("force-recreate")
 			selected := serviceSet(args)
 			active := enabledProfiles(cmd)
 			net := ensureNetwork(p)
@@ -859,6 +959,9 @@ func composeCreate() *cobra.Command {
 				rargs := dropFlag(p.RunArgs(name, svc, 1, net, nil), "--detach")
 				rargs[0] = "create"
 				cname := p.ContainerName(name, 1, svc)
+				if forceRecreate {
+					_, _ = runtime.CaptureSilent("delete", "--force", cname)
+				}
 				fmt.Printf("Creating %s...\n", cname)
 				if err := runtime.Run(rargs...); err != nil {
 					return err
@@ -867,6 +970,15 @@ func composeCreate() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().Bool("build", false, "Build images before creating containers (no-op)")
+	cmd.Flags().Bool("no-build", false, "Don't build an image, even if it's policy (no-op)")
+	cmd.Flags().Bool("force-recreate", false, "Recreate containers even if their configuration hasn't changed")
+	cmd.Flags().Bool("no-recreate", false, "If containers already exist, don't recreate them (no-op)")
+	cmd.Flags().String("pull", "", "Pull image before running (always|missing|never|build)")
+	cmd.Flags().Bool("remove-orphans", false, "Remove containers for services not defined in the compose file (no-op)")
+	cmd.Flags().StringArray("scale", nil, "Scale SERVICE to NUM instances (accepted)")
+	cmd.Flags().BoolP("yes", "y", false, "Assume \"yes\" as answer to all prompts (no-op)")
+	return cmd
 }
 
 func composeExec() *cobra.Command {
@@ -895,9 +1007,14 @@ func composeExec() *cobra.Command {
 				cargs = append(cargs, "--interactive")
 			}
 			// Only allocate a PTY when one actually exists (docker behaviour),
-			// so `compose exec svc cmd | grep ...` works.
-			if v, _ := cmd.Flags().GetBool("tty"); v && haveTTY() {
+			// so `compose exec svc cmd | grep ...` works. -T/--no-TTY forces it off
+			// (the common CI form: `compose exec -T db psql < dump.sql`).
+			noTTY, _ := cmd.Flags().GetBool("no-TTY")
+			if v, _ := cmd.Flags().GetBool("tty"); v && !noTTY && haveTTY() {
 				cargs = append(cargs, "--tty")
+			}
+			if cmd.Flags().Changed("privileged") {
+				fmt.Fprintln(os.Stderr, "dcon: warning: --privileged is not supported by exec and was ignored")
 			}
 			if u, _ := cmd.Flags().GetString("user"); u != "" {
 				cargs = append(cargs, "--user", u)
@@ -916,11 +1033,13 @@ func composeExec() *cobra.Command {
 	cmd.Flags().SetInterspersed(false)
 	cmd.Flags().BoolP("interactive", "i", true, "Keep STDIN open")
 	cmd.Flags().BoolP("tty", "t", true, "Allocate a pseudo-TTY")
+	cmd.Flags().BoolP("no-TTY", "T", false, "Disable pseudo-TTY allocation")
 	cmd.Flags().BoolP("detach", "d", false, "Detached mode")
 	cmd.Flags().StringP("user", "u", "", "Run the command as this user")
 	cmd.Flags().StringP("workdir", "w", "", "Path to workdir directory")
 	cmd.Flags().StringArrayP("env", "e", nil, "Set environment variables")
 	cmd.Flags().Int("index", 1, "Index of the container if service has multiple replicas")
+	cmd.Flags().Bool("privileged", false, "Give extended privileges to the process (unsupported)")
 	return cmd
 }
 
@@ -963,6 +1082,17 @@ func composeRun() *cobra.Command {
 			if !ok {
 				return fmt.Errorf("no such service: %s", svcName)
 			}
+			for _, flag := range []string{"service-ports", "publish-all"} {
+				if cmd.Flags().Changed(flag) {
+					fmt.Fprintf(os.Stderr, "dcon: warning: --%s is not supported by the backend and was ignored\n", flag)
+				}
+			}
+			if b, _ := cmd.Flags().GetBool("build"); b && svc.Build.IsSet() {
+				fmt.Printf("Building %s...\n", svcName)
+				if err := runtime.Run(p.BuildArgs(svcName, svc)...); err != nil {
+					return err
+				}
+			}
 			net := ensureNetwork(p)
 
 			// Build CLI override flag tokens, inserted before the image.
@@ -973,9 +1103,11 @@ func composeRun() *cobra.Command {
 				}
 			}
 			addEach("--env", mustStringArray(cmd.Flags(), "env"))
+			addEach("--env-file", mustStringArray(cmd.Flags(), "env-file"))
 			addEach("--volume", mustStringArray(cmd.Flags(), "volume"))
 			addEach("--publish", mustStringArray(cmd.Flags(), "publish"))
 			addEach("--label", mustStringArray(cmd.Flags(), "label"))
+			addEach("--cap-add", mustStringArray(cmd.Flags(), "cap-add"))
 			if name, _ := cmd.Flags().GetString("name"); name != "" {
 				overrides = append(overrides, "--name", name)
 			}
@@ -1008,6 +1140,19 @@ func composeRun() *cobra.Command {
 	cmd.Flags().StringP("workdir", "w", "", "Working directory inside the container")
 	cmd.Flags().StringP("user", "u", "", "Username or UID")
 	cmd.Flags().String("entrypoint", "", "Override the entrypoint of the image")
+	// Common Docker Compose `run` flags. Registered so invocations don't
+	// hard-fail; the behavioral ones (TTY) are honored, the rest accepted.
+	cmd.Flags().BoolP("interactive", "i", true, "Keep STDIN open even if not attached")
+	cmd.Flags().BoolP("no-TTY", "T", false, "Disable pseudo-TTY allocation")
+	cmd.Flags().Bool("no-deps", false, "Don't start linked services")
+	cmd.Flags().Bool("service-ports", false, "Run with the service's ports enabled and mapped to the host (unsupported)")
+	cmd.Flags().Bool("build", false, "Build image before starting the container")
+	cmd.Flags().Bool("quiet-pull", false, "Pull without printing progress information")
+	cmd.Flags().BoolP("publish-all", "P", false, "Publish all exposed ports (unsupported)")
+	cmd.Flags().Bool("use-aliases", false, "Use the service's network aliases in the connected network(s) (no-op)")
+	cmd.Flags().Bool("remove-orphans", false, "Remove containers for services not defined in the compose file (no-op)")
+	cmd.Flags().StringArray("cap-add", nil, "Add Linux capabilities")
+	cmd.Flags().StringArray("env-file", nil, "Set environment variable file")
 	return cmd
 }
 
