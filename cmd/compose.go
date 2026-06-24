@@ -92,6 +92,15 @@ func newComposeCmd() *cobra.Command {
 	pf.String("project-name", "", "Project name")
 	pf.String("project-directory", "", "Alternate working directory (accepted; default is compose file dir)")
 	pf.StringArray("profile", nil, "Specify a profile to enable")
+	// Docker Compose global flags. Accepted so `docker compose --progress plain
+	// up`-style invocations don't hard-fail; dcon's output styling is fixed.
+	pf.StringArray("env-file", nil, "Environment file(s) for interpolation (accepted)")
+	pf.Int("parallel", -1, "Max parallelism, -1 for unlimited (accepted; see DCON_COMPOSE_PARALLEL)")
+	pf.Bool("compatibility", false, "Run in backward-compatibility mode (accepted)")
+	pf.String("progress", "", "Set type of progress output (accepted)")
+	pf.String("ansi", "auto", "Control when to print ANSI control characters (accepted)")
+	pf.Bool("dry-run", false, "Execute in dry-run mode (accepted; no special handling)")
+	pf.Bool("all-resources", false, "Include all resources, even unused ones (accepted)")
 
 	group.AddCommand(
 		composeUp(), composeDown(), composePs(), composeLogs(), composeBuild(),

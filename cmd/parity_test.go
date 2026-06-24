@@ -105,6 +105,16 @@ func TestComposeFlagSurfaceParses(t *testing.T) {
 	}
 }
 
+// TestComposeGlobalFlagsParse covers Docker Compose's global flags on the
+// compose group (e.g. `docker compose --progress plain up`).
+func TestComposeGlobalFlagsParse(t *testing.T) {
+	parseOnly(t, newComposeCmd(), []string{
+		"--progress", "plain", "--ansi", "never", "--parallel", "4",
+		"--compatibility", "--dry-run", "--env-file", ".env",
+		"--file", "compose.yaml", "--project-name", "proj", "--profile", "dev",
+	})
+}
+
 func TestCurrentContextHonorsEnv(t *testing.T) {
 	t.Setenv("DOCKER_CONTEXT", "")
 	if got := currentContextName(); got != defaultContextName {
