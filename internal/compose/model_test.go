@@ -341,6 +341,36 @@ services:
 	}
 }
 
+// TestDollarEscapePreserved reproduces the bug where `$$` (compose's escape for
+// a literal `$`) was deleted instead of collapsed to a single `$`. e.g.
+// `command: echo $$HOME` must keep a literal `$HOME`, not become `echo HOME`.
+func TestDollarEscapePreserved(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yaml")
+	yaml := `
+services:
+  web:
+    image: alpine
+    command: echo $$HOME and price $$5
+    environment:
+      - LITERAL=a$$b
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	web := p.Services["web"]
+	if len(web.Command) != 1 || web.Command[0] != "echo $HOME and price $5" {
+		t.Errorf("command = %q, want 'echo $HOME and price $5'", web.Command)
+	}
+	if web.Environment["LITERAL"] != "a$b" {
+		t.Errorf("env LITERAL = %q, want a$b", web.Environment["LITERAL"])
+	}
+}
+
 func TestServiceEnabledProfiles(t *testing.T) {
 	noProf := &Service{}
 	if !noProf.Enabled(map[string]bool{}) {

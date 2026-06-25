@@ -939,6 +939,10 @@ func composeConfig() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// -q/--quiet: only validate (loadProject above did that), print nothing.
+			if q, _ := cmd.Flags().GetBool("quiet"); q {
+				return nil
+			}
 			if v, _ := cmd.Flags().GetBool("services"); v {
 				names := make([]string, 0, len(p.Services))
 				for n := range p.Services {
@@ -994,9 +998,14 @@ func composeLs() *cobra.Command {
 					configDir[proj] = d
 				}
 			}
+			// Default to projects with a running container; -a/--all includes
+			// fully-stopped ones too (matches docker compose ls).
+			showAll, _ := cmd.Flags().GetBool("all")
 			names := make([]string, 0, len(projects))
 			for n := range projects {
-				names = append(names, n)
+				if showAll || projects[n]["running"] > 0 {
+					names = append(names, n)
+				}
 			}
 			sort.Strings(names)
 			// -q/--quiet: only project names, one per line (matches docker).
@@ -1367,9 +1376,13 @@ func composeImages() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			selected := serviceSet(args) // nil => all services (docker: images [SERVICE...])
 			w := dockerfmt.NewTabWriter()
 			fmt.Fprintln(w, "CONTAINER\tREPOSITORY\tTAG\tSIZE")
 			for _, c := range containers {
+				if selected != nil && !selected[serviceOf(c)] {
+					continue
+				}
 				repo, tag := dockerfmt.SplitRepoTag(dockerfmt.ShortImage(c.Configuration.Image.Reference))
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", c.ID, repo, tag, "N/A")
 			}

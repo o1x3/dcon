@@ -1,7 +1,10 @@
 package cmd
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"dcon/internal/compose"
@@ -74,6 +77,35 @@ func TestEffectiveReplicas(t *testing.T) {
 	}
 	if n := effectiveReplicas(svc, map[string]int{"web": -5}, "web"); n != 0 {
 		t.Errorf("negative scale floored to 0, got %d", n)
+	}
+}
+
+// TestComposeConfigQuiet reproduces the bug where `compose config -q` printed
+// the full rendered config instead of validating silently. With -q it must
+// print nothing on a valid file (and still validate, via loadProject).
+func TestComposeConfigQuiet(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"),
+		[]byte("services:\n  web:\n    image: nginx\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir) // compose.Find searches the working directory
+
+	run := func(args []string) string {
+		cmd := composeConfig()
+		cmd.SetArgs(args)
+		cmd.SilenceUsage, cmd.SilenceErrors = true, true
+		return captureOut(t, func() {
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("execute %v: %v", args, err)
+			}
+		})
+	}
+	if out := run([]string{"-q"}); out != "" {
+		t.Errorf("config -q must print nothing; got %q", out)
+	}
+	if out := run(nil); !strings.Contains(out, "nginx") {
+		t.Errorf("config (no -q) should render the config; got %q", out)
 	}
 }
 

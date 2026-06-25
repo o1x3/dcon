@@ -509,6 +509,12 @@ func Load(path, projectOverride string) (*Project, error) {
 	}
 	// Expand ${VAR} / $VAR from the environment, like compose does.
 	expanded := os.Expand(string(data), func(key string) string {
+		// `$$` is compose's escape for a literal `$`: os.Expand calls us with
+		// key=="$" for it, so collapse it back to a single dollar rather than
+		// treating "$" as a variable name (which would delete the escaped dollar).
+		if key == "$" {
+			return "$"
+		}
 		// support ${VAR:-default}
 		if i := strings.Index(key, ":-"); i >= 0 {
 			name, def := key[:i], key[i+2:]

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -132,8 +133,10 @@ func newStatsCmd() *cobra.Command {
 					return err
 				}
 				dt := time.Since(prevT).Seconds()
-				if streaming && tableMode {
-					fmt.Print("\033[H\033[2J") // clear screen only for the live table view
+				// Clear the screen only for a live table on a real terminal — never
+				// when stdout is a pipe/file, so piped output stays free of raw ANSI.
+				if streaming && tableMode && isTerminal(os.Stdout) {
+					fmt.Print("\033[H\033[2J")
 				}
 				if err := renderStats(cur, prev, dt, format, noTrunc, extraIDs(cur)); err != nil {
 					return err
