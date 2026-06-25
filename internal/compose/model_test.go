@@ -136,6 +136,27 @@ func TestBuildArgs(t *testing.T) {
 	}
 }
 
+// TestBuildArgsTagsExplicitImage reproduces the bug where a service with BOTH
+// build: and image: built an image tagged with the derived project name while
+// the container ran svc.Image — so the freshly built image was never used.
+// BuildArgs must tag the explicit image: so build output and run ref agree.
+func TestBuildArgsTagsExplicitImage(t *testing.T) {
+	p := &Project{Name: "proj", Dir: "/tmp"}
+	svc := &Service{Image: "myorg/web:1.0", Build: Build{Context: "."}}
+	svc.Build.set = true
+	args := p.BuildArgs("web", svc)
+	if !containsSub(args, "myorg/web:1.0") {
+		t.Errorf("build must tag the explicit image: ref; got %v", args)
+	}
+	if containsSub(args, p.BuildImageName("web")) {
+		t.Errorf("build must NOT tag the derived name when image: is set; got %v", args)
+	}
+	// Sanity: build tag == run image ref.
+	if p.ImageRef("web", svc) != "myorg/web:1.0" {
+		t.Errorf("imageRef mismatch: %q", p.ImageRef("web", svc))
+	}
+}
+
 func TestDefaultNetworkAndName(t *testing.T) {
 	p := loadSample(t)
 	if p.DefaultNetwork() != "shop_default" {
@@ -186,6 +207,248 @@ services:
 	lf := p.Services["list"].EnvFile
 	if len(lf) != 2 || lf[0].Path != "a.env" || !lf[0].Required || lf[1].Path != "b.env" || lf[1].Required {
 		t.Errorf("list env_file wrong: %+v", lf)
+	}
+}
+
+// TestLongFormPortsAndVolumes reproduces the bug where `ports:`/`volumes:` in
+// the Compose long (mapping) form failed to unmarshal into []string, hard-
+// erroring the entire compose file. They must parse and flatten to the same
+// short-form strings the translator emits, alongside short-form entries.
+func TestLongFormPortsAndVolumes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yaml")
+	yaml := `
+services:
+  web:
+    image: nginx
+    ports:
+      - "8080:80"
+      - target: 443
+        published: "8443"
+        protocol: tcp
+      - 9000
+    volumes:
+      - ./short:/short
+      - type: bind
+        source: ./data
+        target: /data
+        read_only: true
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(path, "")
+	if err != nil {
+		t.Fatalf("Load must not fail on long-form ports/volumes: %v", err)
+	}
+	web := p.Services["web"]
+	wantPorts := []string{"8080:80", "8443:443/tcp", "9000"}
+	if len(web.Ports) != len(wantPorts) {
+		t.Fatalf("ports = %v, want %v", web.Ports, wantPorts)
+	}
+	for i, w := range wantPorts {
+		if web.Ports[i] != w {
+			t.Errorf("ports[%d] = %q, want %q", i, web.Ports[i], w)
+		}
+	}
+	wantVols := []string{"./short:/short", "./data:/data:ro"}
+	if len(web.Volumes) != len(wantVols) {
+		t.Fatalf("volumes = %v, want %v", web.Volumes, wantVols)
+	}
+	for i, w := range wantVols {
+		if web.Volumes[i] != w {
+			t.Errorf("volumes[%d] = %q, want %q", i, web.Volumes[i], w)
+		}
+	}
+}
+
+// TestMapListSkipsEmptyKeys reproduces the bug where a blank ("") or keyless
+// ("=value") environment/labels list entry produced an empty-key map entry,
+// later emitted as a malformed `--env =…` arg. Such entries must be dropped.
+func TestMapListSkipsEmptyKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yaml")
+	yaml := `
+services:
+  web:
+    image: nginx
+    environment:
+      - "GOOD=1"
+      - ""
+      - "=orphan"
+    labels:
+      - "owner=team"
+      - ""
+      - "=orphan"
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := p.Services["web"].Environment
+	if _, bad := env[""]; bad {
+		t.Errorf("empty-key env entry leaked: %v", env)
+	}
+	if env["GOOD"] != "1" || len(env) != 1 {
+		t.Errorf("environment = %v, want only GOOD=1", env)
+	}
+	// labels go through MapList (not EnvMap); blank/keyless entries must drop too.
+	labels := p.Services["web"].Labels
+	if _, bad := labels[""]; bad {
+		t.Errorf("empty-key label entry leaked: %v", labels)
+	}
+	if labels["owner"] != "team" || len(labels) != 1 {
+		t.Errorf("labels = %v, want only owner=team", labels)
+	}
+}
+
+// TestEnvBareKeyHostPassthrough reproduces the bug where a bare environment key
+// (`- FOO` list form or `FOO:` null map form) was set to "" instead of
+// inheriting the host's $FOO (docker compose passthrough). An unset bare key is
+// omitted, not emitted as FOO="".
+func TestEnvBareKeyHostPassthrough(t *testing.T) {
+	t.Setenv("DCON_TEST_PASSTHRU", "from-host")
+	mustUnsetForTest(t, "DCON_UNSET_XYZ") // assertion below assumes it is unset
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yaml")
+	yaml := `
+services:
+  list:
+    image: x
+    environment:
+      - DCON_TEST_PASSTHRU
+      - EXPLICIT=val
+      - DCON_UNSET_XYZ
+  mapform:
+    image: x
+    environment:
+      DCON_TEST_PASSTHRU:
+      KEYED: v2
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	le := p.Services["list"].Environment
+	if le["DCON_TEST_PASSTHRU"] != "from-host" {
+		t.Errorf("list bare key should inherit host value; got %q", le["DCON_TEST_PASSTHRU"])
+	}
+	if le["EXPLICIT"] != "val" {
+		t.Errorf("explicit value wrong: %q", le["EXPLICIT"])
+	}
+	if _, present := le["DCON_UNSET_XYZ"]; present {
+		t.Errorf("unset bare key must be omitted, not empty: %v", le)
+	}
+	me := p.Services["mapform"].Environment
+	if me["DCON_TEST_PASSTHRU"] != "from-host" {
+		t.Errorf("map null-value key should inherit host value; got %q", me["DCON_TEST_PASSTHRU"])
+	}
+	if me["KEYED"] != "v2" {
+		t.Errorf("map keyed value wrong: %q", me["KEYED"])
+	}
+}
+
+// TestDollarEscapePreserved reproduces the bug where `$$` (compose's escape for
+// a literal `$`) was deleted instead of collapsed to a single `$`. e.g.
+// `command: echo $$HOME` must keep a literal `$HOME`, not become `echo HOME`.
+func TestDollarEscapePreserved(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yaml")
+	yaml := `
+services:
+  web:
+    image: alpine
+    command: echo $$HOME and price $$5
+    environment:
+      - LITERAL=a$$b
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	web := p.Services["web"]
+	if len(web.Command) != 1 || web.Command[0] != "echo $HOME and price $5" {
+		t.Errorf("command = %q, want 'echo $HOME and price $5'", web.Command)
+	}
+	if web.Environment["LITERAL"] != "a$b" {
+		t.Errorf("env LITERAL = %q, want a$b", web.Environment["LITERAL"])
+	}
+}
+
+// TestExpandVar reproduces the bug where only ${VAR:-default} was honored;
+// every other operator (:?, :+, -, +, :=) silently produced empty, even for SET
+// variables. Covers bash/compose parameter-expansion semantics.
+func TestExpandVar(t *testing.T) {
+	t.Setenv("SETV", "x")
+	t.Setenv("EMPTYV", "")
+	mustUnsetForTest(t, "UNSETV") // cases below assume UNSETV is absent from the env
+	// (key, want, wantErr)
+	cases := []struct {
+		key     string
+		want    string
+		wantErr bool
+	}{
+		{"$", "$", false},         // $$ escape
+		{"SETV", "x", false},      // ${SETV}
+		{"UNSETV", "", false},     // ${UNSETV}
+		{"SETV:-d", "x", false},   // set -> value
+		{"UNSETV:-d", "d", false}, // unset -> default
+		{"EMPTYV:-d", "d", false}, // empty (colon) -> default
+		{"EMPTYV-d", "", false},   // empty (no colon) -> the empty value
+		{"UNSETV-d", "d", false},  // unset (no colon) -> default
+		{"SETV:+a", "a", false},   // set non-empty -> alternate
+		{"EMPTYV:+a", "", false},  // empty (colon) -> "" (not "present")
+		{"EMPTYV+a", "a", false},  // empty but set (no colon) -> alternate
+		{"UNSETV:+a", "", false},  // unset -> ""
+		{"SETV:?msg", "x", false}, // set -> value
+		{"UNSETV:?msg", "", true}, // unset -> error
+		{"EMPTYV:?msg", "", true}, // empty (colon) -> error
+		{"SETV:=d", "x", false},   // set -> value
+		{"UNSETV:=d", "d", false}, // unset -> default
+	}
+	for _, c := range cases {
+		got, err := expandVar(c.key)
+		if (err != nil) != c.wantErr {
+			t.Errorf("expandVar(%q) err=%v, wantErr=%v", c.key, err, c.wantErr)
+			continue
+		}
+		if !c.wantErr && got != c.want {
+			t.Errorf("expandVar(%q) = %q, want %q", c.key, got, c.want)
+		}
+	}
+}
+
+// TestLoadRequiredVarErrors confirms a required-but-unset ${VAR:?} aborts Load.
+func TestLoadRequiredVarErrors(t *testing.T) {
+	mustUnsetForTest(t, "DCON_REQ_UNSET") // the required-var error depends on it being unset
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yaml")
+	if err := os.WriteFile(path, []byte("services:\n  a:\n    image: img:${DCON_REQ_UNSET:?tag required}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path, ""); err == nil {
+		t.Error("Load should fail when a required ${VAR:?} variable is unset")
+	}
+}
+
+// mustUnsetForTest makes key deterministically absent for the duration of the
+// test, restoring whatever the host had afterward. t.Setenv records the original
+// value (and its restore), then Unsetenv clears it so assertions about an unset
+// variable don't depend on the runner's environment.
+func mustUnsetForTest(t *testing.T, key string) {
+	t.Helper()
+	t.Setenv(key, "")
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatalf("unset %s: %v", key, err)
 	}
 }
 

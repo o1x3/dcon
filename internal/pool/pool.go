@@ -232,12 +232,37 @@ func ReapStale() {
 		return
 	}
 	cutoff := time.Now().Unix() - int64(ttl.Seconds())
-	for _, m := range List() {
+	// Pop the stale members atomically under the lock before destroying them.
+	// Removing-then-destroying as two steps (List → forget → Destroy) raced with
+	// Claim: a run could claim a member after we listed it, then we'd destroy the
+	// VM out from under the live exec. Doing the removal inside the lock means a
+	// concurrent Claim and a reap can never both own the same member.
+	var stale []Member
+	// Destroy only after save() persists the removal. withLock can run the
+	// callback then fail to write pool.json; ignoring that and destroying anyway
+	// would tear down VMs still listed as available (and thus still claimable).
+	if err := withLock(func(s *state) error {
+		stale, s.Members = partitionStale(s.Members, cutoff)
+		return nil
+	}); err != nil {
+		return
+	}
+	for _, m := range stale {
+		DestroyAsync(m.ID)
+	}
+}
+
+// partitionStale splits members into those booted before cutoff (stale) and the
+// rest (kept), preserving order. Pure so the reap policy is unit-testable.
+func partitionStale(members []Member, cutoff int64) (stale, kept []Member) {
+	for _, m := range members {
 		if m.BootedAt < cutoff {
-			forget(m.ID)
-			DestroyAsync(m.ID)
+			stale = append(stale, m)
+		} else {
+			kept = append(kept, m)
 		}
 	}
+	return stale, kept
 }
 
 // AutoEnabled reports whether dcon should self-prime the pool after eligible
@@ -269,7 +294,12 @@ func Claim(image string) (Member, bool) {
 	norm := NormalizeRef(image)
 	var claimed Member
 	var ok bool
-	_ = withLock(func(s *state) error {
+	// If withLock's save() fails, the in-memory removal of the member is NOT
+	// persisted — the member is still listed in pool.json on disk, so a concurrent
+	// or subsequent Claim would hand out the SAME live VM (two runs exec'ing into
+	// one microVM, breaking single-use isolation). Treat a persist failure as a
+	// pool miss so the caller cold-runs a fresh VM instead.
+	if err := withLock(func(s *state) error {
 		for i, m := range s.Members {
 			if m.Image == norm {
 				claimed = m
@@ -279,7 +309,9 @@ func Claim(image string) (Member, bool) {
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		return Member{}, false
+	}
 	return claimed, ok
 }
 

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -15,6 +16,31 @@ import (
 
 	"github.com/spf13/cobra"
 )
+
+// pruneStep is one backend prune invocation with its progress message.
+type pruneStep struct {
+	msg  string
+	args []string
+}
+
+// systemPrunePlan is the ordered set of backend prune calls `system prune`
+// makes, varying with --all (images) and --volumes. Pure, so the plan is
+// unit-testable without a backend.
+func systemPrunePlan(all, volumes bool) []pruneStep {
+	imageArgs := []string{"image", "prune"}
+	if all {
+		imageArgs = append(imageArgs, "--all")
+	}
+	steps := []pruneStep{
+		{"Deleting stopped containers...", []string{"prune"}},
+		{"Deleting unused images...", imageArgs},
+		{"Deleting unused networks...", []string{"network", "prune"}},
+	}
+	if volumes {
+		steps = append(steps, pruneStep{"Deleting unused volumes...", []string{"volume", "prune"}})
+	}
+	return steps
+}
 
 var verRe = regexp.MustCompile(`version\s+([0-9][^\s]*)\s*\(build:\s*([^,]+),\s*commit:\s*([^)]+)\)`)
 
@@ -134,11 +160,12 @@ func newInfoCmd() *cobra.Command {
 			imgs, _ := getImages()
 			ver := backendVersion()
 
-			// status check
+			// status check — exact field match (like doctor), not a substring:
+			// "running" is a substring of "not running".
 			statusOut, _ := rt.CaptureSilent("system", "status")
-			serverState := "running"
-			if !strings.Contains(statusOut, "running") {
-				serverState = "stopped"
+			serverState := "stopped"
+			if parseSystemStatus(statusOut)["status"] == "running" {
+				serverState = "running"
 			}
 
 			if format, _ := cmd.Flags().GetString("format"); format != "" {
@@ -219,6 +246,9 @@ func newSystemGroupCmd() *cobra.Command {
 		Short: "Show docker disk usage",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("verbose") {
+				fmt.Fprintln(os.Stderr, "dcon: warning: --verbose is not supported by the backend and was ignored")
+			}
 			cargs := []string{"system", "df"}
 			if f, _ := cmd.Flags().GetString("format"); f != "" {
 				cargs = append(cargs, "--format", f)
@@ -236,21 +266,18 @@ func newSystemGroupCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			all, _ := cmd.Flags().GetBool("all")
 			volumes, _ := cmd.Flags().GetBool("volumes")
-			fmt.Println("Deleting stopped containers...")
-			_ = rt.Run("prune")
-			fmt.Println("Deleting unused images...")
-			if all {
-				_ = rt.Run("image", "prune", "--all")
-			} else {
-				_ = rt.Run("image", "prune")
+			if cmd.Flags().Changed("filter") {
+				fmt.Fprintln(os.Stderr, "dcon: warning: --filter is not supported by the backend and was ignored")
 			}
-			fmt.Println("Deleting unused networks...")
-			_ = rt.Run("network", "prune")
-			if volumes {
-				fmt.Println("Deleting unused volumes...")
-				_ = rt.Run("volume", "prune")
+			// Run every step but propagate failures: previously all errors were
+			// discarded and the command always exited 0, so a wholly failed prune
+			// (e.g. backend down) reported success and misled scripts/CI.
+			var errs []error
+			for _, step := range systemPrunePlan(all, volumes) {
+				fmt.Println(step.msg)
+				errs = append(errs, rt.Run(step.args...))
 			}
-			return nil
+			return errors.Join(errs...)
 		},
 	}
 	prune.Flags().BoolP("all", "a", false, "Remove all unused images, not just dangling ones")

@@ -84,23 +84,29 @@ func ShellSplit(s string) []string {
 // netName, when non-empty, is attached via --network. index is the replica
 // number (1-based).
 func (p *Project) RunArgs(service string, svc *Service, index int, netName string, extraEnv map[string]string) []string {
-	a, _ := p.runArgs(service, svc, index, netName, extraEnv)
+	a, _ := p.runArgs(service, svc, index, netName, extraEnv, false)
 	return a
 }
 
 // runArgs builds the run args and returns the index of the image token, so
 // callers can split flags / image / command positionally instead of by fragile
-// string matching.
-func (p *Project) runArgs(service string, svc *Service, index int, netName string, extraEnv map[string]string) (args []string, imageIdx int) {
+// string matching. oneoff stamps the compose oneoff label True/False so a
+// `compose run` container is distinguishable from a service replica (and is
+// excluded by the replica resolvers), matching Docker.
+func (p *Project) runArgs(service string, svc *Service, index int, netName string, extraEnv map[string]string, oneoff bool) (args []string, imageIdx int) {
 	args = []string{"run", "--detach"}
 	args = append(args, "--name", p.ContainerName(service, index, svc))
 
+	oneoffVal := "False"
+	if oneoff {
+		oneoffVal = "True"
+	}
 	// compose identity labels
 	args = append(args,
 		"--label", LabelProject+"="+p.Name,
 		"--label", LabelService+"="+service,
 		"--label", fmt.Sprintf("%s=%d", LabelNumber, index),
-		"--label", LabelOneoff+"=False",
+		"--label", LabelOneoff+"="+oneoffVal,
 		"--label", LabelConfigDir+"="+p.Dir,
 	)
 	for _, k := range sortedKeys(svc.Labels) {
@@ -203,6 +209,12 @@ func (p *Project) runArgs(service string, svc *Service, index int, netName strin
 		args = append(args, "--publish", normalizePort(port))
 	}
 	for _, vol := range svc.Volumes {
+		// A long-form `type: tmpfs` mount is routed to --tmpfs, not --volume,
+		// to preserve its in-memory semantics (see tmpfsVolumeMarker).
+		if target, ok := strings.CutPrefix(vol, tmpfsVolumeMarker); ok {
+			args = append(args, "--tmpfs", target)
+			continue
+		}
 		args = append(args, "--volume", p.resolveVolume(vol))
 	}
 
@@ -236,19 +248,24 @@ func (p *Project) ImageRef(service string, svc *Service) string {
 	return p.imageRef(service, svc)
 }
 
-// OneOffArgs builds `container run --rm ...` for a `compose run` invocation:
+// OneOffArgs builds `container run [--rm] ...` for a `compose run` invocation:
 // the service config without the fixed name/detach, plus CLI override flag
 // tokens (overrides, e.g. ["--env","K=V","--volume","a:b"]) injected before the
 // image, an optional entrypoint override (replacing the service's), and an
 // optional command override. The image boundary is located positionally, never
 // by string matching, so flag/command values equal to the image reference
-// cannot misplace the override.
-func (p *Project) OneOffArgs(service string, svc *Service, netName string, cmdOverride, overrides []string, entrypoint string) []string {
-	base, imageIdx := p.runArgs(service, svc, 1, netName, nil)
-	flags := base[1:imageIdx] // the run flags span (after "run", before image)
+// cannot misplace the override. rm controls --rm directly: it is added (or not)
+// here rather than being stripped afterward, so a literal "--rm" in the user's
+// command args is never removed.
+func (p *Project) OneOffArgs(service string, svc *Service, netName string, cmdOverride, overrides []string, entrypoint string, rm bool) []string {
+	base, imageIdx := p.runArgs(service, svc, 1, netName, nil, true) // oneoff=true
+	flags := base[1:imageIdx]                                        // the run flags span (after "run", before image)
 	image := base[imageIdx]
 
-	out := []string{"run", "--rm"}
+	out := []string{"run"}
+	if rm {
+		out = append(out, "--rm")
+	}
 	for i := 0; i < len(flags); i++ {
 		switch flags[i] {
 		case "--detach":
@@ -269,10 +286,44 @@ func (p *Project) OneOffArgs(service string, svc *Service, netName string, cmdOv
 	}
 	out = append(out, overrides...) // raw CLI override tokens, before the image
 	out = append(out, image)
+
+	// The tokens after the image are the service entrypoint's extra tokens
+	// (Entrypoint[1:], which runArgs places here because the backend --entrypoint
+	// takes a single token) followed by the service command. Split them so each is
+	// handled per Docker semantics:
+	//   - entrypoint extras: kept when the entrypoint is NOT overridden (they
+	//     belong to the surviving entrypoint); dropped when --entrypoint replaces
+	//     the whole entrypoint.
+	//   - command: replaced by cmdOverride when given, else the service command.
+	var extras, command []string
+	if n := len(svc.Entrypoint) - 1; n > 0 {
+		if avail := len(base) - (imageIdx + 1); n > avail {
+			n = avail
+		}
+		extras = base[imageIdx+1 : imageIdx+1+n]
+		command = base[imageIdx+1+n:]
+	} else {
+		command = base[imageIdx+1:]
+	}
+	if entrypoint == "" {
+		out = append(out, extras...) // keep the service entrypoint's own args
+	}
 	if len(cmdOverride) > 0 {
 		return append(out, cmdOverride...) // override replaces the service command
 	}
-	return append(out, base[imageIdx+1:]...) // keep the service's own command
+	return append(out, command...)
+}
+
+// CreateArgs builds the `container create ...` args for a service: the same
+// configuration RunArgs produces but as a non-detached create. It drops the
+// leading "--detach" positionally (runArgs always emits it at index 1), so a
+// service command/entrypoint that itself contains a literal "--detach" token is
+// never corrupted — unlike a blind token strip.
+func (p *Project) CreateArgs(service string, svc *Service, index int, netName string) []string {
+	base, _ := p.runArgs(service, svc, index, netName, nil, false)
+	// base = ["run", "--detach", ...flags..., image, ...command...]
+	out := append([]string{"create"}, base[2:]...)
+	return out
 }
 
 // BuildImageName is the local tag used for services built from a Dockerfile.
@@ -288,8 +339,14 @@ func (p *Project) resolve(path string) string {
 	return filepath.Join(p.Dir, path)
 }
 
-// resolveVolume rewrites a bind-mount source to an absolute path (named volumes
-// and absolute paths pass through unchanged).
+// resolveVolume rewrites a service volume spec's source so it matches what the
+// up/create flow actually provisions: a relative bind source becomes absolute,
+// and a declared named volume (a key in the top-level volumes:) becomes its
+// project-scoped backend name (VolumeName). Without the latter, the container
+// mounted a bare-keyed volume (e.g. `data`) while ensureVolumes created
+// `<project>_data`, so the service got a different volume than declared and
+// `down -v` removed the wrong one. Absolute paths and undeclared names pass
+// through unchanged.
 func (p *Project) resolveVolume(spec string) string {
 	parts := strings.SplitN(spec, ":", 2)
 	if len(parts) < 2 {
@@ -298,6 +355,9 @@ func (p *Project) resolveVolume(spec string) string {
 	src := parts[0]
 	if strings.HasPrefix(src, "./") || strings.HasPrefix(src, "../") || src == "." {
 		return p.resolve(src) + ":" + parts[1]
+	}
+	if vs, ok := p.Volumes[src]; ok { // declared named volume -> backend name
+		return p.VolumeName(src, vs) + ":" + parts[1]
 	}
 	return spec
 }
@@ -310,13 +370,17 @@ func normalizePort(spec string) string {
 }
 
 // BuildArgs returns the `container build ...` args for a service with build:.
+// It tags the built image with imageRef — i.e. the service's explicit `image:`
+// when set, otherwise the derived project image name. This must match what the
+// container is run as (RunArgs/OneOffArgs also use imageRef): tagging only the
+// derived name while running `image:` would build an image the run never uses.
 func (p *Project) BuildArgs(service string, svc *Service) []string {
 	ctx := svc.Build.Context
 	if ctx == "" {
 		ctx = "."
 	}
 	ctx = p.resolve(ctx)
-	args := []string{"build", "--tag", p.BuildImageName(service)}
+	args := []string{"build", "--tag", p.imageRef(service, svc)}
 	if svc.Build.Dockerfile != "" {
 		args = append(args, "--file", filepath.Join(ctx, svc.Build.Dockerfile))
 	}
@@ -347,6 +411,12 @@ func (p *Project) NetworkName(key string, spec *NetworkSpec) string {
 func (p *Project) VolumeName(key string, spec *VolumeSpec) string {
 	if spec != nil && spec.Name != "" {
 		return spec.Name
+	}
+	// An external volume already exists outside the project; reference it by its
+	// exact key, never the project-prefixed name (which would mount/create a
+	// different volume than the one the user declared external).
+	if spec != nil && spec.External {
+		return key
 	}
 	return p.Name + "_" + key
 }

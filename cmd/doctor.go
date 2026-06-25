@@ -136,7 +136,7 @@ func gatherChecks() []check {
 
 	// 4. Image builder (only needed for `build`; warn if absent).
 	builderOut, _ := rt.CaptureSilent("builder", "status")
-	if strings.Contains(builderOut, "running") {
+	if builderRunning(builderOut) {
 		checks = append(checks, check{name: "Image builder", level: levelOK, detail: "running"})
 	} else {
 		checks = append(checks, check{
@@ -167,6 +167,13 @@ func gatherChecks() []check {
 
 // kernelInstalled reports whether a guest kernel is present, by checking the
 // backend's kernels directory under the application-support root.
+// builderRunning reports whether `container builder status` output indicates a
+// running builder. "running" is a substring of "not running", so the negative
+// form must be excluded explicitly.
+func builderRunning(out string) bool {
+	return strings.Contains(out, "running") && !strings.Contains(out, "not running")
+}
+
 func kernelInstalled() bool {
 	entries, err := os.ReadDir(filepath.Join(rt.AppRoot(), "kernels"))
 	if err != nil {

@@ -20,6 +20,26 @@ func randomName() string {
 	return hex.EncodeToString(b)
 }
 
+// resolveVolumeName picks the name for `volume create`: the positional VOLUME
+// or the (hidden) --name flag, erroring if both are given, and falling back to a
+// random anonymous-volume id when neither is supplied. Previously --name was
+// silently ignored, creating a random-named volume.
+func resolveVolumeName(flagName string, nameChanged bool, args []string) (string, error) {
+	if len(args) == 1 {
+		if nameChanged {
+			return "", fmt.Errorf("conflicting options: cannot supply both --name and a positional VOLUME name")
+		}
+		return args[0], nil
+	}
+	if nameChanged {
+		if flagName == "" {
+			return "", fmt.Errorf("volume name cannot be empty")
+		}
+		return flagName, nil
+	}
+	return randomName(), nil
+}
+
 // matchVolumeFilters implements docker volume ls --filter (name/driver/label).
 func matchVolumeFilters(v dockerfmt.Volume, driver string, filters []string) bool {
 	for _, fl := range filters {
@@ -67,9 +87,10 @@ func newVolumeGroupCmd() *cobra.Command {
 		Short: "Create a volume",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name := randomName()
-			if len(args) == 1 {
-				name = args[0]
+			nf, _ := cmd.Flags().GetString("name")
+			name, err := resolveVolumeName(nf, cmd.Flags().Changed("name"), args)
+			if err != nil {
+				return err
 			}
 			cargs := []string{"volume", "create"}
 			for _, l := range mustStringArray(cmd.Flags(), "label") {
@@ -107,7 +128,7 @@ func newVolumeGroupCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			quiet, _ := cmd.Flags().GetBool("quiet")
 			format, _ := cmd.Flags().GetString("format")
-			filters, _ := cmd.Flags().GetStringSlice("filter")
+			filters, _ := cmd.Flags().GetStringArray("filter")
 			var list []dockerfmt.Volume
 			if err := runtime.CaptureJSON(&list, "volume", "list", "--format", "json"); err != nil {
 				return err
@@ -142,7 +163,8 @@ func newVolumeGroupCmd() *cobra.Command {
 	}
 	ls.Flags().BoolP("quiet", "q", false, "Only display volume names")
 	ls.Flags().String("format", "", "Format output using a Go template or 'json'")
-	ls.Flags().StringSliceP("filter", "f", nil, "Provide filter values")
+	// StringArray, not StringSlice: a label-value filter may contain commas.
+	ls.Flags().StringArrayP("filter", "f", nil, "Provide filter values")
 
 	rm := &cobra.Command{
 		Use:     "rm [OPTIONS] VOLUME [VOLUME...]",

@@ -112,17 +112,82 @@ func inspectRaw(typ string, ids []string) (string, error) {
 	case "container":
 		return runtime.CaptureSilent(append([]string{"inspect"}, ids...)...)
 	default:
-		out, err := runtime.CaptureSilent(append([]string{"inspect"}, ids...)...)
-		if err == nil {
+		// Fast path: all ids resolve as containers, or all as images — a single
+		// batch call preserves the backend's native formatting.
+		if out, err := runtime.CaptureSilent(append([]string{"inspect"}, ids...)...); err == nil {
 			return out, nil
 		}
-		// Fall back to image inspect.
-		out2, err2 := runtime.CaptureSilent(append([]string{"image", "inspect"}, ids...)...)
-		if err2 == nil {
-			return out2, nil
+		if out, err := runtime.CaptureSilent(append([]string{"image", "inspect"}, ids...)...); err == nil {
+			return out, nil
 		}
-		return "", fmt.Errorf("no such object %v: %v; %v", ids, err, err2)
+		// Mixed (some containers, some images) or partly missing: resolve each id
+		// independently and merge, so `inspect <container> <image>` works like
+		// docker instead of failing because no single namespace holds them all.
+		var results []string
+		var missing []string
+		for _, id := range ids {
+			out, err := runtime.CaptureSilent("inspect", id)
+			if err != nil {
+				out, err = runtime.CaptureSilent("image", "inspect", id)
+			}
+			if err != nil {
+				missing = append(missing, id)
+				continue
+			}
+			results = append(results, out)
+		}
+		merged, err := mergeInspectArrays(results)
+		if err != nil {
+			return "", err
+		}
+		if merged == "" {
+			return "", fmt.Errorf("no such object: %s", strings.Join(missing, " "))
+		}
+		if len(missing) > 0 {
+			fmt.Fprintf(os.Stderr, "dcon: warning: no such object: %s\n", strings.Join(missing, " "))
+		}
+		return merged, nil
 	}
+}
+
+// mergeInspectArrays concatenates several `inspect` JSON-array outputs into a
+// single pretty-printed JSON array, so a mixed container+image inspect prints
+// one combined array (as docker does). Empty/blank outputs are skipped; an
+// all-empty input yields "".
+func mergeInspectArrays(outs []string) (string, error) {
+	var merged []json.RawMessage
+	for _, o := range outs {
+		o = strings.TrimSpace(o)
+		if o == "" {
+			continue
+		}
+		var items []json.RawMessage
+		if err := json.Unmarshal([]byte(o), &items); err != nil {
+			return "", err
+		}
+		merged = append(merged, items...)
+	}
+	if len(merged) == 0 {
+		return "", nil
+	}
+	b, err := json.MarshalIndent(merged, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// cpIsContainerRef reports whether a `cp` argument is a CONTAINER:PATH
+// reference rather than a local path, mirroring docker's splitCpArg: an
+// absolute path (/...) or one whose part before the first colon starts with
+// "." (./x:y, ../x:y) is a local path, even though it contains a colon. The old
+// `strings.IndexByte(p,':')>0` test misclassified local paths like
+// ./my:file.txt as a container ref and copied to the wrong place.
+func cpIsContainerRef(p string) bool {
+	if strings.HasPrefix(p, "/") || strings.HasPrefix(p, ".") {
+		return false // absolute or explicitly-relative local path
+	}
+	return strings.IndexByte(p, ':') > 0
 }
 
 func newCpCmd() *cobra.Command {
@@ -135,8 +200,7 @@ func newCpCmd() *cobra.Command {
 			if src == "-" || dst == "-" {
 				return fmt.Errorf("streaming copy (-) is not supported by the backend; copy to/from a file path instead")
 			}
-			isCtr := func(p string) bool { return strings.IndexByte(p, ':') > 0 }
-			if !isCtr(src) && !isCtr(dst) {
+			if !cpIsContainerRef(src) && !cpIsContainerRef(dst) {
 				return fmt.Errorf("copying between two local paths is not supported; one of SRC or DEST must be CONTAINER:PATH")
 			}
 			for _, flag := range []string{"archive", "follow-link"} {

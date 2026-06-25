@@ -143,6 +143,16 @@ func TestRewriteComposeGlobalShorthands(t *testing.T) {
 		// not a compose invocation: leave untouched (e.g. running an image named compose)
 		{[]string{"run", "-f", "compose"}, []string{"run", "-f", "compose"}},
 		{[]string{"ps", "-a"}, []string{"ps", "-a"}},
+		// root flags BEFORE `compose` must not block the -f/-p rewrite
+		{[]string{"-D", "compose", "-f", "x.yml", "up"}, []string{"-D", "compose", "--file", "x.yml", "up"}},
+		{[]string{"--host", "tcp://x", "compose", "-f", "x.yml", "up"},
+			[]string{"--host", "tcp://x", "compose", "--file", "x.yml", "up"}},
+		{[]string{"--host=x", "compose", "-p", "proj", "down"},
+			[]string{"--host=x", "compose", "--project-name", "proj", "down"}},
+		{[]string{"-D", "--context", "c", "compose", "-fx.yml", "up"},
+			[]string{"-D", "--context", "c", "compose", "--file", "x.yml", "up"}},
+		// root flag before a non-compose subcommand: untouched
+		{[]string{"-D", "ps", "-a"}, []string{"-D", "ps", "-a"}},
 	}
 	for _, tc := range cases {
 		got := rewriteComposeGlobalShorthands(tc.in)

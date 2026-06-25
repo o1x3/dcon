@@ -47,12 +47,47 @@ var composeValueFlags = map[string]bool{
 // pflag panics when an inherited persistent shorthand collides with a local
 // one. Rewriting the leading tokens before parsing sidesteps that while leaving
 // post-subcommand shorthands (the `-f` in `compose logs -f`) untouched.
+// rootValueFlags are the root persistent flags (separated form) that consume the
+// following token as their value, so composeIndex skips that value when locating
+// the compose subcommand.
+var rootValueFlags = map[string]bool{
+	"-H": true, "--host": true, "--context": true, "--log-level": true,
+	"--config": true, "--tlscacert": true, "--tlscert": true, "--tlskey": true,
+}
+
+// composeIndex returns the index of the `compose` subcommand token, skipping any
+// root persistent flags (and their separated values) that precede it — so
+// `dcon -D compose ...` / `dcon --host x compose ...` are still recognized. It
+// returns -1 when the invocation is not a compose command.
+func composeIndex(args []string) int {
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		if a == "compose" {
+			return i
+		}
+		if strings.HasPrefix(a, "-") {
+			if rootValueFlags[a] {
+				i += 2 // skip the flag and its value
+			} else {
+				i++ // bool flag, --flag=value, or -Hvalue (self-contained)
+			}
+			continue
+		}
+		return -1 // a non-flag token that isn't compose => a different subcommand
+	}
+	return -1
+}
+
 func rewriteComposeGlobalShorthands(args []string) []string {
-	if len(args) == 0 || args[0] != "compose" {
+	ci := composeIndex(args)
+	if ci < 0 {
 		return args
 	}
-	out := []string{"compose"}
-	i := 1
+	// Preserve any root flags before `compose`, then rewrite the leading
+	// -f/-p shorthands that sit between `compose` and its subcommand.
+	out := append([]string{}, args[:ci+1]...)
+	i := ci + 1
 	for i < len(args) {
 		a := args[i]
 		if !strings.HasPrefix(a, "-") {
@@ -97,6 +132,11 @@ func loadProject(cmd *cobra.Command) (*compose.Project, error) {
 	var explicit string
 	if len(files) > 0 {
 		explicit = files[0]
+	}
+	if len(files) > 1 {
+		// Docker merges multiple -f files (later override earlier); dcon does not
+		// yet. Warn loudly rather than silently dropping the override files.
+		fmt.Fprintf(os.Stderr, "dcon: warning: multiple -f/--file compose files are not merged; using only %s\n", explicit)
 	}
 	path, err := compose.Find(explicit)
 	if err != nil {
@@ -286,6 +326,27 @@ func composeUp() *cobra.Command {
 			net := ensureNetwork(p)
 			ensureVolumes(p)
 
+			// --pull always: force-refresh each selected service's explicit image
+			// before starting (missing/never rely on the backend's on-demand pull).
+			// Done once per image, off the per-replica bringUp path.
+			if pull, _ := cmd.Flags().GetString("pull"); pull == "always" {
+				pulled := map[string]bool{}
+				for _, name := range p.Order() {
+					if skipService(p, name, selected, active) {
+						continue
+					}
+					img := p.Services[name].Image
+					if img == "" || pulled[img] {
+						continue // built (no explicit image:) or already pulled
+					}
+					pulled[img] = true
+					fmt.Println(composeStep("Pulling", name))
+					if _, err := runtime.CaptureSilent("image", "pull", img); err != nil {
+						fmt.Fprintf(os.Stderr, "dcon: warning: pull %s failed: %v\n", img, err)
+					}
+				}
+			}
+
 			// bringUp creates/starts every replica of one service and returns the
 			// container names it brought up. Pure per-service work so independent
 			// services can run concurrently.
@@ -300,7 +361,7 @@ func composeUp() *cobra.Command {
 						return nil, fmt.Errorf("build %s: %w", name, err)
 					}
 				}
-				count := p.Replicas(svc, scale[name])
+				count := effectiveReplicas(svc, scale, name)
 				if count > 1 && svc.ContainerName != "" {
 					return nil, fmt.Errorf("service %q has a container_name and cannot be scaled to %d", name, count)
 				}
@@ -315,8 +376,7 @@ func composeUp() *cobra.Command {
 						continue
 					}
 					if noStart {
-						rargs := dropFlag(p.RunArgs(name, svc, i, net, nil), "--detach")
-						rargs[0] = "create"
+						rargs := p.CreateArgs(name, svc, i, net)
 						fmt.Println(composeStep("Creating", cname))
 						if err := runtime.Run(rargs...); err != nil {
 							return local, err
@@ -372,11 +432,17 @@ func composeUp() *cobra.Command {
 			if removeOrphans {
 				removeOrphanContainers(p)
 			}
-			if detach || noStart {
+			// len(started)==0 also short-circuits: effectiveReplicas can legally
+			// return 0 (e.g. `up --scale web=0`), and followAndWait would otherwise
+			// print the attach banner and block on the signal channel forever.
+			if detach || noStart || len(started) == 0 {
 				return nil
 			}
 			// Foreground: stream aggregated logs until interrupted, then stop.
-			return followAndWait(p, started)
+			noPrefix, _ := cmd.Flags().GetBool("no-log-prefix")
+			timeoutChanged := cmd.Flags().Changed("timeout")
+			timeout, _ := cmd.Flags().GetInt("timeout")
+			return followAndWait(p, started, noPrefix, timeoutChanged, timeout)
 		},
 	}
 	f := cmd.Flags()
@@ -444,7 +510,7 @@ func removeOrphanContainers(p *compose.Project) {
 	}
 }
 
-func followAndWait(p *compose.Project, names []string) error {
+func followAndWait(p *compose.Project, names []string, noPrefix bool, timeoutChanged bool, timeout int) error {
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
 
@@ -465,7 +531,7 @@ func followAndWait(p *compose.Project, names []string) error {
 			sc := bufio.NewScanner(stdout)
 			sc.Buffer(make([]byte, 1024*1024), 1024*1024)
 			for sc.Scan() {
-				fmt.Printf("%s | %s\n", ui.Accent(svc), sc.Text())
+				fmt.Println(formatLogLine(svc, sc.Text(), noPrefix))
 			}
 		}()
 	}
@@ -474,7 +540,7 @@ func followAndWait(p *compose.Project, names []string) error {
 	<-sigc
 	fmt.Println("\nGracefully stopping...")
 	for _, n := range names {
-		_, _ = runtime.CaptureSilent("stop", n)
+		_, _ = runtime.CaptureSilent(composeStopArgs(timeoutChanged, timeout, n)...)
 	}
 	for _, c := range cmds {
 		_ = c.Process.Kill()
@@ -718,14 +784,19 @@ func composeLogsTail(cmd *cobra.Command) string {
 	return t
 }
 
-// printLogLine writes one aggregated log line, with the Docker-style
-// "service | …" prefix unless --no-log-prefix was given.
-func printLogLine(svc, line string, noPrefix bool) {
+// formatLogLine renders one aggregated log line with the Docker-style
+// "service | …" prefix unless --no-log-prefix was given. Pure, so the prefix
+// behavior is unit-testable.
+func formatLogLine(svc, line string, noPrefix bool) string {
 	if noPrefix {
-		fmt.Println(line)
-	} else {
-		fmt.Printf("%s | %s\n", ui.Accent(svc), line)
+		return line
 	}
+	return ui.Accent(svc) + " | " + line
+}
+
+// printLogLine writes one aggregated log line (see formatLogLine).
+func printLogLine(svc, line string, noPrefix bool) {
+	fmt.Println(formatLogLine(svc, line, noPrefix))
 }
 
 // followLogs streams `container logs --follow` for each target concurrently,
@@ -876,6 +947,13 @@ func lifecycleOnProject(verb string) func(cmd *cobra.Command, args []string) err
 			return err
 		}
 		selected := serviceSet(args)
+		// Forward the verb's honored flags (defined only on the relevant
+		// subcommands; absent flags read as zero/unchanged): kill --signal, and
+		// stop/restart --timeout. These were previously dropped, so `compose kill
+		// -s SIGTERM` hard-killed and `compose stop -t 30` ignored the grace period.
+		signal, _ := cmd.Flags().GetString("signal")
+		timeoutChanged := cmd.Flags().Changed("timeout")
+		timeout, _ := cmd.Flags().GetInt("timeout")
 		for _, c := range containers {
 			if selected != nil && !selected[serviceOf(c)] {
 				continue
@@ -884,19 +962,39 @@ func lifecycleOnProject(verb string) func(cmd *cobra.Command, args []string) err
 			case "rm":
 				_, _ = runtime.CaptureSilent("delete", "--force", c.ID)
 			case "stop":
-				_, _ = runtime.CaptureSilent("stop", c.ID)
+				_, _ = runtime.CaptureSilent(composeStopArgs(timeoutChanged, timeout, c.ID)...)
 			case "start":
 				_, _ = runtime.CaptureSilent("start", c.ID)
 			case "kill":
-				_, _ = runtime.CaptureSilent("kill", c.ID)
+				_, _ = runtime.CaptureSilent(composeKillArgs(signal, c.ID)...)
 			case "restart":
-				_, _ = runtime.CaptureSilent("stop", c.ID)
+				_, _ = runtime.CaptureSilent(composeStopArgs(timeoutChanged, timeout, c.ID)...)
 				_, _ = runtime.CaptureSilent("start", c.ID)
 			}
 			fmt.Println(c.ID)
 		}
 		return nil
 	}
+}
+
+// composeStopArgs builds the backend stop argv for compose stop/restart,
+// forwarding --time only when the user set --timeout.
+func composeStopArgs(timeoutChanged bool, timeout int, id string) []string {
+	args := []string{"stop"}
+	if timeoutChanged {
+		args = append(args, "--time", strconv.Itoa(timeout))
+	}
+	return append(args, id)
+}
+
+// composeKillArgs builds the backend kill argv for compose kill, forwarding the
+// chosen --signal (defaults to SIGKILL).
+func composeKillArgs(signal, id string) []string {
+	args := []string{"kill"}
+	if signal != "" {
+		args = append(args, "--signal", signal)
+	}
+	return append(args, id)
 }
 
 func composeStart() *cobra.Command {
@@ -934,6 +1032,10 @@ func composeConfig() *cobra.Command {
 			p, err := loadProject(cmd)
 			if err != nil {
 				return err
+			}
+			// -q/--quiet: only validate (loadProject above did that), print nothing.
+			if q, _ := cmd.Flags().GetBool("quiet"); q {
+				return nil
 			}
 			if v, _ := cmd.Flags().GetBool("services"); v {
 				names := make([]string, 0, len(p.Services))
@@ -990,13 +1092,25 @@ func composeLs() *cobra.Command {
 					configDir[proj] = d
 				}
 			}
-			w := dockerfmt.NewTabWriter()
-			fmt.Fprintln(w, "NAME\tSTATUS\tCONFIG FILES")
+			// Default to projects with a running container; -a/--all includes
+			// fully-stopped ones too (matches docker compose ls).
+			showAll, _ := cmd.Flags().GetBool("all")
 			names := make([]string, 0, len(projects))
 			for n := range projects {
-				names = append(names, n)
+				if showAll || projects[n]["running"] > 0 {
+					names = append(names, n)
+				}
 			}
 			sort.Strings(names)
+			// -q/--quiet: only project names, one per line (matches docker).
+			if quiet, _ := cmd.Flags().GetBool("quiet"); quiet {
+				for _, n := range names {
+					fmt.Println(n)
+				}
+				return nil
+			}
+			w := dockerfmt.NewTabWriter()
+			fmt.Fprintln(w, "NAME\tSTATUS\tCONFIG FILES")
 			for _, n := range names {
 				running := projects[n]["running"]
 				total := 0
@@ -1041,8 +1155,7 @@ func composeCreate() *cobra.Command {
 						return err
 					}
 				}
-				rargs := dropFlag(p.RunArgs(name, svc, 1, net, nil), "--detach")
-				rargs[0] = "create"
+				rargs := p.CreateArgs(name, svc, 1, net)
 				cname := p.ContainerName(name, 1, svc)
 				if forceRecreate {
 					_, _ = runtime.CaptureSilent("delete", "--force", cname)
@@ -1084,34 +1197,17 @@ func composeExec() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cargs := []string{"exec"}
-			if v, _ := cmd.Flags().GetBool("detach"); v {
-				cargs = append(cargs, "--detach")
-			}
-			if v, _ := cmd.Flags().GetBool("interactive"); v && isTerminal(os.Stdin) {
-				cargs = append(cargs, "--interactive")
-			}
-			// Only allocate a PTY when one actually exists (docker behaviour),
-			// so `compose exec svc cmd | grep ...` works. -T/--no-TTY forces it off
-			// (the common CI form: `compose exec -T db psql < dump.sql`).
-			noTTY, _ := cmd.Flags().GetBool("no-TTY")
-			if v, _ := cmd.Flags().GetBool("tty"); v && !noTTY && haveTTY() {
-				cargs = append(cargs, "--tty")
-			}
 			if cmd.Flags().Changed("privileged") {
 				fmt.Fprintln(os.Stderr, "dcon: warning: --privileged is not supported by exec and was ignored")
 			}
-			if u, _ := cmd.Flags().GetString("user"); u != "" {
-				cargs = append(cargs, "--user", u)
-			}
-			if w, _ := cmd.Flags().GetString("workdir"); w != "" {
-				cargs = append(cargs, "--workdir", w)
-			}
-			for _, e := range mustStringArray(cmd.Flags(), "env") {
-				cargs = append(cargs, "--env", e)
-			}
-			cargs = append(cargs, c)
-			cargs = append(cargs, rest...)
+			detach, _ := cmd.Flags().GetBool("detach")
+			interactive, _ := cmd.Flags().GetBool("interactive")
+			tty, _ := cmd.Flags().GetBool("tty")
+			noTTY, _ := cmd.Flags().GetBool("no-TTY")
+			user, _ := cmd.Flags().GetString("user")
+			workdir, _ := cmd.Flags().GetString("workdir")
+			env := mustStringArray(cmd.Flags(), "env")
+			cargs := composeExecArgs(detach, interactive, tty, noTTY, haveTTY(), user, workdir, env, c, rest)
 			return runtime.Run(cargs...)
 		},
 	}
@@ -1128,6 +1224,51 @@ func composeExec() *cobra.Command {
 	return cmd
 }
 
+// composeExecArgs builds the `container exec ...` argv for `compose exec`.
+// --interactive follows the flag value alone (it defaults to true), NOT whether
+// stdin is a terminal: piping stdin (`compose exec -T db psql < dump.sql`) is
+// exactly the case that needs STDIN kept open, and gating it on a TTY dropped
+// the redirected input. The PTY (--tty) is separate: only when requested, not
+// suppressed by -T/--no-TTY, and a real terminal is present.
+func composeExecArgs(detach, interactive, tty, noTTY, hasTTY bool, user, workdir string, env []string, containerID string, rest []string) []string {
+	cargs := []string{"exec"}
+	if detach {
+		cargs = append(cargs, "--detach")
+	}
+	if interactive {
+		cargs = append(cargs, "--interactive")
+	}
+	if tty && !noTTY && hasTTY {
+		cargs = append(cargs, "--tty")
+	}
+	if user != "" {
+		cargs = append(cargs, "--user", user)
+	}
+	if workdir != "" {
+		cargs = append(cargs, "--workdir", workdir)
+	}
+	for _, e := range env {
+		cargs = append(cargs, "--env", e)
+	}
+	cargs = append(cargs, containerID)
+	return append(cargs, rest...)
+}
+
+// composeRunPtyFlags returns the --interactive/--tty tokens for `compose run`.
+// Docker compose run keeps STDIN open (-i, default true) and allocates a TTY by
+// default unless -T/--no-TTY; the PTY is only allocated when a real terminal is
+// present (so `compose run web cmd | cat` and CI pipelines still work).
+func composeRunPtyFlags(interactive, noTTY, hasTTY bool) []string {
+	var out []string
+	if interactive {
+		out = append(out, "--interactive")
+	}
+	if !noTTY && hasTTY {
+		out = append(out, "--tty")
+	}
+	return out
+}
+
 // serviceContainerByIndex resolves a project service's container by replica
 // index (1-based), preferring a running one.
 func serviceContainerByIndex(project, service string, idx int) (string, error) {
@@ -1138,6 +1279,11 @@ func serviceContainerByIndex(project, service string, idx int) (string, error) {
 	want := strconv.Itoa(idx)
 	var fallback string
 	for _, c := range containers {
+		// Never resolve a service replica to a one-off `compose run` container:
+		// it shares service/number labels but is a separate, ephemeral thing.
+		if c.Configuration.Labels[compose.LabelOneoff] == "True" {
+			continue
+		}
 		if serviceOf(c) != service || c.Configuration.Labels[compose.LabelNumber] != want {
 			continue
 		}
@@ -1204,11 +1350,20 @@ func composeRun() *cobra.Command {
 			}
 			entrypoint, _ := cmd.Flags().GetString("entrypoint")
 
-			run := p.OneOffArgs(svcName, svc, net, args[1:], overrides, entrypoint)
-			if rm, _ := cmd.Flags().GetBool("rm"); !rm {
-				run = dropFlag(run, "--rm")
+			detach, _ := cmd.Flags().GetBool("detach")
+			// Forward TTY/interactive to the backend (the run RunE previously read
+			// neither, so `compose run web bash` got no PTY). Docker compose run
+			// allocates a TTY by default unless -T, and keeps stdin open (-i).
+			// Skip when detached.
+			if !detach {
+				interactive, _ := cmd.Flags().GetBool("interactive")
+				noTTY, _ := cmd.Flags().GetBool("no-TTY")
+				overrides = append(overrides, composeRunPtyFlags(interactive, noTTY, haveTTY())...)
 			}
-			if d, _ := cmd.Flags().GetBool("detach"); d {
+
+			rm, _ := cmd.Flags().GetBool("rm")
+			run := p.OneOffArgs(svcName, svc, net, args[1:], overrides, entrypoint, rm)
+			if detach {
 				run = append([]string{run[0], "--detach"}, run[1:]...)
 			}
 			return runtime.Run(run...)
@@ -1239,6 +1394,23 @@ func composeRun() *cobra.Command {
 	cmd.Flags().StringArray("cap-add", nil, "Add Linux capabilities")
 	cmd.Flags().StringArray("env-file", nil, "Set environment variable file")
 	return cmd
+}
+
+// effectiveReplicas resolves how many replicas `up` should run for a service.
+// An explicit --scale entry wins — INCLUDING 0 (docker's `up --scale web=0`
+// runs zero). p.Replicas can't express this because it clamps a 0 override up
+// to 1 (treating 0 as "unset"). A negative scale is floored to 0.
+func effectiveReplicas(svc *compose.Service, scale map[string]int, name string) int {
+	if v, ok := scale[name]; ok {
+		if v < 0 {
+			v = 0
+		}
+		return v
+	}
+	if svc.Scale < 1 {
+		return 1 // no --scale and no service-level scale: one replica
+	}
+	return svc.Scale
 }
 
 // parseScale turns ["web=3","db=2"] into {web:3, db:2}.
@@ -1298,9 +1470,13 @@ func composeImages() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			selected := serviceSet(args) // nil => all services (docker: images [SERVICE...])
 			w := dockerfmt.NewTabWriter()
 			fmt.Fprintln(w, "CONTAINER\tREPOSITORY\tTAG\tSIZE")
 			for _, c := range containers {
+				if selected != nil && !selected[serviceOf(c)] {
+					continue
+				}
 				repo, tag := dockerfmt.SplitRepoTag(dockerfmt.ShortImage(c.Configuration.Image.Reference))
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", c.ID, repo, tag, "N/A")
 			}
@@ -1511,6 +1687,7 @@ func composePort() *cobra.Command {
 			}
 			idx, _ := cmd.Flags().GetInt("index")
 			proto, _ := cmd.Flags().GetString("protocol")
+			proto = strings.ToLower(proto) // backend protos are lowercase; --protocol UDP must match
 			cid, err := serviceContainerByIndex(p.Name, args[0], idx)
 			if err != nil {
 				return err
@@ -1527,7 +1704,7 @@ func composePort() *cobra.Command {
 				if pr == "" {
 					pr = "tcp"
 				}
-				if fmt.Sprint(pt.ContainerPort) != args[1] || pr != proto {
+				if fmt.Sprint(pt.ContainerPort) != args[1] || strings.ToLower(pr) != proto {
 					continue
 				}
 				host := pt.HostAddress
@@ -1643,26 +1820,21 @@ func firstServiceContainer(project, service string) (string, error) {
 		return "", err
 	}
 	for _, c := range containers {
+		if c.Configuration.Labels[compose.LabelOneoff] == "True" {
+			continue
+		}
 		if serviceOf(c) == service && c.Status.State == "running" {
 			return c.ID, nil
 		}
 	}
 	// fall back to any state
 	for _, c := range containers {
+		if c.Configuration.Labels[compose.LabelOneoff] == "True" {
+			continue
+		}
 		if serviceOf(c) == service {
 			return c.ID, nil
 		}
 	}
 	return "", fmt.Errorf("no running container for service %q", service)
-}
-
-func dropFlag(args []string, flag string) []string {
-	out := args[:0:0]
-	for _, a := range args {
-		if a == flag {
-			continue
-		}
-		out = append(out, a)
-	}
-	return out
 }

@@ -146,7 +146,7 @@ func newNetworkGroupCmd() *cobra.Command {
 			quiet, _ := cmd.Flags().GetBool("quiet")
 			noTrunc, _ := cmd.Flags().GetBool("no-trunc")
 			format, _ := cmd.Flags().GetString("format")
-			filters, _ := cmd.Flags().GetStringSlice("filter")
+			filters, _ := cmd.Flags().GetStringArray("filter")
 			var list []dockerfmt.Network
 			if err := runtime.CaptureJSON(&list, "network", "list", "--format", "json"); err != nil {
 				return err
@@ -186,7 +186,8 @@ func newNetworkGroupCmd() *cobra.Command {
 	ls.Flags().BoolP("quiet", "q", false, "Only display network IDs")
 	ls.Flags().Bool("no-trunc", false, "Do not truncate the output")
 	ls.Flags().String("format", "", "Format output using a Go template or 'json'")
-	ls.Flags().StringSliceP("filter", "f", nil, "Provide filter values")
+	// StringArray, not StringSlice: a label-value filter may contain commas.
+	ls.Flags().StringArrayP("filter", "f", nil, "Provide filter values")
 
 	rm := &cobra.Command{
 		Use:     "rm NETWORK [NETWORK...]",

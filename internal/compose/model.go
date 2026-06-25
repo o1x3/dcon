@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -36,11 +37,11 @@ type Service struct {
 	ContainerName string      `yaml:"container_name"`
 	Command       StringList  `yaml:"command"`
 	Entrypoint    StringList  `yaml:"entrypoint"`
-	Environment   MapList     `yaml:"environment"`
+	Environment   EnvMap      `yaml:"environment"`
 	EnvFile       EnvFile     `yaml:"env_file"`
-	Ports         []string    `yaml:"ports"`
+	Ports         PortList    `yaml:"ports"`
 	Expose        []string    `yaml:"expose"`
-	Volumes       []string    `yaml:"volumes"`
+	Volumes       VolumeList  `yaml:"volumes"`
 	Networks      StringKeys  `yaml:"networks"`
 	DependsOn     DependsList `yaml:"depends_on"`
 	Restart       string      `yaml:"restart"`
@@ -139,10 +140,10 @@ func (u *Ulimits) UnmarshalYAML(value *yaml.Node) error {
 
 // Build is `build:` which may be a string (context) or a mapping.
 type Build struct {
-	Context    string  `yaml:"context"`
-	Dockerfile string  `yaml:"dockerfile"`
-	Args       MapList `yaml:"args"`
-	Target     string  `yaml:"target"`
+	Context    string `yaml:"context"`
+	Dockerfile string `yaml:"dockerfile"`
+	Args       EnvMap `yaml:"args"`
+	Target     string `yaml:"target"`
 	set        bool
 }
 
@@ -266,6 +267,11 @@ func (m *MapList) UnmarshalYAML(value *yaml.Node) error {
 		}
 		for _, item := range list {
 			kv := strings.SplitN(item, "=", 2)
+			// Skip blank / keyless entries (e.g. "" or "=value"): they would
+			// otherwise inject a malformed empty-key `--env =…` arg.
+			if kv[0] == "" {
+				continue
+			}
 			if len(kv) == 2 {
 				out[kv[0]] = kv[1]
 			} else {
@@ -275,6 +281,154 @@ func (m *MapList) UnmarshalYAML(value *yaml.Node) error {
 	}
 	*m = out
 	return nil
+}
+
+// EnvMap is like MapList but with docker-compose environment/build-arg
+// passthrough semantics: a bare key — list form `- FOO` or map form `FOO:`
+// (null value) — inherits FOO from the host environment, and is OMITTED when
+// the host doesn't set it. (MapList, used for labels, instead sets bare keys to
+// "" — and emitting `--env FOO=` would clobber a host FOO with empty.)
+type EnvMap map[string]string
+
+func (m *EnvMap) UnmarshalYAML(value *yaml.Node) error {
+	out := map[string]string{}
+	switch value.Kind {
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(value.Content); i += 2 {
+			k := value.Content[i].Value
+			vn := value.Content[i+1]
+			if k == "" {
+				continue
+			}
+			if vn.Kind == yaml.ScalarNode && vn.Tag == "!!null" {
+				if v, ok := os.LookupEnv(k); ok { // `FOO:` -> host passthrough
+					out[k] = v
+				}
+				continue
+			}
+			if vn.Kind == yaml.ScalarNode {
+				out[k] = vn.Value
+			}
+		}
+	case yaml.SequenceNode:
+		for _, it := range value.Content {
+			if it.Kind != yaml.ScalarNode {
+				continue
+			}
+			kv := strings.SplitN(it.Value, "=", 2)
+			if kv[0] == "" {
+				continue
+			}
+			if len(kv) == 2 {
+				out[kv[0]] = kv[1]
+			} else if v, ok := os.LookupEnv(kv[0]); ok { // `- FOO` -> host passthrough
+				out[kv[0]] = v
+			}
+		}
+	}
+	*m = out
+	return nil
+}
+
+// PortList handles compose `ports:` in both the short string form
+// ("8080:80", "127.0.0.1:8080:80/tcp", "3000") and the long mapping form
+// ({target, published, protocol, host_ip}), flattening the long form into the
+// [host_ip:][published:]target[/protocol] string the translator emits via
+// --publish. Without this, a sequence-of-maps fails to unmarshal into []string
+// and breaks the entire compose file.
+type PortList []string
+
+func (p *PortList) UnmarshalYAML(value *yaml.Node) error {
+	*p = decodeShortOrLong(value, flattenLongPort)
+	return nil
+}
+
+func flattenLongPort(m map[string]string) string {
+	target := m["target"]
+	pub := m["published"]
+	s := target
+	if pub != "" {
+		s = pub + ":" + target
+	}
+	if hip := m["host_ip"]; hip != "" {
+		// A host_ip needs a published segment to be parsed as an IP (the 3-part
+		// host_ip:host:container form). With no published port, emit the explicit
+		// empty-published form host_ip::container — otherwise "host_ip:container"
+		// is misread as host_port:container_port (host port = the IP literal).
+		if pub != "" {
+			s = hip + ":" + s
+		} else {
+			s = hip + "::" + target
+		}
+	}
+	if proto := m["protocol"]; proto != "" {
+		s += "/" + proto
+	}
+	return s
+}
+
+// VolumeList handles compose `volumes:` in both the short string form
+// ("./data:/data", "named:/data:ro") and the long mapping form
+// ({type, source, target, read_only}), flattening the long form into the
+// [source:]target[:ro] string the translator emits via --volume.
+type VolumeList []string
+
+func (v *VolumeList) UnmarshalYAML(value *yaml.Node) error {
+	*v = decodeShortOrLong(value, flattenLongVolume)
+	return nil
+}
+
+// tmpfsVolumeMarker prefixes a flattened long-form volume whose type is tmpfs so
+// RunArgs emits `--tmpfs <target>` instead of `--volume`. A NUL byte can't occur
+// in a real mount spec, so it can't collide. Without this, `{type: tmpfs, target:
+// /cache}` flattened to a bare "/cache" and became a disk-backed anonymous volume
+// — silently losing the in-memory, ephemeral tmpfs semantics.
+const tmpfsVolumeMarker = "\x00tmpfs\x00"
+
+func flattenLongVolume(m map[string]string) string {
+	if m["type"] == "tmpfs" {
+		return tmpfsVolumeMarker + m["target"]
+	}
+	s := m["target"]
+	if src := m["source"]; src != "" {
+		s = src + ":" + s
+	}
+	// read_only is a YAML boolean; its node text may be true/True/TRUE (and 1).
+	// Parse it rather than comparing to the lowercase literal, so a read-only
+	// mount spelled `read_only: True` isn't silently emitted as writable.
+	if b, err := strconv.ParseBool(m["read_only"]); err == nil && b {
+		s += ":ro"
+	}
+	return s
+}
+
+// decodeShortOrLong flattens a compose sequence whose items are either scalar
+// strings (short form, kept verbatim) or mappings (long form, flattened by fn).
+// A bare scalar (single, unwrapped value) is also accepted. yaml scalar nodes
+// carry their raw text in .Value, so numeric ports like `- 8080` and
+// `target: 80` are read as "8080"/"80" without an int→string decode error.
+func decodeShortOrLong(value *yaml.Node, fn func(map[string]string) string) []string {
+	var out []string
+	switch value.Kind {
+	case yaml.ScalarNode:
+		out = append(out, value.Value)
+	case yaml.SequenceNode:
+		for _, it := range value.Content {
+			switch it.Kind {
+			case yaml.ScalarNode:
+				out = append(out, it.Value)
+			case yaml.MappingNode:
+				m := map[string]string{}
+				for i := 0; i+1 < len(it.Content); i += 2 {
+					m[it.Content[i].Value] = it.Content[i+1].Value
+				}
+				if s := fn(m); s != "" {
+					out = append(out, s)
+				}
+			}
+		}
+	}
+	return out
 }
 
 // StringKeys handles networks which can be a list or a map (keyed by name).
@@ -363,18 +517,21 @@ func Load(path, projectOverride string) (*Project, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Expand ${VAR} / $VAR from the environment, like compose does.
+	// Expand ${VAR} / $VAR from the environment, like compose does, supporting
+	// the bash-style operators compose honors: :-/- (default), :+/+ (alternate),
+	// :?/? (required, error if missing), :=/= (default). A required-but-missing
+	// variable is surfaced as a load error.
+	var interpErr error
 	expanded := os.Expand(string(data), func(key string) string {
-		// support ${VAR:-default}
-		if i := strings.Index(key, ":-"); i >= 0 {
-			name, def := key[:i], key[i+2:]
-			if v, ok := os.LookupEnv(name); ok {
-				return v
-			}
-			return def
+		v, err := expandVar(key)
+		if err != nil && interpErr == nil {
+			interpErr = err
 		}
-		return os.Getenv(key)
+		return v
 	})
+	if interpErr != nil {
+		return nil, interpErr
+	}
 
 	var p Project
 	if err := yaml.Unmarshal([]byte(expanded), &p); err != nil {
@@ -389,6 +546,74 @@ func Load(path, projectOverride string) (*Project, error) {
 		p.Name = SanitizeName(filepath.Base(p.Dir))
 	}
 	return &p, nil
+}
+
+// expandVar resolves one os.Expand key (the text inside ${...} or after $) using
+// docker-compose / bash parameter-expansion semantics. os.Expand passes the
+// whole brace body as key, so operators must be parsed here. Supported:
+//
+//	$$ (key=="$")      -> literal "$"
+//	${VAR}             -> value (empty if unset)
+//	${VAR:-d} / ${VAR-d} -> value, or d when unset (:- also when empty)
+//	${VAR:=d} / ${VAR=d} -> same substitution as :- here (no real assignment)
+//	${VAR:+a} / ${VAR+a} -> a when set (:+ requires non-empty), else ""
+//	${VAR:?m} / ${VAR?m} -> value when set, else an error (m is the message)
+func expandVar(key string) (string, error) {
+	if key == "$" { // $$ escape
+		return "$", nil
+	}
+	i := 0
+	for i < len(key) && isNameChar(key[i]) {
+		i++
+	}
+	name, rest := key[:i], key[i:]
+	if name == "" {
+		return os.Getenv(key), nil // unrecognized form: best-effort
+	}
+	val, set := os.LookupEnv(name)
+	if rest == "" {
+		return val, nil // ${VAR} / $VAR
+	}
+	colon := rest[0] == ':'
+	if colon {
+		rest = rest[1:]
+	}
+	if rest == "" {
+		return val, nil
+	}
+	op, arg := rest[0], rest[1:]
+	// With a colon, an empty value counts as "not present" (bash semantics).
+	present := set && (!colon || val != "")
+	switch op {
+	case '-', '=':
+		if present {
+			return val, nil
+		}
+		return arg, nil
+	case '+':
+		if present {
+			return arg, nil
+		}
+		return "", nil
+	case '?':
+		if present {
+			return val, nil
+		}
+		msg := arg
+		if msg == "" {
+			msg = "required variable is not set"
+		}
+		return "", fmt.Errorf("compose variable %q: %s", name, msg)
+	default:
+		return os.Getenv(key), nil // unknown operator: best-effort
+	}
+}
+
+func isNameChar(b byte) bool {
+	return b == '_' ||
+		(b >= 'a' && b <= 'z') ||
+		(b >= 'A' && b <= 'Z') ||
+		(b >= '0' && b <= '9')
 }
 
 // SanitizeName makes a string safe for use as a container/network/volume name.
@@ -451,9 +676,11 @@ func (p *Project) Order() []string {
 // Levels groups services into dependency levels: every service in level i
 // depends only on services in earlier levels, so all services within a level
 // have no ordering constraint between them and can be brought up concurrently.
-// Built on Order(), so undefined deps and cycles degrade identically (a cycle's
-// members collapse toward level 0 rather than deadlocking). Returns nil for an
-// empty project.
+// Built on Order(), so undefined deps and cycles degrade safely without
+// deadlocking: a cycle's members are still all emitted and started, but (because
+// Order breaks the cycle's back-edge) they land on successive non-zero levels
+// with an empty leading level rather than collapsing to level 0. The empty level
+// is a harmless no-op in the up loop. Returns nil for an empty project.
 func (p *Project) Levels() [][]string {
 	order := p.Order()
 	if len(order) == 0 {

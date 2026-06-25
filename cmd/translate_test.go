@@ -150,6 +150,49 @@ func TestRunMountTmpfsKeysRewritten(t *testing.T) {
 	}
 }
 
+// TestRunMountValuelessTmpfsKeyNoPanic reproduces a slice-out-of-range panic:
+// a --mount field of a bare "tmpfs-size"/"tmpfs-mode" (no =value) matched the
+// rewrite case and sliced past the string end, crashing the process. It must
+// now pass the field through untouched instead.
+func TestRunMountValuelessTmpfsKeyNoPanic(t *testing.T) {
+	for _, spec := range []string{
+		"type=tmpfs,destination=/x,tmpfs-size",
+		"type=tmpfs,destination=/x,tmpfs-mode",
+	} {
+		c := parse(t, newRunCmd(), []string{"--mount", spec, "alpine"})
+		got, err := buildContainerArgs(c, c.Flags().Args(), "run") // must not panic
+		if err != nil {
+			t.Fatalf("%q: unexpected error %v", spec, err)
+		}
+		if !containsPair(got, "--mount", spec) {
+			t.Errorf("%q: expected the --mount payload passed through untouched; got %v", spec, got)
+		}
+	}
+}
+
+// TestRunRejectsMachineNamespace verifies `dcon run` cannot forge a container
+// that `dcon machine` would resolve: the reserved `dcon-machine-` name prefix
+// and the `dcon.machine*` labels are rejected, closing the confused-deputy hole
+// where `machine stop foo` could act on a user container (see cmd/run.go).
+func TestRunRejectsMachineNamespace(t *testing.T) {
+	cases := [][]string{
+		{"--name", "dcon-machine-foo", "alpine"},
+		{"--label", "dcon.machine=1", "alpine"},
+		{"--label", "dcon.machine.name=foo", "alpine"},
+	}
+	for _, cli := range cases {
+		c := parse(t, newRunCmd(), cli)
+		if _, err := buildContainerArgs(c, c.Flags().Args(), "run"); err == nil {
+			t.Errorf("args %v: expected rejection of the reserved machine namespace", cli)
+		}
+	}
+	// A normal name/label must still work.
+	c := parse(t, newRunCmd(), []string{"--name", "web", "--label", "env=prod", "alpine"})
+	if _, err := buildContainerArgs(c, c.Flags().Args(), "run"); err != nil {
+		t.Errorf("ordinary name/label must be accepted; got %v", err)
+	}
+}
+
 func TestBuildTranslation(t *testing.T) {
 	c := newBuildCmd()
 	parse(t, c, []string{
@@ -181,26 +224,53 @@ func TestBuildTranslation(t *testing.T) {
 
 func TestTranslateOutput(t *testing.T) {
 	cases := []struct {
-		in, want string
-		err      bool
+		in, wantOut, wantTag string
+		err                  bool
 	}{
-		{"type=oci", "type=oci", false},
-		{"type=local,dest=out", "type=local,dest=out", false},
-		{"type=docker,dest=x.tar", "type=oci,dest=x.tar", false},
-		{"type=image,name=foo", "type=oci", false},
-		{"type=registry,ref=foo", "", true},
+		{in: "type=oci", wantOut: "type=oci"},
+		{in: "type=local,dest=out", wantOut: "type=local,dest=out"},
+		{in: "type=docker,dest=x.tar", wantOut: "type=oci,dest=x.tar"},
+		// no dest: omit --output (backend default is local-store load), carry name as tag
+		{in: "type=image,name=foo", wantOut: "", wantTag: "foo"},
+		{in: "type=docker", wantOut: "", wantTag: ""},
+		{in: "type=registry,ref=foo", err: true},
 	}
 	for _, c := range cases {
-		got, err := translateOutput(c.in)
+		out, tag, err := translateOutput(c.in)
 		if c.err {
 			if err == nil {
 				t.Errorf("translateOutput(%q) expected error", c.in)
 			}
 			continue
 		}
-		if err != nil || got != c.want {
-			t.Errorf("translateOutput(%q) = (%q,%v); want %q", c.in, got, err, c.want)
+		if err != nil || out != c.wantOut || tag != c.wantTag {
+			t.Errorf("translateOutput(%q) = (out=%q,tag=%q,err=%v); want (out=%q,tag=%q)",
+				c.in, out, tag, err, c.wantOut, c.wantTag)
 		}
+	}
+}
+
+// TestBuildOutputNamePreservedAsTag reproduces the bug where '--output
+// type=docker,name=X' (no -t) silently dropped the name, producing an untagged
+// image. The name must become a --tag, and no bogus --output should be emitted
+// for the dest-less local-store load.
+func TestBuildOutputNamePreservedAsTag(t *testing.T) {
+	c := parse(t, newBuildCmd(), []string{"--output", "type=docker,name=myrepo:1", "."})
+	got, err := buildBuildArgs(c, c.Flags().Args())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsPair(got, "--tag", "myrepo:1") {
+		t.Errorf("name= should become --tag myrepo:1; got %v", got)
+	}
+	if contains(got, "--output") {
+		t.Errorf("dest-less type=docker should omit --output (backend default load); got %v", got)
+	}
+	// With an explicit -t, the name= must not add a second tag.
+	c2 := parse(t, newBuildCmd(), []string{"-t", "explicit:9", "--output", "type=image,name=other", "."})
+	got2, _ := buildBuildArgs(c2, c2.Flags().Args())
+	if !containsPair(got2, "--tag", "explicit:9") || containsPair(got2, "--tag", "other") {
+		t.Errorf("explicit -t should win; name= must not add a tag; got %v", got2)
 	}
 }
 

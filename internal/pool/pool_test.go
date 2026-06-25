@@ -1,8 +1,48 @@
 package pool
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
+
+// TestClaimMissOnSaveFailure reproduces the isolation bug where Claim ignored a
+// state-write failure and still returned ok=true: the popped member stayed in
+// pool.json on disk, so a concurrent/next Claim could hand out the SAME live VM
+// (two runs exec'ing into one microVM). On a persist failure Claim must report a
+// miss (so the caller cold-runs) and leave the member available.
+func TestClaimMissOnSaveFailure(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+
+	if err := Add(Member{ID: "vm1", Image: NormalizeRef("alpine")}); err != nil {
+		t.Fatalf("seed Add: %v", err)
+	}
+	p, err := statePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A directory at the temp-file path makes save()'s os.WriteFile fail
+	// deterministically for every user (EISDIR) — unlike a chmod, which root
+	// bypasses. save() writes pool.json.tmp then renames it into place.
+	tmp := p + ".tmp"
+	if err := os.Mkdir(tmp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmp) //nolint:errcheck // restore for temp-dir cleanup
+
+	if _, ok := Claim("alpine"); ok {
+		t.Error("Claim must report a miss when the state write fails")
+	}
+	// Restore and confirm the member was NOT lost (still claimable later).
+	if err := os.RemoveAll(tmp); err != nil {
+		t.Fatal(err)
+	}
+	if got := AvailableDepth("alpine"); got != 1 {
+		t.Errorf("member should remain available after a failed claim; depth=%d", got)
+	}
+}
 
 func TestNormalizeRef(t *testing.T) {
 	cases := map[string]string{
@@ -22,6 +62,31 @@ func TestNormalizeRef(t *testing.T) {
 		if got := NormalizeRef(in); got != want {
 			t.Errorf("NormalizeRef(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestPartitionStale verifies the reap policy splits members by boot time. The
+// real fix it guards is atomicity: ReapStale now removes stale members inside
+// the state lock (via this helper) instead of List→forget→Destroy, so a
+// concurrent Claim and a reap can never both own — and the reaper can never
+// destroy — a VM a live run just claimed.
+func TestPartitionStale(t *testing.T) {
+	members := []Member{
+		{ID: "old1", BootedAt: 100},
+		{ID: "fresh", BootedAt: 1000},
+		{ID: "old2", BootedAt: 200},
+	}
+	stale, kept := partitionStale(members, 500)
+	if len(stale) != 2 || stale[0].ID != "old1" || stale[1].ID != "old2" {
+		t.Errorf("stale = %v, want [old1 old2]", stale)
+	}
+	if len(kept) != 1 || kept[0].ID != "fresh" {
+		t.Errorf("kept = %v, want [fresh]", kept)
+	}
+	// Nothing stale: all kept, none reaped.
+	stale, kept = partitionStale(members, 0)
+	if len(stale) != 0 || len(kept) != 3 {
+		t.Errorf("cutoff 0: stale=%v kept=%v, want none stale", stale, kept)
 	}
 }
 

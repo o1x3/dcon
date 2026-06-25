@@ -89,6 +89,61 @@ func TestRenderTableTemplateHeaders(t *testing.T) {
 	}
 }
 
+// TestRenderTableHeaderFunctionPrefixed reproduces the regression where a
+// table format whose action starts with a function/pipeline (e.g.
+// `{{upper .Name}}`) leaked the raw `{{upper .Name}}` text into the header row
+// because the header regex only matched actions beginning with `.Field`. The
+// header must derive from the field reference regardless of leading function.
+func TestRenderTableHeaderFunctionPrefixed(t *testing.T) {
+	views, def := sampleDef()
+	out := captureStdout(t, func() { Render("table {{.ID}}\t{{upper .Name}}", false, views, def) })
+	header := strings.SplitN(out, "\n", 2)[0]
+	if strings.Contains(header, "{{") || strings.Contains(header, "}}") {
+		t.Errorf("header leaked raw template text: %q", header)
+	}
+	if !strings.Contains(header, "NAME") || !strings.Contains(header, "ID") {
+		t.Errorf("header should derive NAME and ID columns: %q", header)
+	}
+}
+
+// TestRenderTableHeaderDottedLiteral reproduces the regression where a dotted
+// token inside a string literal in a pipeline action (e.g. "%s.txt") was
+// mistaken for the field reference, deriving the wrong header (TXT) instead of
+// the actual field's column (NAME).
+func TestRenderTableHeaderDottedLiteral(t *testing.T) {
+	views, def := sampleDef()
+	out := captureStdout(t, func() { Render(`table {{.Name | printf "%s.txt"}}`, false, views, def) })
+	header := strings.SplitN(out, "\n", 2)[0]
+	if strings.Contains(header, "TXT") {
+		t.Errorf("dotted literal inside a string must not become the header: %q", header)
+	}
+	if !strings.Contains(header, "NAME") {
+		t.Errorf("header should derive from the real field .Name: %q", header)
+	}
+}
+
+// TestRenderTableFormatUnescapesTabs reproduces the bug where a shell-supplied
+// `--format 'table {{.Name}}\t{{.ID}}'` (literal backslash-t) emitted a literal
+// "\t" and never aligned columns. The escape must become a real tab (matching
+// docker), so no literal backslash-t survives in header or rows.
+func TestRenderTableFormatUnescapesTabs(t *testing.T) {
+	views, def := sampleDef()
+	// The Go literal `\t` here is a real backslash + t — what a single-quoted
+	// shell argument delivers.
+	out := captureStdout(t, func() { Render(`table {{.Name}}\t{{.ID}}`, false, views, def) })
+	if strings.Contains(out, `\t`) {
+		t.Errorf("literal backslash-t must be unescaped to a tab; got %q", out)
+	}
+	if !strings.Contains(out, "NAME") || !strings.Contains(out, "ID") {
+		t.Errorf("header columns missing: %q", out)
+	}
+	// The plain (non-table) template branch unescapes too.
+	out2 := captureStdout(t, func() { Render(`{{.Name}}\t{{.ID}}`, false, views, def) })
+	if strings.Contains(out2, `\t`) {
+		t.Errorf("plain template must unescape backslash-t; got %q", out2)
+	}
+}
+
 // TestRenderPlainPathByteIdentical locks the drop-in contract: with styling
 // forced OFF, the default table is byte-for-byte the tabwriter output and
 // carries no ANSI/box-drawing characters — exactly what pipes and CI parse.

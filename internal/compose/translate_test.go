@@ -112,7 +112,7 @@ func TestRunArgsBasics(t *testing.T) {
 	p := &Project{Name: "proj", Dir: "/tmp/proj"}
 	svc := &Service{
 		Image:       "nginx",
-		Environment: MapList{"A": "1"},
+		Environment: EnvMap{"A": "1"},
 		Ports:       []string{"8080:80"},
 		Command:     StringList{"nginx -g daemon"},
 	}
@@ -161,7 +161,7 @@ func indexOf(args []string, want string) int {
 func TestOneOffArgsEnvAndOverride(t *testing.T) {
 	p := &Project{Name: "proj", Dir: "/tmp"}
 	svc := &Service{Image: "nginx", Command: StringList{"orig"}}
-	got := p.OneOffArgs("web", svc, "proj_default", []string{"echo", "hi"}, []string{"--env", "FOO=bar"}, "")
+	got := p.OneOffArgs("web", svc, "proj_default", []string{"echo", "hi"}, []string{"--env", "FOO=bar"}, "", true)
 	mustContain(t, got, "--rm")
 	mustContainPair(t, got, "--env", "FOO=bar")
 	// --name and --detach must be dropped for one-off
@@ -183,7 +183,7 @@ func TestOneOffArgsImageEqualFlagValue(t *testing.T) {
 	// regression: a flag value equal to the image ref must not break splitting
 	p := &Project{Name: "proj", Dir: "/tmp"}
 	svc := &Service{Image: "myimg", Platform: "myimg"} // platform value == image
-	got := p.OneOffArgs("web", svc, "", []string{"run-cmd"}, nil, "")
+	got := p.OneOffArgs("web", svc, "", []string{"run-cmd"}, nil, "", true)
 	img := indexOf(got, "myimg")
 	// the image is the LAST occurrence (platform value is earlier as a flag arg)
 	last := -1
@@ -203,7 +203,7 @@ func TestOneOffArgsImageEqualFlagValue(t *testing.T) {
 func TestOneOffArgsOverridesEntrypoint(t *testing.T) {
 	p := &Project{Name: "proj", Dir: "/tmp"}
 	svc := &Service{Image: "nginx", Entrypoint: StringList{"/svc-ep"}}
-	got := p.OneOffArgs("web", svc, "", nil, []string{"--volume", "/a:/b"}, "/override-ep")
+	got := p.OneOffArgs("web", svc, "", nil, []string{"--volume", "/a:/b"}, "/override-ep", true)
 	// CLI entrypoint replaces the service entrypoint (no duplicate, no /svc-ep)
 	if indexOf(got, "/svc-ep") != -1 {
 		t.Errorf("service entrypoint should be replaced: %v", got)
@@ -213,6 +213,231 @@ func TestOneOffArgsOverridesEntrypoint(t *testing.T) {
 	// override volume before the image
 	if indexOf(got, "/a:/b") > indexOf(got, "nginx") {
 		t.Errorf("override must precede image: %v", got)
+	}
+}
+
+// TestOneOffArgsRmFalsePreservesCommandRm reproduces the bug where, with
+// rm=false, a global token strip removed EVERY "--rm" — including one the user
+// passed as an argument to the in-container command (compose run --rm=false web
+// mytool --rm). With rm=false the run-level --rm must be absent, but the
+// command's own --rm must survive.
+func TestOneOffArgsRmFalsePreservesCommandRm(t *testing.T) {
+	p := &Project{Name: "proj", Dir: "/tmp"}
+	svc := &Service{Image: "nginx"}
+	got := p.OneOffArgs("web", svc, "", []string{"mytool", "--rm"}, nil, "", false)
+	img := indexOf(got, "nginx")
+	if img < 0 {
+		t.Fatalf("image not found: %v", got)
+	}
+	// No run-level --rm before the image.
+	for i := 0; i < img; i++ {
+		if got[i] == "--rm" {
+			t.Errorf("rm=false must not emit a run-level --rm: %v", got)
+		}
+	}
+	// The command's own --rm (after the image) must be preserved.
+	foundCmdRm := false
+	for i := img + 1; i < len(got); i++ {
+		if got[i] == "--rm" {
+			foundCmdRm = true
+		}
+	}
+	if !foundCmdRm {
+		t.Errorf("the command's own --rm arg was stripped: %v", got)
+	}
+}
+
+// TestCreateArgsPreservesDetachInCommand verifies CreateArgs drops only the
+// leading run-level --detach (positionally), not a literal "--detach" the
+// service's own command contains.
+func TestCreateArgsPreservesDetachInCommand(t *testing.T) {
+	p := &Project{Name: "proj", Dir: "/tmp"}
+	svc := &Service{Image: "agent", Command: StringList{"serve", "--detach"}}
+	got := p.CreateArgs("web", svc, 1, "proj_default")
+	if len(got) == 0 || got[0] != "create" {
+		t.Fatalf("CreateArgs must start with create: %v", got)
+	}
+	img := indexOf(got, "agent")
+	if img < 0 {
+		t.Fatalf("image not found: %v", got)
+	}
+	// No run-level --detach before the image.
+	for i := 0; i < img; i++ {
+		if got[i] == "--detach" {
+			t.Errorf("CreateArgs must not emit a run-level --detach: %v", got)
+		}
+	}
+	// The command's own --detach (after the image) must survive.
+	if indexOf(got[img+1:], "--detach") < 0 {
+		t.Errorf("command's --detach was stripped: %v", got)
+	}
+}
+
+// TestOneOffArgsEntrypointOverrideDropsExtras reproduces the bug where a
+// service with a multi-token entrypoint (["/svc-ep","--flag"]), run with
+// --entrypoint override and no command, leaked the old entrypoint's "--flag" as
+// an argument to the new entrypoint. Overriding the entrypoint replaces it whole.
+func TestOneOffArgsEntrypointOverrideDropsExtras(t *testing.T) {
+	p := &Project{Name: "proj", Dir: "/tmp"}
+	svc := &Service{Image: "nginx", Entrypoint: StringList{"/svc-ep", "--flag"}}
+	got := p.OneOffArgs("web", svc, "", nil, nil, "/override-ep", true)
+	if indexOf(got, "--flag") != -1 {
+		t.Errorf("stale entrypoint extra --flag must be dropped on override: %v", got)
+	}
+	mustContainPair(t, got, "--entrypoint", "/override-ep")
+	// Without an override, the extras stay (they belong to the service entrypoint).
+	keep := p.OneOffArgs("web", svc, "", nil, nil, "", true)
+	if indexOf(keep, "--flag") == -1 {
+		t.Errorf("without override, the entrypoint extra should remain: %v", keep)
+	}
+}
+
+// TestOneOffArgsLabelsOneoff reproduces the cross-talk bug: a one-off `compose
+// run` container was labeled oneoff=False, indistinguishable from service
+// replica #1. It must carry oneoff=True so ps/exec/down don't treat it as a
+// replica, while RunArgs (real services) stays oneoff=False.
+func TestOneOffArgsLabelsOneoff(t *testing.T) {
+	p := &Project{Name: "proj", Dir: "/tmp"}
+	svc := &Service{Image: "nginx"}
+	one := p.OneOffArgs("web", svc, "", []string{"sh"}, nil, "", true)
+	mustContainPair(t, one, "--label", LabelOneoff+"=True")
+	if indexOf(one, LabelOneoff+"=False") != -1 {
+		t.Errorf("one-off must not also carry oneoff=False: %v", one)
+	}
+	svc2 := &Service{Image: "nginx"}
+	rep := p.RunArgs("web", svc2, 1, "", nil)
+	mustContainPair(t, rep, "--label", LabelOneoff+"=False")
+}
+
+// TestFlattenLongPortHostIP reproduces the bug where host_ip without published
+// produced "host_ip:target" (misread as host_port:container). It must use the
+// explicit empty-published 3-part form host_ip::target.
+func TestFlattenLongPortHostIP(t *testing.T) {
+	if got := flattenLongPort(map[string]string{"target": "80", "host_ip": "127.0.0.1"}); got != "127.0.0.1::80" {
+		t.Errorf("host_ip without published = %q, want 127.0.0.1::80", got)
+	}
+	if got := flattenLongPort(map[string]string{"target": "80", "published": "8080", "host_ip": "127.0.0.1"}); got != "127.0.0.1:8080:80" {
+		t.Errorf("full form = %q, want 127.0.0.1:8080:80", got)
+	}
+	if got := flattenLongPort(map[string]string{"target": "80", "published": "8080", "protocol": "udp"}); got != "8080:80/udp" {
+		t.Errorf("proto form = %q, want 8080:80/udp", got)
+	}
+}
+
+// TestFlattenLongVolumeReadOnlyCasing reproduces the bug where read_only was
+// honored only for lowercase "true"; True/TRUE/1 are valid YAML booleans and
+// must also produce a :ro (read-only) mount, not a silently writable one.
+func TestFlattenLongVolumeReadOnlyCasing(t *testing.T) {
+	for _, v := range []string{"true", "True", "TRUE", "1"} {
+		got := flattenLongVolume(map[string]string{"source": "./d", "target": "/d", "read_only": v})
+		if got != "./d:/d:ro" {
+			t.Errorf("read_only=%q -> %q, want ./d:/d:ro", v, got)
+		}
+	}
+	for _, v := range []string{"false", "False", "0", ""} {
+		got := flattenLongVolume(map[string]string{"source": "./d", "target": "/d", "read_only": v})
+		if got != "./d:/d" {
+			t.Errorf("read_only=%q -> %q, want ./d:/d (writable)", v, got)
+		}
+	}
+}
+
+// TestFlattenLongVolumeTmpfs reproduces the bug where a long-form
+// `{type: tmpfs, target: /cache}` mount was flattened to a bare "/cache" and
+// emitted as a disk-backed anonymous --volume, silently dropping tmpfs
+// semantics. It must instead route to --tmpfs.
+func TestFlattenLongVolumeTmpfs(t *testing.T) {
+	got := flattenLongVolume(map[string]string{"type": "tmpfs", "target": "/cache"})
+	if got != tmpfsVolumeMarker+"/cache" {
+		t.Fatalf("tmpfs flatten -> %q, want marker+/cache", got)
+	}
+	p := &Project{Name: "proj", Dir: "/tmp/proj"}
+	svc := &Service{Image: "alpine", Volumes: VolumeList{got}}
+	args := p.RunArgs("web", svc, 1, "", nil)
+	mustContainPair(t, args, "--tmpfs", "/cache")
+	for _, a := range args {
+		if a == "--volume" {
+			t.Errorf("tmpfs mount must not emit a --volume; got %v", args)
+		}
+	}
+}
+
+// TestOneOffArgsKeepsEntrypointExtrasWithCmdOverride reproduces the bug where a
+// command override dropped the service entrypoint's extra tokens when the
+// entrypoint itself was NOT overridden. `compose run web shell` on a service
+// with entrypoint [python,-m,flask] + command [run] must run
+// `python -m flask shell` (command replaced, entrypoint kept whole).
+func TestOneOffArgsKeepsEntrypointExtrasWithCmdOverride(t *testing.T) {
+	p := &Project{Name: "proj", Dir: "/tmp"}
+	svc := &Service{Image: "nginx", Entrypoint: StringList{"python", "-m", "flask"}, Command: StringList{"run"}}
+	got := p.OneOffArgs("web", svc, "", []string{"shell"}, nil, "", true)
+	mustContainPair(t, got, "--entrypoint", "python")
+	img := indexOf(got, "nginx")
+	if img < 0 {
+		t.Fatalf("image not found: %v", got)
+	}
+	post := got[img+1:]
+	want := []string{"-m", "flask", "shell"}
+	if !reflect.DeepEqual(post, want) {
+		t.Errorf("post-image tokens = %v, want %v (entrypoint extras kept, command replaced)", post, want)
+	}
+}
+
+// TestResolveVolumeNamedVolume reproduces the bug where a declared named volume
+// was mounted by its bare compose key instead of the project-scoped backend name
+// that ensureVolumes actually creates (e.g. `data` vs `proj_data`), so the
+// container got a different volume than declared.
+func TestResolveVolumeNamedVolume(t *testing.T) {
+	p := &Project{
+		Name: "proj",
+		Dir:  "/tmp/proj",
+		Volumes: map[string]*VolumeSpec{
+			"data":  {},
+			"named": {Name: "custom"},
+			// An external volume must reference its exact name, never the
+			// project-prefixed one: `extkey` by key, `xname` by explicit name.
+			"extkey": {External: true},
+			"xname":  {External: true, Name: "shared-cache"},
+		},
+	}
+	svc := &Service{Image: "x", Volumes: VolumeList{
+		"data:/var/lib", // declared -> proj_data
+		"named:/n",      // declared with explicit name -> custom
+		"extkey:/x",     // external, no name -> extkey (no project prefix)
+		"xname:/c",      // external with explicit name -> shared-cache
+		"ext:/e",        // undeclared -> passthrough
+		"/abs:/a",       // absolute bind -> passthrough
+		"./rel:/r",      // relative bind -> resolved to absolute
+	}}
+	args := p.RunArgs("web", svc, 1, "", nil)
+	mustContainPair(t, args, "--volume", "proj_data:/var/lib")
+	mustContainPair(t, args, "--volume", "custom:/n")
+	mustContainPair(t, args, "--volume", "extkey:/x")
+	mustContainPair(t, args, "--volume", "shared-cache:/c")
+	mustContainPair(t, args, "--volume", "ext:/e")
+	mustContainPair(t, args, "--volume", "/abs:/a")
+	if !containsSub(args, "/tmp/proj/rel:/r") {
+		t.Errorf("relative bind not resolved to absolute: %v", args)
+	}
+}
+
+// TestLevelsCycleNoDeadlock guards that a depends_on cycle is handled safely:
+// every service is still emitted (no deadlock, no panic), even if the leading
+// level is empty.
+func TestLevelsCycleNoDeadlock(t *testing.T) {
+	p := &Project{Name: "t", Services: map[string]*Service{
+		"a": {DependsOn: DependsList{"b"}},
+		"b": {DependsOn: DependsList{"a"}},
+	}}
+	levels := p.Levels()
+	seen := map[string]bool{}
+	for _, lv := range levels {
+		for _, n := range lv {
+			seen[n] = true
+		}
+	}
+	if !seen["a"] || !seen["b"] {
+		t.Errorf("cycle members must all be emitted; got levels %v", levels)
 	}
 }
 
@@ -241,7 +466,7 @@ func TestRunArgsEmptyEntrypointNotEmitted(t *testing.T) {
 
 func TestRunArgsDeterministic(t *testing.T) {
 	p := &Project{Name: "p", Dir: "/tmp"}
-	svc := &Service{Image: "img", Environment: MapList{"B": "2", "A": "1", "C": "3"}, Labels: MapList{"z": "1", "a": "2"}}
+	svc := &Service{Image: "img", Environment: EnvMap{"B": "2", "A": "1", "C": "3"}, Labels: MapList{"z": "1", "a": "2"}}
 	first := p.RunArgs("s", svc, 1, "", nil)
 	for i := 0; i < 20; i++ {
 		if !reflect.DeepEqual(first, p.RunArgs("s", svc, 1, "", nil)) {

@@ -79,15 +79,12 @@ func newRestartCmd() *cobra.Command {
 		Short: "Restart one or more containers",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			tflag := []string{}
-			if cmd.Flags().Changed("time") {
-				t, _ := cmd.Flags().GetInt("time")
-				tflag = []string{"--time", fmt.Sprint(t)}
-			}
+			tv, _ := cmd.Flags().GetInt("time")
+			sig, _ := cmd.Flags().GetString("signal")
+			stopFlags := restartStopArgs(cmd.Flags().Changed("time"), tv, sig)
 			var firstErr error
 			for _, id := range args {
-				stopArgs := append([]string{"stop"}, tflag...)
-				stopArgs = append(stopArgs, id)
+				stopArgs := append(append([]string{}, stopFlags...), id)
 				// Best-effort stop (suppress its id echo), then start (which
 				// echoes the id once, matching docker restart).
 				_, _ = runtime.CaptureSilent(stopArgs...)
@@ -104,6 +101,20 @@ func newRestartCmd() *cobra.Command {
 	cmd.Flags().IntP("time", "t", 5, "Seconds to wait before killing the container")
 	cmd.Flags().StringP("signal", "s", "", "Signal to send to the container")
 	return cmd
+}
+
+// restartStopArgs builds the backend stop argv for `restart` (restart = stop +
+// start). The --signal flag was previously defined but ignored; it is forwarded
+// to the stop phase here (the backend stop accepts --signal), matching docker.
+func restartStopArgs(timeChanged bool, timeVal int, signal string) []string {
+	args := []string{"stop"}
+	if timeChanged {
+		args = append(args, "--time", fmt.Sprint(timeVal))
+	}
+	if signal != "" {
+		args = append(args, "--signal", signal)
+	}
+	return args
 }
 
 func newKillCmd() *cobra.Command {
@@ -219,7 +230,7 @@ func newRenameCmd() *cobra.Command {
 }
 
 func newTopCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "top CONTAINER [ps OPTIONS]",
 		Short: "Display the running processes of a container",
 		Args:  cobra.MinimumNArgs(1),
@@ -233,6 +244,12 @@ func newTopCmd() *cobra.Command {
 			return runtime.Run(cargs...)
 		},
 	}
+	// `top` is a pure pass-through of [ps OPTIONS] to ps inside the container.
+	// Stop flag parsing after the container name so dashed ps options
+	// (`top web -ef`, `top web -eo pid,comm`) reach ps instead of erroring as
+	// unknown flags on the top command itself. Mirrors exec/machine exec.
+	cmd.Flags().SetInterspersed(false)
+	return cmd
 }
 
 func newPortCmd() *cobra.Command {
@@ -256,30 +273,50 @@ func newPortCmd() *cobra.Command {
 					filterProto = parts[1]
 				}
 			}
-			for _, p := range list[0].Configuration.Ports {
-				proto := p.Proto
-				if proto == "" {
-					proto = "tcp"
-				}
-				if filterPort != "" && fmt.Sprint(p.ContainerPort) != filterPort {
-					continue
-				}
-				if filterProto != "" && proto != filterProto {
-					continue
-				}
-				host := p.HostAddress
-				if host == "" {
-					host = "0.0.0.0"
-				}
-				if filterPort != "" {
-					fmt.Printf("%s:%d\n", host, p.HostPort)
-				} else {
-					fmt.Printf("%d/%s -> %s:%d\n", p.ContainerPort, proto, host, p.HostPort)
-				}
+			for _, line := range portMappingLines(list[0].Configuration.Ports, filterPort, filterProto) {
+				fmt.Println(line)
 			}
 			return nil
 		},
 	}
+}
+
+// portMappingLines renders a container's published ports the way `docker port`
+// does. A published range arrives from the backend as one PublishPort with
+// Count>1; it is expanded to one line per port so every port of the range is
+// listed and per-port filtering (`dcon port web 81`) resolves into the range.
+func portMappingLines(ports []dockerfmt.PublishPort, filterPort, filterProto string) []string {
+	var out []string
+	for _, p := range ports {
+		proto := p.Proto
+		if proto == "" {
+			proto = "tcp"
+		}
+		host := p.HostAddress
+		if host == "" {
+			host = "0.0.0.0"
+		}
+		cnt := p.Count
+		if cnt < 1 {
+			cnt = 1
+		}
+		for k := 0; k < cnt; k++ {
+			cport := p.ContainerPort + k
+			hport := p.HostPort + k
+			if filterPort != "" && fmt.Sprint(cport) != filterPort {
+				continue
+			}
+			if filterProto != "" && proto != filterProto {
+				continue
+			}
+			if filterPort != "" {
+				out = append(out, fmt.Sprintf("%s:%d", host, hport))
+			} else {
+				out = append(out, fmt.Sprintf("%d/%s -> %s:%d", cport, proto, host, hport))
+			}
+		}
+	}
+	return out
 }
 
 func newAttachCmd() *cobra.Command {

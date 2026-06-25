@@ -58,10 +58,28 @@ var fieldHeader = map[string]string{
 	".PIDs":         "PIDS",
 }
 
-// fieldActionRe matches a whole `{{ .Field … }}` action so the header
-// derivation can replace the entire action with the column header, leaving any
-// surrounding literal text (dots, version strings) untouched.
-var fieldActionRe = regexp.MustCompile(`{{\s*(\.[A-Za-z0-9_]+)[^}]*}}`)
+// actionRe matches a whole `{{ … }}` template action; fieldRefRe finds a
+// `.Field` reference within one. Together they let the header derivation replace
+// each action with its column header, leaving surrounding literal text (dots,
+// version strings) untouched — and crucially handling actions where the field is
+// NOT the first token, e.g. `{{upper .Names}}` or `{{printf "%s" .ID}}`, which an
+// anchored `{{\s*\.Field` regex missed (leaking the raw template into the header).
+var (
+	actionRe   = regexp.MustCompile(`{{[^}]*}}`)
+	fieldRefRe = regexp.MustCompile(`\.([A-Za-z0-9_]+)`)
+	// strLitRe matches Go-template string literals ("…", `…`, '…') so a dotted
+	// token inside one (e.g. the "%s.txt" in `{{.Names | printf "%s.txt"}}`) is
+	// not mistaken for a field reference during header derivation.
+	strLitRe = regexp.MustCompile("\"[^\"]*\"|`[^`]*`|'[^']*'")
+)
+
+// formatUnescaper turns the literal two-character escapes a shell passes in a
+// single-quoted --format (\t, \n) into real tab/newline bytes, matching the
+// Docker CLI. Without it, `--format 'table {{.A}}\t{{.B}}'` emits a literal
+// "\t" and the tabwriter never sees a tab, so columns don't align.
+var formatUnescaper = strings.NewReplacer(`\t`, "\t", `\n`, "\n")
+
+func unescapeFormat(s string) string { return formatUnescaper.Replace(s) }
 
 // Render emits a list of view objects honouring Docker's -q / --format /
 // default-table conventions.
@@ -107,7 +125,7 @@ func Render(format string, quiet bool, views []any, def TableDef) error {
 		return nil
 
 	case strings.HasPrefix(format, "table"):
-		body := strings.TrimSpace(strings.TrimPrefix(format, "table"))
+		body := unescapeFormat(strings.TrimSpace(strings.TrimPrefix(format, "table")))
 		if body == "" {
 			// `--format table` with no template => default table.
 			return Render("", false, views, def)
@@ -117,10 +135,17 @@ func Render(format string, quiet bool, views []any, def TableDef) error {
 			return err
 		}
 		w := NewTabWriter()
-		// Header row: replace each whole {{.Field …}} action with its column
-		// header; literal text between actions is preserved verbatim.
-		header := fieldActionRe.ReplaceAllStringFunc(body, func(m string) string {
-			tok := fieldActionRe.FindStringSubmatch(m)[1]
+		// Header row: replace each whole {{…}} action with its column header,
+		// derived from the LAST .Field reference inside the action (so function-
+		// or pipeline-prefixed actions resolve too); literal text between actions
+		// is preserved verbatim. An action with no field reference is dropped.
+		header := actionRe.ReplaceAllStringFunc(body, func(m string) string {
+			clean := strLitRe.ReplaceAllString(m, "") // drop string literals first
+			refs := fieldRefRe.FindAllStringSubmatch(clean, -1)
+			if len(refs) == 0 {
+				return ""
+			}
+			tok := "." + refs[len(refs)-1][1]
 			if h, ok := fieldHeader[tok]; ok {
 				return h
 			}
@@ -135,7 +160,7 @@ func Render(format string, quiet bool, views []any, def TableDef) error {
 		return w.Flush()
 
 	default:
-		tmpl, err := template.New("row").Funcs(tmplFuncs).Parse(format + "\n")
+		tmpl, err := template.New("row").Funcs(tmplFuncs).Parse(unescapeFormat(format) + "\n")
 		if err != nil {
 			return err
 		}

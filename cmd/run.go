@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"dcon/internal/machine"
 	"dcon/internal/runtime"
 
 	"github.com/spf13/cobra"
@@ -174,6 +175,11 @@ func parseCPUs(cv string) (n int, warning string, err error) {
 	if perr != nil {
 		return 0, "", fmt.Errorf("invalid --cpus value %q: must be a number", cv)
 	}
+	// ParseFloat accepts inf/NaN; reject them before the round-up, which would
+	// otherwise emit --cpus 9223372036854775807 (Inf) or --cpus 0 (NaN).
+	if math.IsNaN(fv) || math.IsInf(fv, 0) {
+		return 0, "", fmt.Errorf("invalid --cpus value %q: must be a finite number", cv)
+	}
 	if fv <= 0 {
 		return 0, "", fmt.Errorf("invalid --cpus value %q: must be greater than 0", cv)
 	}
@@ -190,6 +196,24 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 	f := cmd.Flags()
 	out := []string{subcmd}
 	var warnings []string
+
+	// Guard dcon's machine namespace: a container whose name carries the
+	// reserved `dcon-machine-` prefix AND the `dcon.machine` label satisfies
+	// matchMachine (see cmd/machine.go), so `dcon run --name dcon-machine-foo
+	// --label dcon.machine=1` could make `dcon machine stop foo` act on the
+	// user's container instead of the real machine. Reject both reserved inputs.
+	if name, _ := f.GetString("name"); strings.HasPrefix(name, machine.ContainerName("")) {
+		return nil, fmt.Errorf("container name %q uses the %q prefix reserved by dcon machine", name, machine.ContainerName(""))
+	}
+	for _, l := range mustStringArray(f, "label") {
+		key := l
+		if i := strings.IndexByte(l, '='); i >= 0 {
+			key = l[:i]
+		}
+		if key == machine.LabelMachine || strings.HasPrefix(key, machine.LabelMachine+".") {
+			return nil, fmt.Errorf("label %q is reserved by dcon machine and cannot be set on run", key)
+		}
+	}
 
 	// passthrough bool flag -> container flag
 	boolMap := []struct{ name, flag string }{
@@ -387,15 +411,25 @@ func normalizeMount(spec string, warnings *[]string) string {
 	fields := strings.Split(spec, ",")
 	var out []string
 	for _, fld := range fields {
-		key := fld
+		key, val, hasEq := fld, "", false
 		if i := strings.Index(fld, "="); i >= 0 {
-			key = fld[:i]
+			key, val, hasEq = fld[:i], fld[i+1:], true
 		}
 		switch key {
 		case "tmpfs-size":
-			out = append(out, "size="+fld[len("tmpfs-size="):])
+			// A valueless "tmpfs-size" (no '=') must not slice past the string;
+			// pass it through untouched rather than panicking.
+			if hasEq {
+				out = append(out, "size="+val)
+			} else {
+				out = append(out, fld)
+			}
 		case "tmpfs-mode":
-			out = append(out, "mode="+fld[len("tmpfs-mode="):])
+			if hasEq {
+				out = append(out, "mode="+val)
+			} else {
+				out = append(out, fld)
+			}
 		case "volume-driver", "volume-opt", "bind-propagation", "consistency":
 			*warnings = append(*warnings, fmt.Sprintf("--mount option %q is not supported by the container backend and was ignored", key))
 		default:
