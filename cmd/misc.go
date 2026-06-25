@@ -125,6 +125,19 @@ func inspectRaw(typ string, ids []string) (string, error) {
 	}
 }
 
+// cpIsContainerRef reports whether a `cp` argument is a CONTAINER:PATH
+// reference rather than a local path, mirroring docker's splitCpArg: an
+// absolute path (/...) or one whose part before the first colon starts with
+// "." (./x:y, ../x:y) is a local path, even though it contains a colon. The old
+// `strings.IndexByte(p,':')>0` test misclassified local paths like
+// ./my:file.txt as a container ref and copied to the wrong place.
+func cpIsContainerRef(p string) bool {
+	if strings.HasPrefix(p, "/") || strings.HasPrefix(p, ".") {
+		return false // absolute or explicitly-relative local path
+	}
+	return strings.IndexByte(p, ':') > 0
+}
+
 func newCpCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cp [OPTIONS] SRC_PATH|CONTAINER:SRC_PATH DEST_PATH|CONTAINER:DEST_PATH",
@@ -135,8 +148,7 @@ func newCpCmd() *cobra.Command {
 			if src == "-" || dst == "-" {
 				return fmt.Errorf("streaming copy (-) is not supported by the backend; copy to/from a file path instead")
 			}
-			isCtr := func(p string) bool { return strings.IndexByte(p, ':') > 0 }
-			if !isCtr(src) && !isCtr(dst) {
+			if !cpIsContainerRef(src) && !cpIsContainerRef(dst) {
 				return fmt.Errorf("copying between two local paths is not supported; one of SRC or DEST must be CONTAINER:PATH")
 			}
 			for _, flag := range []string{"archive", "follow-link"} {

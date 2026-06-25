@@ -219,7 +219,7 @@ func newRenameCmd() *cobra.Command {
 }
 
 func newTopCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "top CONTAINER [ps OPTIONS]",
 		Short: "Display the running processes of a container",
 		Args:  cobra.MinimumNArgs(1),
@@ -233,6 +233,12 @@ func newTopCmd() *cobra.Command {
 			return runtime.Run(cargs...)
 		},
 	}
+	// `top` is a pure pass-through of [ps OPTIONS] to ps inside the container.
+	// Stop flag parsing after the container name so dashed ps options
+	// (`top web -ef`, `top web -eo pid,comm`) reach ps instead of erroring as
+	// unknown flags on the top command itself. Mirrors exec/machine exec.
+	cmd.Flags().SetInterspersed(false)
+	return cmd
 }
 
 func newPortCmd() *cobra.Command {

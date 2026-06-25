@@ -98,6 +98,11 @@ func loadProject(cmd *cobra.Command) (*compose.Project, error) {
 	if len(files) > 0 {
 		explicit = files[0]
 	}
+	if len(files) > 1 {
+		// Docker merges multiple -f files (later override earlier); dcon does not
+		// yet. Warn loudly rather than silently dropping the override files.
+		fmt.Fprintf(os.Stderr, "dcon: warning: multiple -f/--file compose files are not merged; using only %s\n", explicit)
+	}
 	path, err := compose.Find(explicit)
 	if err != nil {
 		return nil, err
@@ -315,8 +320,7 @@ func composeUp() *cobra.Command {
 						continue
 					}
 					if noStart {
-						rargs := dropFlag(p.RunArgs(name, svc, i, net, nil), "--detach")
-						rargs[0] = "create"
+						rargs := p.CreateArgs(name, svc, i, net)
 						fmt.Println(composeStep("Creating", cname))
 						if err := runtime.Run(rargs...); err != nil {
 							return local, err
@@ -1041,8 +1045,7 @@ func composeCreate() *cobra.Command {
 						return err
 					}
 				}
-				rargs := dropFlag(p.RunArgs(name, svc, 1, net, nil), "--detach")
-				rargs[0] = "create"
+				rargs := p.CreateArgs(name, svc, 1, net)
 				cname := p.ContainerName(name, 1, svc)
 				if forceRecreate {
 					_, _ = runtime.CaptureSilent("delete", "--force", cname)
@@ -1084,34 +1087,17 @@ func composeExec() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			cargs := []string{"exec"}
-			if v, _ := cmd.Flags().GetBool("detach"); v {
-				cargs = append(cargs, "--detach")
-			}
-			if v, _ := cmd.Flags().GetBool("interactive"); v && isTerminal(os.Stdin) {
-				cargs = append(cargs, "--interactive")
-			}
-			// Only allocate a PTY when one actually exists (docker behaviour),
-			// so `compose exec svc cmd | grep ...` works. -T/--no-TTY forces it off
-			// (the common CI form: `compose exec -T db psql < dump.sql`).
-			noTTY, _ := cmd.Flags().GetBool("no-TTY")
-			if v, _ := cmd.Flags().GetBool("tty"); v && !noTTY && haveTTY() {
-				cargs = append(cargs, "--tty")
-			}
 			if cmd.Flags().Changed("privileged") {
 				fmt.Fprintln(os.Stderr, "dcon: warning: --privileged is not supported by exec and was ignored")
 			}
-			if u, _ := cmd.Flags().GetString("user"); u != "" {
-				cargs = append(cargs, "--user", u)
-			}
-			if w, _ := cmd.Flags().GetString("workdir"); w != "" {
-				cargs = append(cargs, "--workdir", w)
-			}
-			for _, e := range mustStringArray(cmd.Flags(), "env") {
-				cargs = append(cargs, "--env", e)
-			}
-			cargs = append(cargs, c)
-			cargs = append(cargs, rest...)
+			detach, _ := cmd.Flags().GetBool("detach")
+			interactive, _ := cmd.Flags().GetBool("interactive")
+			tty, _ := cmd.Flags().GetBool("tty")
+			noTTY, _ := cmd.Flags().GetBool("no-TTY")
+			user, _ := cmd.Flags().GetString("user")
+			workdir, _ := cmd.Flags().GetString("workdir")
+			env := mustStringArray(cmd.Flags(), "env")
+			cargs := composeExecArgs(detach, interactive, tty, noTTY, haveTTY(), user, workdir, env, c, rest)
 			return runtime.Run(cargs...)
 		},
 	}
@@ -1126,6 +1112,36 @@ func composeExec() *cobra.Command {
 	cmd.Flags().Int("index", 1, "Index of the container if service has multiple replicas")
 	cmd.Flags().Bool("privileged", false, "Give extended privileges to the process (unsupported)")
 	return cmd
+}
+
+// composeExecArgs builds the `container exec ...` argv for `compose exec`.
+// --interactive follows the flag value alone (it defaults to true), NOT whether
+// stdin is a terminal: piping stdin (`compose exec -T db psql < dump.sql`) is
+// exactly the case that needs STDIN kept open, and gating it on a TTY dropped
+// the redirected input. The PTY (--tty) is separate: only when requested, not
+// suppressed by -T/--no-TTY, and a real terminal is present.
+func composeExecArgs(detach, interactive, tty, noTTY, hasTTY bool, user, workdir string, env []string, containerID string, rest []string) []string {
+	cargs := []string{"exec"}
+	if detach {
+		cargs = append(cargs, "--detach")
+	}
+	if interactive {
+		cargs = append(cargs, "--interactive")
+	}
+	if tty && !noTTY && hasTTY {
+		cargs = append(cargs, "--tty")
+	}
+	if user != "" {
+		cargs = append(cargs, "--user", user)
+	}
+	if workdir != "" {
+		cargs = append(cargs, "--workdir", workdir)
+	}
+	for _, e := range env {
+		cargs = append(cargs, "--env", e)
+	}
+	cargs = append(cargs, containerID)
+	return append(cargs, rest...)
 }
 
 // serviceContainerByIndex resolves a project service's container by replica
@@ -1204,10 +1220,8 @@ func composeRun() *cobra.Command {
 			}
 			entrypoint, _ := cmd.Flags().GetString("entrypoint")
 
-			run := p.OneOffArgs(svcName, svc, net, args[1:], overrides, entrypoint)
-			if rm, _ := cmd.Flags().GetBool("rm"); !rm {
-				run = dropFlag(run, "--rm")
-			}
+			rm, _ := cmd.Flags().GetBool("rm")
+			run := p.OneOffArgs(svcName, svc, net, args[1:], overrides, entrypoint, rm)
 			if d, _ := cmd.Flags().GetBool("detach"); d {
 				run = append([]string{run[0], "--detach"}, run[1:]...)
 			}
@@ -1656,13 +1670,3 @@ func firstServiceContainer(project, service string) (string, error) {
 	return "", fmt.Errorf("no running container for service %q", service)
 }
 
-func dropFlag(args []string, flag string) []string {
-	out := args[:0:0]
-	for _, a := range args {
-		if a == flag {
-			continue
-		}
-		out = append(out, a)
-	}
-	return out
-}

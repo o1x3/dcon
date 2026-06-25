@@ -236,19 +236,24 @@ func (p *Project) ImageRef(service string, svc *Service) string {
 	return p.imageRef(service, svc)
 }
 
-// OneOffArgs builds `container run --rm ...` for a `compose run` invocation:
+// OneOffArgs builds `container run [--rm] ...` for a `compose run` invocation:
 // the service config without the fixed name/detach, plus CLI override flag
 // tokens (overrides, e.g. ["--env","K=V","--volume","a:b"]) injected before the
 // image, an optional entrypoint override (replacing the service's), and an
 // optional command override. The image boundary is located positionally, never
 // by string matching, so flag/command values equal to the image reference
-// cannot misplace the override.
-func (p *Project) OneOffArgs(service string, svc *Service, netName string, cmdOverride, overrides []string, entrypoint string) []string {
+// cannot misplace the override. rm controls --rm directly: it is added (or not)
+// here rather than being stripped afterward, so a literal "--rm" in the user's
+// command args is never removed.
+func (p *Project) OneOffArgs(service string, svc *Service, netName string, cmdOverride, overrides []string, entrypoint string, rm bool) []string {
 	base, imageIdx := p.runArgs(service, svc, 1, netName, nil)
 	flags := base[1:imageIdx] // the run flags span (after "run", before image)
 	image := base[imageIdx]
 
-	out := []string{"run", "--rm"}
+	out := []string{"run"}
+	if rm {
+		out = append(out, "--rm")
+	}
 	for i := 0; i < len(flags); i++ {
 		switch flags[i] {
 		case "--detach":
@@ -273,6 +278,18 @@ func (p *Project) OneOffArgs(service string, svc *Service, netName string, cmdOv
 		return append(out, cmdOverride...) // override replaces the service command
 	}
 	return append(out, base[imageIdx+1:]...) // keep the service's own command
+}
+
+// CreateArgs builds the `container create ...` args for a service: the same
+// configuration RunArgs produces but as a non-detached create. It drops the
+// leading "--detach" positionally (runArgs always emits it at index 1), so a
+// service command/entrypoint that itself contains a literal "--detach" token is
+// never corrupted — unlike a blind token strip.
+func (p *Project) CreateArgs(service string, svc *Service, index int, netName string) []string {
+	base, _ := p.runArgs(service, svc, index, netName, nil)
+	// base = ["run", "--detach", ...flags..., image, ...command...]
+	out := append([]string{"create"}, base[2:]...)
+	return out
 }
 
 // BuildImageName is the local tag used for services built from a Dockerfile.

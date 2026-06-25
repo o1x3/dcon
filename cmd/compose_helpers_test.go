@@ -9,6 +9,35 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// TestComposeExecArgsInteractiveWithoutTTY reproduces the bug where `compose
+// exec -T svc cmd < file` (no TTY) dropped --interactive, so redirected stdin
+// never reached the process. --interactive must follow the flag, not the TTY.
+func TestComposeExecArgsInteractiveWithoutTTY(t *testing.T) {
+	// -T form with no terminal: interactive=true, tty=true, noTTY=true, hasTTY=false.
+	got := composeExecArgs(false, true, true, true, false, "", "", nil, "cid", []string{"psql"})
+	if !contains(got, "--interactive") {
+		t.Errorf("piped `exec -T` must keep --interactive (for `< file`): %v", got)
+	}
+	if contains(got, "--tty") {
+		t.Errorf("--tty must not be set when -T/no TTY: %v", got)
+	}
+	want := []string{"exec", "--interactive", "cid", "psql"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("exec args = %v, want %v", got, want)
+	}
+}
+
+// TestComposeExecArgsTTYGating confirms --tty is added only when requested, not
+// suppressed by -T, and a real terminal is present.
+func TestComposeExecArgsTTYGating(t *testing.T) {
+	if got := composeExecArgs(false, true, true, false, true, "", "", nil, "cid", []string{"sh"}); !contains(got, "--tty") {
+		t.Errorf("tty && !noTTY && hasTTY should set --tty: %v", got)
+	}
+	if got := composeExecArgs(false, true, true, false, false, "", "", nil, "cid", []string{"sh"}); contains(got, "--tty") {
+		t.Errorf("no real TTY: --tty must be absent: %v", got)
+	}
+}
+
 func TestServiceSet(t *testing.T) {
 	if got := serviceSet(nil); got != nil {
 		t.Errorf("serviceSet(nil) = %v, want nil", got)
@@ -17,23 +46,6 @@ func TestServiceSet(t *testing.T) {
 	want := map[string]bool{"web": true, "db": true}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("serviceSet = %v, want %v", got, want)
-	}
-}
-
-func TestDropFlag(t *testing.T) {
-	in := []string{"run", "--detach", "--name", "x", "alpine"}
-	got := dropFlag(in, "--detach")
-	want := []string{"run", "--name", "x", "alpine"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("dropFlag = %v, want %v", got, want)
-	}
-	// Input must not be mutated (dropFlag allocates a fresh backing array).
-	if in[1] != "--detach" {
-		t.Errorf("dropFlag mutated its input: %v", in)
-	}
-	// Absent flag -> unchanged contents.
-	if got := dropFlag([]string{"a", "b"}, "--x"); !reflect.DeepEqual(got, []string{"a", "b"}) {
-		t.Errorf("dropFlag(absent) = %v, want [a b]", got)
 	}
 }
 

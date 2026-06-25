@@ -161,7 +161,7 @@ func indexOf(args []string, want string) int {
 func TestOneOffArgsEnvAndOverride(t *testing.T) {
 	p := &Project{Name: "proj", Dir: "/tmp"}
 	svc := &Service{Image: "nginx", Command: StringList{"orig"}}
-	got := p.OneOffArgs("web", svc, "proj_default", []string{"echo", "hi"}, []string{"--env", "FOO=bar"}, "")
+	got := p.OneOffArgs("web", svc, "proj_default", []string{"echo", "hi"}, []string{"--env", "FOO=bar"}, "", true)
 	mustContain(t, got, "--rm")
 	mustContainPair(t, got, "--env", "FOO=bar")
 	// --name and --detach must be dropped for one-off
@@ -183,7 +183,7 @@ func TestOneOffArgsImageEqualFlagValue(t *testing.T) {
 	// regression: a flag value equal to the image ref must not break splitting
 	p := &Project{Name: "proj", Dir: "/tmp"}
 	svc := &Service{Image: "myimg", Platform: "myimg"} // platform value == image
-	got := p.OneOffArgs("web", svc, "", []string{"run-cmd"}, nil, "")
+	got := p.OneOffArgs("web", svc, "", []string{"run-cmd"}, nil, "", true)
 	img := indexOf(got, "myimg")
 	// the image is the LAST occurrence (platform value is earlier as a flag arg)
 	last := -1
@@ -203,7 +203,7 @@ func TestOneOffArgsImageEqualFlagValue(t *testing.T) {
 func TestOneOffArgsOverridesEntrypoint(t *testing.T) {
 	p := &Project{Name: "proj", Dir: "/tmp"}
 	svc := &Service{Image: "nginx", Entrypoint: StringList{"/svc-ep"}}
-	got := p.OneOffArgs("web", svc, "", nil, []string{"--volume", "/a:/b"}, "/override-ep")
+	got := p.OneOffArgs("web", svc, "", nil, []string{"--volume", "/a:/b"}, "/override-ep", true)
 	// CLI entrypoint replaces the service entrypoint (no duplicate, no /svc-ep)
 	if indexOf(got, "/svc-ep") != -1 {
 		t.Errorf("service entrypoint should be replaced: %v", got)
@@ -213,6 +213,63 @@ func TestOneOffArgsOverridesEntrypoint(t *testing.T) {
 	// override volume before the image
 	if indexOf(got, "/a:/b") > indexOf(got, "nginx") {
 		t.Errorf("override must precede image: %v", got)
+	}
+}
+
+// TestOneOffArgsRmFalsePreservesCommandRm reproduces the bug where, with
+// rm=false, a global token strip removed EVERY "--rm" — including one the user
+// passed as an argument to the in-container command (compose run --rm=false web
+// mytool --rm). With rm=false the run-level --rm must be absent, but the
+// command's own --rm must survive.
+func TestOneOffArgsRmFalsePreservesCommandRm(t *testing.T) {
+	p := &Project{Name: "proj", Dir: "/tmp"}
+	svc := &Service{Image: "nginx"}
+	got := p.OneOffArgs("web", svc, "", []string{"mytool", "--rm"}, nil, "", false)
+	img := indexOf(got, "nginx")
+	if img < 0 {
+		t.Fatalf("image not found: %v", got)
+	}
+	// No run-level --rm before the image.
+	for i := 0; i < img; i++ {
+		if got[i] == "--rm" {
+			t.Errorf("rm=false must not emit a run-level --rm: %v", got)
+		}
+	}
+	// The command's own --rm (after the image) must be preserved.
+	foundCmdRm := false
+	for i := img + 1; i < len(got); i++ {
+		if got[i] == "--rm" {
+			foundCmdRm = true
+		}
+	}
+	if !foundCmdRm {
+		t.Errorf("the command's own --rm arg was stripped: %v", got)
+	}
+}
+
+// TestCreateArgsPreservesDetachInCommand verifies CreateArgs drops only the
+// leading run-level --detach (positionally), not a literal "--detach" the
+// service's own command contains.
+func TestCreateArgsPreservesDetachInCommand(t *testing.T) {
+	p := &Project{Name: "proj", Dir: "/tmp"}
+	svc := &Service{Image: "agent", Command: StringList{"serve", "--detach"}}
+	got := p.CreateArgs("web", svc, 1, "proj_default")
+	if len(got) == 0 || got[0] != "create" {
+		t.Fatalf("CreateArgs must start with create: %v", got)
+	}
+	img := indexOf(got, "agent")
+	if img < 0 {
+		t.Fatalf("image not found: %v", got)
+	}
+	// No run-level --detach before the image.
+	for i := 0; i < img; i++ {
+		if got[i] == "--detach" {
+			t.Errorf("CreateArgs must not emit a run-level --detach: %v", got)
+		}
+	}
+	// The command's own --detach (after the image) must survive.
+	if indexOf(got[img+1:], "--detach") < 0 {
+		t.Errorf("command's --detach was stripped: %v", got)
 	}
 }
 

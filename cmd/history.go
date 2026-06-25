@@ -10,6 +10,19 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// formatCreatedBy renders a layer's created_by for the CREATED BY column:
+// strip docker's shell wrapper prefixes, then truncate to 45 columns. The
+// truncation is by runes (not bytes) so a multibyte UTF-8 character landing on
+// the cut boundary is never split into an invalid byte sequence.
+func formatCreatedBy(raw string, noTrunc bool) string {
+	cb := strings.TrimPrefix(raw, "/bin/sh -c #(nop) ")
+	cb = strings.TrimSpace(strings.TrimPrefix(cb, "/bin/sh -c"))
+	if r := []rune(cb); !noTrunc && len(r) > 45 {
+		cb = string(r[:42]) + "..."
+	}
+	return cb
+}
+
 // ociHistory mirrors the OCI image-config history entries that container
 // embeds under variants[].config.history.
 type ociHistory struct {
@@ -62,15 +75,10 @@ func newHistoryCmd() *cobra.Command {
 			// Docker lists newest layer first.
 			for i := len(hist) - 1; i >= 0; i-- {
 				h := hist[i]
-				cb := strings.TrimPrefix(h.CreatedBy, "/bin/sh -c #(nop) ")
-				cb = strings.TrimSpace(strings.TrimPrefix(cb, "/bin/sh -c"))
-				if !noTrunc && len(cb) > 45 {
-					cb = cb[:42] + "..."
-				}
 				views = append(views, historyView{
 					ID:           "<missing>",
 					CreatedSince: dockerfmt.RelativeAgo(h.Created),
-					CreatedBy:    cb,
+					CreatedBy:    formatCreatedBy(h.CreatedBy, noTrunc),
 					// Per-layer size is not present in the OCI config and is
 					// unrecoverable from the backend; use a non-numeric sentinel.
 					Size:    "unknown",
