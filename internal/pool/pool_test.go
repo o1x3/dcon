@@ -25,6 +25,31 @@ func TestNormalizeRef(t *testing.T) {
 	}
 }
 
+// TestPartitionStale verifies the reap policy splits members by boot time. The
+// real fix it guards is atomicity: ReapStale now removes stale members inside
+// the state lock (via this helper) instead of List→forget→Destroy, so a
+// concurrent Claim and a reap can never both own — and the reaper can never
+// destroy — a VM a live run just claimed.
+func TestPartitionStale(t *testing.T) {
+	members := []Member{
+		{ID: "old1", BootedAt: 100},
+		{ID: "fresh", BootedAt: 1000},
+		{ID: "old2", BootedAt: 200},
+	}
+	stale, kept := partitionStale(members, 500)
+	if len(stale) != 2 || stale[0].ID != "old1" || stale[1].ID != "old2" {
+		t.Errorf("stale = %v, want [old1 old2]", stale)
+	}
+	if len(kept) != 1 || kept[0].ID != "fresh" {
+		t.Errorf("kept = %v, want [fresh]", kept)
+	}
+	// Nothing stale: all kept, none reaped.
+	stale, kept = partitionStale(members, 0)
+	if len(stale) != 0 || len(kept) != 3 {
+		t.Errorf("cutoff 0: stale=%v kept=%v, want none stale", stale, kept)
+	}
+}
+
 func TestEnvKnobs(t *testing.T) {
 	// AutoEnabled
 	for _, v := range []string{"auto", "1", "on", "true", "yes", "AUTO", " on "} {
