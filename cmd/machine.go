@@ -109,6 +109,27 @@ func machineStateName(state string) string {
 	}
 }
 
+// matchMachine finds the machine container for a user-facing name among all
+// backend containers. Resolution is by the prefixed backend ID *and* the
+// verified dcon.machine label only — never by the free-form dcon.machine.name
+// label, which is attacker-controllable (any `dcon run --label` can forge it).
+// Matching the label would let a non-prefixed user container masquerade as a
+// machine, defeating the prefix namespace and turning `machine rm/stop/shell`
+// into a confused deputy against arbitrary containers. A genuine machine always
+// has c.ID == dcon-machine-<name>, so the prefix match loses no real capability.
+func matchMachine(all []dockerfmt.Container, name string) (dockerfmt.Container, bool) {
+	cn := machine.ContainerName(name)
+	for _, c := range all {
+		if c.Configuration.Labels[machine.LabelMachine] != "1" {
+			continue
+		}
+		if c.ID == cn {
+			return c, true
+		}
+	}
+	return dockerfmt.Container{}, false
+}
+
 // resolveMachine looks up a machine by its user-facing name, re-verifying the
 // dcon.machine label so a mutating command can never act on a same-named
 // ordinary container. Returns the backing container (whose ID is the backend
@@ -118,14 +139,8 @@ func resolveMachine(name string) (dockerfmt.Container, error) {
 	if err != nil {
 		return dockerfmt.Container{}, err
 	}
-	cn := machine.ContainerName(name)
-	for _, c := range all {
-		if c.Configuration.Labels[machine.LabelMachine] != "1" {
-			continue
-		}
-		if c.ID == cn || c.Configuration.Labels[machine.LabelName] == name {
-			return c, nil
-		}
+	if c, ok := matchMachine(all, name); ok {
+		return c, nil
 	}
 	return dockerfmt.Container{}, fmt.Errorf("no such machine: %s", name)
 }
@@ -424,10 +439,7 @@ func machineRmCmd() *cobra.Command {
 		Args:    cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			force, _ := cmd.Flags().GetBool("force")
-			cargs := []string{"delete"}
-			if force {
-				cargs = append(cargs, "--force")
-			}
+			cargs := machineDeleteArgs(force)
 			return forEachMachine(args, func(id, name string) error {
 				if _, err := runtime.CaptureSilent(append(append([]string{}, cargs...), id)...); err != nil {
 					return err
@@ -438,8 +450,20 @@ func machineRmCmd() *cobra.Command {
 			})
 		},
 	}
-	cmd.Flags().BoolP("force", "f", true, "Force removal of a running machine (stops it first)")
+	// Default false (not true): a bare `rm` of a running machine should fail and
+	// tell the user to pass -f, mirroring `docker rm`. Defaulting to force would
+	// make -f a no-op and silently destroy a running machine's filesystem.
+	cmd.Flags().BoolP("force", "f", false, "Force removal of a running machine (stops it first)")
 	return cmd
+}
+
+// machineDeleteArgs builds the backend delete argv, adding --force only when the
+// user asked for it.
+func machineDeleteArgs(force bool) []string {
+	if force {
+		return []string{"delete", "--force"}
+	}
+	return []string{"delete"}
 }
 
 // forEachMachine resolves and applies fn to each named machine, surfacing the
