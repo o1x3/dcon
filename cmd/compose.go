@@ -47,12 +47,47 @@ var composeValueFlags = map[string]bool{
 // pflag panics when an inherited persistent shorthand collides with a local
 // one. Rewriting the leading tokens before parsing sidesteps that while leaving
 // post-subcommand shorthands (the `-f` in `compose logs -f`) untouched.
+// rootValueFlags are the root persistent flags (separated form) that consume the
+// following token as their value, so composeIndex skips that value when locating
+// the compose subcommand.
+var rootValueFlags = map[string]bool{
+	"-H": true, "--host": true, "--context": true, "--log-level": true,
+	"--config": true, "--tlscacert": true, "--tlscert": true, "--tlskey": true,
+}
+
+// composeIndex returns the index of the `compose` subcommand token, skipping any
+// root persistent flags (and their separated values) that precede it — so
+// `dcon -D compose ...` / `dcon --host x compose ...` are still recognized. It
+// returns -1 when the invocation is not a compose command.
+func composeIndex(args []string) int {
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		if a == "compose" {
+			return i
+		}
+		if strings.HasPrefix(a, "-") {
+			if rootValueFlags[a] {
+				i += 2 // skip the flag and its value
+			} else {
+				i++ // bool flag, --flag=value, or -Hvalue (self-contained)
+			}
+			continue
+		}
+		return -1 // a non-flag token that isn't compose => a different subcommand
+	}
+	return -1
+}
+
 func rewriteComposeGlobalShorthands(args []string) []string {
-	if len(args) == 0 || args[0] != "compose" {
+	ci := composeIndex(args)
+	if ci < 0 {
 		return args
 	}
-	out := []string{"compose"}
-	i := 1
+	// Preserve any root flags before `compose`, then rewrite the leading
+	// -f/-p shorthands that sit between `compose` and its subcommand.
+	out := append([]string{}, args[:ci+1]...)
+	i := ci + 1
 	for i < len(args) {
 		a := args[i]
 		if !strings.HasPrefix(a, "-") {
