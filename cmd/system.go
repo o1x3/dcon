@@ -160,11 +160,12 @@ func newInfoCmd() *cobra.Command {
 			imgs, _ := getImages()
 			ver := backendVersion()
 
-			// status check
+			// status check — exact field match (like doctor), not a substring:
+			// "running" is a substring of "not running".
 			statusOut, _ := rt.CaptureSilent("system", "status")
-			serverState := "running"
-			if !strings.Contains(statusOut, "running") {
-				serverState = "stopped"
+			serverState := "stopped"
+			if parseSystemStatus(statusOut)["status"] == "running" {
+				serverState = "running"
 			}
 
 			if format, _ := cmd.Flags().GetString("format"); format != "" {

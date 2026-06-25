@@ -180,6 +180,26 @@ func buildPsView(c dockerfmt.Container, noTrunc bool) psView {
 	}
 }
 
+// hasStatusFilter reports whether any --filter is a status= predicate, so ps
+// knows to fetch all states (not just running) before filtering.
+func hasStatusFilter(filters []string) bool {
+	for _, fl := range filters {
+		if strings.HasPrefix(fl, "status=") {
+			return true
+		}
+	}
+	return false
+}
+
+// ancestorMatches implements docker's `--filter ancestor=` against an image
+// reference: it matches the repo, the repo:tag, or the full reference — NOT a
+// loose substring (which wrongly matched `myalpine` for ancestor=alpine).
+func ancestorMatches(reference, val string) bool {
+	short := dockerfmt.ShortImage(reference)
+	repo, tag := dockerfmt.SplitRepoTag(short)
+	return val == reference || val == short || val == repo || val == repo+":"+tag
+}
+
 // applyFilters implements the common docker ps --filter predicates.
 func applyFilters(list []dockerfmt.Container, filters []string) []dockerfmt.Container {
 	if len(filters) == 0 {
@@ -208,7 +228,7 @@ func applyFilters(list []dockerfmt.Container, filters []string) []dockerfmt.Cont
 					keep = false
 				}
 			case "ancestor":
-				if !strings.Contains(c.Configuration.Image.Reference, val) {
+				if !ancestorMatches(c.Configuration.Image.Reference, val) {
 					keep = false
 				}
 			case "label":
@@ -258,7 +278,9 @@ func newPsCmd() *cobra.Command {
 			last, _ := cmd.Flags().GetInt("last")
 			latest, _ := cmd.Flags().GetBool("latest")
 
-			list, err := getContainers(all || latest || last > 0)
+			// A status= filter must see all states, else `ps --filter status=exited`
+			// (without -a) fetches only running containers and matches nothing.
+			list, err := getContainers(all || latest || last > 0 || hasStatusFilter(filters))
 			if err != nil {
 				return err
 			}

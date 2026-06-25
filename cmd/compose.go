@@ -326,6 +326,27 @@ func composeUp() *cobra.Command {
 			net := ensureNetwork(p)
 			ensureVolumes(p)
 
+			// --pull always: force-refresh each selected service's explicit image
+			// before starting (missing/never rely on the backend's on-demand pull).
+			// Done once per image, off the per-replica bringUp path.
+			if pull, _ := cmd.Flags().GetString("pull"); pull == "always" {
+				pulled := map[string]bool{}
+				for _, name := range p.Order() {
+					if skipService(p, name, selected, active) {
+						continue
+					}
+					img := p.Services[name].Image
+					if img == "" || pulled[img] {
+						continue // built (no explicit image:) or already pulled
+					}
+					pulled[img] = true
+					fmt.Println(composeStep("Pulling", name))
+					if _, err := runtime.CaptureSilent("image", "pull", img); err != nil {
+						fmt.Fprintf(os.Stderr, "dcon: warning: pull %s failed: %v\n", img, err)
+					}
+				}
+			}
+
 			// bringUp creates/starts every replica of one service and returns the
 			// container names it brought up. Pure per-service work so independent
 			// services can run concurrently.
@@ -415,7 +436,10 @@ func composeUp() *cobra.Command {
 				return nil
 			}
 			// Foreground: stream aggregated logs until interrupted, then stop.
-			return followAndWait(p, started)
+			noPrefix, _ := cmd.Flags().GetBool("no-log-prefix")
+			timeoutChanged := cmd.Flags().Changed("timeout")
+			timeout, _ := cmd.Flags().GetInt("timeout")
+			return followAndWait(p, started, noPrefix, timeoutChanged, timeout)
 		},
 	}
 	f := cmd.Flags()
@@ -483,7 +507,7 @@ func removeOrphanContainers(p *compose.Project) {
 	}
 }
 
-func followAndWait(p *compose.Project, names []string) error {
+func followAndWait(p *compose.Project, names []string, noPrefix bool, timeoutChanged bool, timeout int) error {
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
 
@@ -504,7 +528,7 @@ func followAndWait(p *compose.Project, names []string) error {
 			sc := bufio.NewScanner(stdout)
 			sc.Buffer(make([]byte, 1024*1024), 1024*1024)
 			for sc.Scan() {
-				fmt.Printf("%s | %s\n", ui.Accent(svc), sc.Text())
+				fmt.Println(formatLogLine(svc, sc.Text(), noPrefix))
 			}
 		}()
 	}
@@ -513,7 +537,7 @@ func followAndWait(p *compose.Project, names []string) error {
 	<-sigc
 	fmt.Println("\nGracefully stopping...")
 	for _, n := range names {
-		_, _ = runtime.CaptureSilent("stop", n)
+		_, _ = runtime.CaptureSilent(composeStopArgs(timeoutChanged, timeout, n)...)
 	}
 	for _, c := range cmds {
 		_ = c.Process.Kill()
@@ -757,14 +781,19 @@ func composeLogsTail(cmd *cobra.Command) string {
 	return t
 }
 
-// printLogLine writes one aggregated log line, with the Docker-style
-// "service | …" prefix unless --no-log-prefix was given.
-func printLogLine(svc, line string, noPrefix bool) {
+// formatLogLine renders one aggregated log line with the Docker-style
+// "service | …" prefix unless --no-log-prefix was given. Pure, so the prefix
+// behavior is unit-testable.
+func formatLogLine(svc, line string, noPrefix bool) string {
 	if noPrefix {
-		fmt.Println(line)
-	} else {
-		fmt.Printf("%s | %s\n", ui.Accent(svc), line)
+		return line
 	}
+	return ui.Accent(svc) + " | " + line
+}
+
+// printLogLine writes one aggregated log line (see formatLogLine).
+func printLogLine(svc, line string, noPrefix bool) {
+	fmt.Println(formatLogLine(svc, line, noPrefix))
 }
 
 // followLogs streams `container logs --follow` for each target concurrently,
@@ -1655,6 +1684,7 @@ func composePort() *cobra.Command {
 			}
 			idx, _ := cmd.Flags().GetInt("index")
 			proto, _ := cmd.Flags().GetString("protocol")
+			proto = strings.ToLower(proto) // backend protos are lowercase; --protocol UDP must match
 			cid, err := serviceContainerByIndex(p.Name, args[0], idx)
 			if err != nil {
 				return err
@@ -1671,7 +1701,7 @@ func composePort() *cobra.Command {
 				if pr == "" {
 					pr = "tcp"
 				}
-				if fmt.Sprint(pt.ContainerPort) != args[1] || pr != proto {
+				if fmt.Sprint(pt.ContainerPort) != args[1] || strings.ToLower(pr) != proto {
 					continue
 				}
 				host := pt.HostAddress

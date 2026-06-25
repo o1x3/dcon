@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"dcon/internal/compose"
+	"dcon/internal/ui"
 
 	"github.com/spf13/cobra"
 )
@@ -77,6 +78,19 @@ func TestEffectiveReplicas(t *testing.T) {
 	}
 	if n := effectiveReplicas(svc, map[string]int{"web": -5}, "web"); n != 0 {
 		t.Errorf("negative scale floored to 0, got %d", n)
+	}
+}
+
+// TestFormatLogLine reproduces the bug where `compose up --no-log-prefix`
+// (foreground) still printed the "service | " prefix: followAndWait hardcoded
+// it. The prefix must be suppressed when noPrefix is set.
+func TestFormatLogLine(t *testing.T) {
+	defer ui.SetEnabled(false)() // deterministic (no color) Accent
+	if got := formatLogLine("web", "hello", true); got != "hello" {
+		t.Errorf("noPrefix -> %q, want \"hello\"", got)
+	}
+	if got := formatLogLine("web", "hello", false); got != "web | hello" {
+		t.Errorf("prefixed -> %q, want \"web | hello\"", got)
 	}
 }
 

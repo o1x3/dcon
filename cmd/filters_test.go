@@ -98,12 +98,50 @@ func TestImageRefFilter(t *testing.T) {
 		{"registry:5000/myimage", "registry:5000/myimage", "", ""},        // port, not a tag
 		{"registry:5000/myimage:1.0", "registry:5000/myimage", "1.0", ""}, // real tag kept
 		{"alpine@sha256:abc", "alpine", "", "sha256:abc"},                 // digest, not tag
+		{"docker.io/library/alpine", "alpine", "", ""},                    // fully-qualified -> short
+		{"docker.io/library/alpine:3.18", "alpine", "3.18", ""},
+		{"docker.io/myorg/app", "myorg/app", "", ""},
 	}
 	for _, c := range cases {
 		repo, tag, dg := imageRefFilter(c.ref)
 		if repo != c.wantRepo || tag != c.wantTag || dg != c.wantDg {
 			t.Errorf("imageRefFilter(%q) = (%q,%q,%q), want (%q,%q,%q)",
 				c.ref, repo, tag, dg, c.wantRepo, c.wantTag, c.wantDg)
+		}
+	}
+}
+
+// TestHasStatusFilter reproduces the bug where `ps --filter status=exited`
+// without -a fetched only running containers; a status= filter must force the
+// all-states fetch.
+func TestHasStatusFilter(t *testing.T) {
+	if !hasStatusFilter([]string{"status=exited"}) {
+		t.Error("status=exited should require all-states fetch")
+	}
+	if !hasStatusFilter([]string{"label=a=b", "status=running"}) {
+		t.Error("status=running among others should be detected")
+	}
+	if hasStatusFilter([]string{"label=a=b", "name=x"}) {
+		t.Error("no status filter -> false")
+	}
+}
+
+// TestAncestorMatches reproduces the bug where `ps --filter ancestor=alpine`
+// used a loose substring and matched superstrings like "myalpine".
+func TestAncestorMatches(t *testing.T) {
+	// matches: exact repo, repo:tag, full ref, docker.io short form
+	for _, ref := range []string{"alpine:latest", "alpine:3.18", "docker.io/library/alpine:latest"} {
+		if !ancestorMatches(ref, "alpine") {
+			t.Errorf("ancestor=alpine should match image %q", ref)
+		}
+	}
+	if !ancestorMatches("alpine:3.18", "alpine:3.18") {
+		t.Error("ancestor=alpine:3.18 should match repo:tag")
+	}
+	// must NOT match superstring repos
+	for _, ref := range []string{"myalpine:latest", "alpine-test:1", "notalpine:latest"} {
+		if ancestorMatches(ref, "alpine") {
+			t.Errorf("ancestor=alpine must NOT match %q (substring)", ref)
 		}
 	}
 }

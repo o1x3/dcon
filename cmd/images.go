@@ -176,6 +176,9 @@ func runImages(cmd *cobra.Command, args []string) error {
 // other tag of that repo. A digest ref filters by the digest column, never by
 // the human tag (which is never a digest), which otherwise yields an empty list.
 func imageRefFilter(ref string) (repo, tag, digest string) {
+	// Normalize like buildImageView (which stores Repository via ShortImage), so a
+	// fully-qualified docker.io/library/alpine matches the stored "alpine".
+	ref = dockerfmt.ShortImage(ref)
 	if i := strings.LastIndex(ref, "@"); i >= 0 {
 		return ref[:i], "", ref[i+1:]
 	}
