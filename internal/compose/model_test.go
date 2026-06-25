@@ -136,6 +136,27 @@ func TestBuildArgs(t *testing.T) {
 	}
 }
 
+// TestBuildArgsTagsExplicitImage reproduces the bug where a service with BOTH
+// build: and image: built an image tagged with the derived project name while
+// the container ran svc.Image — so the freshly built image was never used.
+// BuildArgs must tag the explicit image: so build output and run ref agree.
+func TestBuildArgsTagsExplicitImage(t *testing.T) {
+	p := &Project{Name: "proj", Dir: "/tmp"}
+	svc := &Service{Image: "myorg/web:1.0", Build: Build{Context: "."}}
+	svc.Build.set = true
+	args := p.BuildArgs("web", svc)
+	if !containsSub(args, "myorg/web:1.0") {
+		t.Errorf("build must tag the explicit image: ref; got %v", args)
+	}
+	if containsSub(args, p.BuildImageName("web")) {
+		t.Errorf("build must NOT tag the derived name when image: is set; got %v", args)
+	}
+	// Sanity: build tag == run image ref.
+	if p.ImageRef("web", svc) != "myorg/web:1.0" {
+		t.Errorf("imageRef mismatch: %q", p.ImageRef("web", svc))
+	}
+}
+
 func TestDefaultNetworkAndName(t *testing.T) {
 	p := loadSample(t)
 	if p.DefaultNetwork() != "shop_default" {

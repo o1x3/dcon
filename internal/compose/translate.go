@@ -327,13 +327,17 @@ func normalizePort(spec string) string {
 }
 
 // BuildArgs returns the `container build ...` args for a service with build:.
+// It tags the built image with imageRef — i.e. the service's explicit `image:`
+// when set, otherwise the derived project image name. This must match what the
+// container is run as (RunArgs/OneOffArgs also use imageRef): tagging only the
+// derived name while running `image:` would build an image the run never uses.
 func (p *Project) BuildArgs(service string, svc *Service) []string {
 	ctx := svc.Build.Context
 	if ctx == "" {
 		ctx = "."
 	}
 	ctx = p.resolve(ctx)
-	args := []string{"build", "--tag", p.BuildImageName(service)}
+	args := []string{"build", "--tag", p.imageRef(service, svc)}
 	if svc.Build.Dockerfile != "" {
 		args = append(args, "--file", filepath.Join(ctx, svc.Build.Dockerfile))
 	}
