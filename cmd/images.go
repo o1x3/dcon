@@ -98,7 +98,8 @@ func addImagesFlags(cmd *cobra.Command) {
 	f.BoolP("quiet", "q", false, "Only show image IDs")
 	f.Bool("no-trunc", false, "Don't truncate output")
 	f.String("format", "", "Format output using a Go template or 'json'")
-	f.StringSliceP("filter", "f", nil, "Filter output based on conditions provided")
+	// StringArray, not StringSlice: a label-value filter may contain commas.
+	f.StringArrayP("filter", "f", nil, "Filter output based on conditions provided")
 	f.Bool("digests", false, "Show digests")
 	f.Bool("tree", false, "List multi-platform images as a tree (unsupported; falls back to flat list)")
 }
@@ -108,9 +109,12 @@ func runImages(cmd *cobra.Command, args []string) error {
 	noTrunc, _ := cmd.Flags().GetBool("no-trunc")
 	format, _ := cmd.Flags().GetString("format")
 	digests, _ := cmd.Flags().GetBool("digests")
-	filters, _ := cmd.Flags().GetStringSlice("filter")
+	filters, _ := cmd.Flags().GetStringArray("filter")
 	if cmd.Flags().Changed("tree") {
 		fmt.Fprintln(os.Stderr, "dcon: warning: --tree is not supported by the backend; showing a flat list")
+	}
+	if err := validateImageFilters(filters); err != nil {
+		return err
 	}
 
 	list, err := getImages()
@@ -118,13 +122,10 @@ func runImages(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// positional REPO[:TAG] filter
-	var repoFilter, tagFilter string
+	// positional REPO[:TAG|@DIGEST] filter
+	var repoFilter, tagFilter, digestFilter string
 	if len(args) == 1 {
-		repoFilter, tagFilter = dockerfmt.SplitRepoTag(args[0])
-		if !strings.Contains(args[0], ":") {
-			tagFilter = ""
-		}
+		repoFilter, tagFilter, digestFilter = imageRefFilter(args[0])
 	}
 
 	views := make([]any, 0, len(list))
@@ -134,6 +135,9 @@ func runImages(cmd *cobra.Command, args []string) error {
 			continue
 		}
 		if tagFilter != "" && v.Tag != tagFilter {
+			continue
+		}
+		if digestFilter != "" && !strings.HasPrefix(v.Digest, digestFilter) {
 			continue
 		}
 		if !matchImageFilters(v, filters) {
@@ -163,6 +167,39 @@ func runImages(cmd *cobra.Command, args []string) error {
 		ID:      func(v any) string { return v.(imageView).ID },
 	}
 	return dockerfmt.Render(format, quiet, views, def)
+}
+
+// imageRefFilter splits a positional `images REPO[:TAG|@DIGEST]` argument into
+// repo, tag, and digest filters. A tag filter is set ONLY when the ref has an
+// explicit tag — a colon after the last slash. A registry-port colon like
+// registry:5000/img is not a tag, so it must not pin tag=latest and hide every
+// other tag of that repo. A digest ref filters by the digest column, never by
+// the human tag (which is never a digest), which otherwise yields an empty list.
+func imageRefFilter(ref string) (repo, tag, digest string) {
+	if i := strings.LastIndex(ref, "@"); i >= 0 {
+		return ref[:i], "", ref[i+1:]
+	}
+	repo, t := dockerfmt.SplitRepoTag(ref)
+	if j := strings.LastIndex(ref, ":"); j >= 0 && !strings.Contains(ref[j:], "/") {
+		tag = t // a real tag separator (after the last slash) was present
+	}
+	return repo, tag, ""
+}
+
+// validateImageFilters rejects malformed reference= glob patterns up front
+// (mirroring docker, which errors on a bad filter) so a pattern like
+// "ngin[x" surfaces an error instead of silently matching nothing and
+// returning an empty image list.
+func validateImageFilters(filters []string) error {
+	for _, fl := range filters {
+		kv := strings.SplitN(fl, "=", 2)
+		if len(kv) == 2 && kv[0] == "reference" {
+			if _, err := filepath.Match(kv[1], ""); err != nil {
+				return fmt.Errorf("invalid filter 'reference=%s': %v", kv[1], err)
+			}
+		}
+	}
+	return nil
 }
 
 func matchImageFilters(v imageView, filters []string) bool {

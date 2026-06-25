@@ -387,15 +387,25 @@ func normalizeMount(spec string, warnings *[]string) string {
 	fields := strings.Split(spec, ",")
 	var out []string
 	for _, fld := range fields {
-		key := fld
+		key, val, hasEq := fld, "", false
 		if i := strings.Index(fld, "="); i >= 0 {
-			key = fld[:i]
+			key, val, hasEq = fld[:i], fld[i+1:], true
 		}
 		switch key {
 		case "tmpfs-size":
-			out = append(out, "size="+fld[len("tmpfs-size="):])
+			// A valueless "tmpfs-size" (no '=') must not slice past the string;
+			// pass it through untouched rather than panicking.
+			if hasEq {
+				out = append(out, "size="+val)
+			} else {
+				out = append(out, fld)
+			}
 		case "tmpfs-mode":
-			out = append(out, "mode="+fld[len("tmpfs-mode="):])
+			if hasEq {
+				out = append(out, "mode="+val)
+			} else {
+				out = append(out, fld)
+			}
 		case "volume-driver", "volume-opt", "bind-propagation", "consistency":
 			*warnings = append(*warnings, fmt.Sprintf("--mount option %q is not supported by the container backend and was ignored", key))
 		default:

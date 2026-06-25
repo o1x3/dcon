@@ -107,7 +107,7 @@ func newVolumeGroupCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			quiet, _ := cmd.Flags().GetBool("quiet")
 			format, _ := cmd.Flags().GetString("format")
-			filters, _ := cmd.Flags().GetStringSlice("filter")
+			filters, _ := cmd.Flags().GetStringArray("filter")
 			var list []dockerfmt.Volume
 			if err := runtime.CaptureJSON(&list, "volume", "list", "--format", "json"); err != nil {
 				return err
@@ -142,7 +142,8 @@ func newVolumeGroupCmd() *cobra.Command {
 	}
 	ls.Flags().BoolP("quiet", "q", false, "Only display volume names")
 	ls.Flags().String("format", "", "Format output using a Go template or 'json'")
-	ls.Flags().StringSliceP("filter", "f", nil, "Provide filter values")
+	// StringArray, not StringSlice: a label-value filter may contain commas.
+	ls.Flags().StringArrayP("filter", "f", nil, "Provide filter values")
 
 	rm := &cobra.Command{
 		Use:     "rm [OPTIONS] VOLUME [VOLUME...]",

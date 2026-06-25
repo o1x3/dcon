@@ -226,6 +226,23 @@ func applyFilters(list []dockerfmt.Container, filters []string) []dockerfmt.Cont
 	return out
 }
 
+// trimLast applies docker's -n/--last semantics: a negative value (the unset
+// sentinel) leaves the list untouched; 0 shows nothing (header only); a
+// positive n keeps the first n. Docker's `ps -n 0` shows zero containers — the
+// old `last > 0` guard wrongly treated 0 like "unset" and listed everything.
+func trimLast(list []dockerfmt.Container, last int) []dockerfmt.Container {
+	switch {
+	case last < 0:
+		return list
+	case last == 0:
+		return nil
+	case last < len(list):
+		return list[:last]
+	default:
+		return list
+	}
+}
+
 func newPsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "ps [OPTIONS]",
@@ -237,7 +254,7 @@ func newPsCmd() *cobra.Command {
 			quiet, _ := cmd.Flags().GetBool("quiet")
 			noTrunc, _ := cmd.Flags().GetBool("no-trunc")
 			format, _ := cmd.Flags().GetString("format")
-			filters, _ := cmd.Flags().GetStringSlice("filter")
+			filters, _ := cmd.Flags().GetStringArray("filter")
 			last, _ := cmd.Flags().GetInt("last")
 			latest, _ := cmd.Flags().GetBool("latest")
 
@@ -256,9 +273,7 @@ func newPsCmd() *cobra.Command {
 			if latest {
 				last = 1
 			}
-			if last > 0 && last < len(list) {
-				list = list[:last]
-			}
+			list = trimLast(list, last)
 
 			views := make([]any, 0, len(list))
 			for _, c := range list {
@@ -280,7 +295,9 @@ func newPsCmd() *cobra.Command {
 	f.BoolP("quiet", "q", false, "Only display container IDs")
 	f.Bool("no-trunc", false, "Don't truncate output")
 	f.String("format", "", "Format output using a Go template or 'json'")
-	f.StringSliceP("filter", "f", nil, "Filter output based on conditions provided")
+	// StringArray (not StringSlice): a single --filter value legitimately
+	// contains commas (e.g. label=team=a,b), which StringSlice would split.
+	f.StringArrayP("filter", "f", nil, "Filter output based on conditions provided")
 	f.IntP("last", "n", -1, "Show n last created containers (includes all states)")
 	f.BoolP("latest", "l", false, "Show the latest created container")
 	f.BoolP("size", "s", false, "Display total file sizes")

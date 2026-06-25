@@ -150,6 +150,26 @@ func TestRunMountTmpfsKeysRewritten(t *testing.T) {
 	}
 }
 
+// TestRunMountValuelessTmpfsKeyNoPanic reproduces a slice-out-of-range panic:
+// a --mount field of a bare "tmpfs-size"/"tmpfs-mode" (no =value) matched the
+// rewrite case and sliced past the string end, crashing the process. It must
+// now pass the field through untouched instead.
+func TestRunMountValuelessTmpfsKeyNoPanic(t *testing.T) {
+	for _, spec := range []string{
+		"type=tmpfs,destination=/x,tmpfs-size",
+		"type=tmpfs,destination=/x,tmpfs-mode",
+	} {
+		c := parse(t, newRunCmd(), []string{"--mount", spec, "alpine"})
+		got, err := buildContainerArgs(c, c.Flags().Args(), "run") // must not panic
+		if err != nil {
+			t.Fatalf("%q: unexpected error %v", spec, err)
+		}
+		if !contains(got, "--mount") {
+			t.Errorf("%q: expected a --mount arg; got %v", spec, got)
+		}
+	}
+}
+
 func TestBuildTranslation(t *testing.T) {
 	c := newBuildCmd()
 	parse(t, c, []string{
