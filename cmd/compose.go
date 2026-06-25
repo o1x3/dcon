@@ -305,7 +305,7 @@ func composeUp() *cobra.Command {
 						return nil, fmt.Errorf("build %s: %w", name, err)
 					}
 				}
-				count := p.Replicas(svc, scale[name])
+				count := effectiveReplicas(svc, scale, name)
 				if count > 1 && svc.ContainerName != "" {
 					return nil, fmt.Errorf("service %q has a container_name and cannot be scaled to %d", name, count)
 				}
@@ -1144,6 +1144,21 @@ func composeExecArgs(detach, interactive, tty, noTTY, hasTTY bool, user, workdir
 	return append(cargs, rest...)
 }
 
+// composeRunPtyFlags returns the --interactive/--tty tokens for `compose run`.
+// Docker compose run keeps STDIN open (-i, default true) and allocates a TTY by
+// default unless -T/--no-TTY; the PTY is only allocated when a real terminal is
+// present (so `compose run web cmd | cat` and CI pipelines still work).
+func composeRunPtyFlags(interactive, noTTY, hasTTY bool) []string {
+	var out []string
+	if interactive {
+		out = append(out, "--interactive")
+	}
+	if !noTTY && hasTTY {
+		out = append(out, "--tty")
+	}
+	return out
+}
+
 // serviceContainerByIndex resolves a project service's container by replica
 // index (1-based), preferring a running one.
 func serviceContainerByIndex(project, service string, idx int) (string, error) {
@@ -1154,6 +1169,11 @@ func serviceContainerByIndex(project, service string, idx int) (string, error) {
 	want := strconv.Itoa(idx)
 	var fallback string
 	for _, c := range containers {
+		// Never resolve a service replica to a one-off `compose run` container:
+		// it shares service/number labels but is a separate, ephemeral thing.
+		if c.Configuration.Labels[compose.LabelOneoff] == "True" {
+			continue
+		}
 		if serviceOf(c) != service || c.Configuration.Labels[compose.LabelNumber] != want {
 			continue
 		}
@@ -1220,9 +1240,20 @@ func composeRun() *cobra.Command {
 			}
 			entrypoint, _ := cmd.Flags().GetString("entrypoint")
 
+			detach, _ := cmd.Flags().GetBool("detach")
+			// Forward TTY/interactive to the backend (the run RunE previously read
+			// neither, so `compose run web bash` got no PTY). Docker compose run
+			// allocates a TTY by default unless -T, and keeps stdin open (-i).
+			// Skip when detached.
+			if !detach {
+				interactive, _ := cmd.Flags().GetBool("interactive")
+				noTTY, _ := cmd.Flags().GetBool("no-TTY")
+				overrides = append(overrides, composeRunPtyFlags(interactive, noTTY, haveTTY())...)
+			}
+
 			rm, _ := cmd.Flags().GetBool("rm")
 			run := p.OneOffArgs(svcName, svc, net, args[1:], overrides, entrypoint, rm)
-			if d, _ := cmd.Flags().GetBool("detach"); d {
+			if detach {
 				run = append([]string{run[0], "--detach"}, run[1:]...)
 			}
 			return runtime.Run(run...)
@@ -1253,6 +1284,23 @@ func composeRun() *cobra.Command {
 	cmd.Flags().StringArray("cap-add", nil, "Add Linux capabilities")
 	cmd.Flags().StringArray("env-file", nil, "Set environment variable file")
 	return cmd
+}
+
+// effectiveReplicas resolves how many replicas `up` should run for a service.
+// An explicit --scale entry wins — INCLUDING 0 (docker's `up --scale web=0`
+// runs zero). p.Replicas can't express this because it clamps a 0 override up
+// to 1 (treating 0 as "unset"). A negative scale is floored to 0.
+func effectiveReplicas(svc *compose.Service, scale map[string]int, name string) int {
+	if v, ok := scale[name]; ok {
+		if v < 0 {
+			v = 0
+		}
+		return v
+	}
+	if svc.Scale < 1 {
+		return 1 // no --scale and no service-level scale: one replica
+	}
+	return svc.Scale
 }
 
 // parseScale turns ["web=3","db=2"] into {web:3, db:2}.
@@ -1657,12 +1705,18 @@ func firstServiceContainer(project, service string) (string, error) {
 		return "", err
 	}
 	for _, c := range containers {
+		if c.Configuration.Labels[compose.LabelOneoff] == "True" {
+			continue
+		}
 		if serviceOf(c) == service && c.Status.State == "running" {
 			return c.ID, nil
 		}
 	}
 	// fall back to any state
 	for _, c := range containers {
+		if c.Configuration.Labels[compose.LabelOneoff] == "True" {
+			continue
+		}
 		if serviceOf(c) == service {
 			return c.ID, nil
 		}

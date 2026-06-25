@@ -273,30 +273,50 @@ func newPortCmd() *cobra.Command {
 					filterProto = parts[1]
 				}
 			}
-			for _, p := range list[0].Configuration.Ports {
-				proto := p.Proto
-				if proto == "" {
-					proto = "tcp"
-				}
-				if filterPort != "" && fmt.Sprint(p.ContainerPort) != filterPort {
-					continue
-				}
-				if filterProto != "" && proto != filterProto {
-					continue
-				}
-				host := p.HostAddress
-				if host == "" {
-					host = "0.0.0.0"
-				}
-				if filterPort != "" {
-					fmt.Printf("%s:%d\n", host, p.HostPort)
-				} else {
-					fmt.Printf("%d/%s -> %s:%d\n", p.ContainerPort, proto, host, p.HostPort)
-				}
+			for _, line := range portMappingLines(list[0].Configuration.Ports, filterPort, filterProto) {
+				fmt.Println(line)
 			}
 			return nil
 		},
 	}
+}
+
+// portMappingLines renders a container's published ports the way `docker port`
+// does. A published range arrives from the backend as one PublishPort with
+// Count>1; it is expanded to one line per port so every port of the range is
+// listed and per-port filtering (`dcon port web 81`) resolves into the range.
+func portMappingLines(ports []dockerfmt.PublishPort, filterPort, filterProto string) []string {
+	var out []string
+	for _, p := range ports {
+		proto := p.Proto
+		if proto == "" {
+			proto = "tcp"
+		}
+		host := p.HostAddress
+		if host == "" {
+			host = "0.0.0.0"
+		}
+		cnt := p.Count
+		if cnt < 1 {
+			cnt = 1
+		}
+		for k := 0; k < cnt; k++ {
+			cport := p.ContainerPort + k
+			hport := p.HostPort + k
+			if filterPort != "" && fmt.Sprint(cport) != filterPort {
+				continue
+			}
+			if filterProto != "" && proto != filterProto {
+				continue
+			}
+			if filterPort != "" {
+				out = append(out, fmt.Sprintf("%s:%d", host, hport))
+			} else {
+				out = append(out, fmt.Sprintf("%d/%s -> %s:%d", cport, proto, host, hport))
+			}
+		}
+	}
+	return out
 }
 
 func newAttachCmd() *cobra.Command {

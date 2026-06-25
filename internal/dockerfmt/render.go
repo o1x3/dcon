@@ -58,10 +58,16 @@ var fieldHeader = map[string]string{
 	".PIDs":         "PIDS",
 }
 
-// fieldActionRe matches a whole `{{ .Field … }}` action so the header
-// derivation can replace the entire action with the column header, leaving any
-// surrounding literal text (dots, version strings) untouched.
-var fieldActionRe = regexp.MustCompile(`{{\s*(\.[A-Za-z0-9_]+)[^}]*}}`)
+// actionRe matches a whole `{{ … }}` template action; fieldRefRe finds a
+// `.Field` reference within one. Together they let the header derivation replace
+// each action with its column header, leaving surrounding literal text (dots,
+// version strings) untouched — and crucially handling actions where the field is
+// NOT the first token, e.g. `{{upper .Names}}` or `{{printf "%s" .ID}}`, which an
+// anchored `{{\s*\.Field` regex missed (leaking the raw template into the header).
+var (
+	actionRe   = regexp.MustCompile(`{{[^}]*}}`)
+	fieldRefRe = regexp.MustCompile(`\.([A-Za-z0-9_]+)`)
+)
 
 // Render emits a list of view objects honouring Docker's -q / --format /
 // default-table conventions.
@@ -117,10 +123,16 @@ func Render(format string, quiet bool, views []any, def TableDef) error {
 			return err
 		}
 		w := NewTabWriter()
-		// Header row: replace each whole {{.Field …}} action with its column
-		// header; literal text between actions is preserved verbatim.
-		header := fieldActionRe.ReplaceAllStringFunc(body, func(m string) string {
-			tok := fieldActionRe.FindStringSubmatch(m)[1]
+		// Header row: replace each whole {{…}} action with its column header,
+		// derived from the LAST .Field reference inside the action (so function-
+		// or pipeline-prefixed actions resolve too); literal text between actions
+		// is preserved verbatim. An action with no field reference is dropped.
+		header := actionRe.ReplaceAllStringFunc(body, func(m string) string {
+			refs := fieldRefRe.FindAllStringSubmatch(m, -1)
+			if len(refs) == 0 {
+				return ""
+			}
+			tok := "." + refs[len(refs)-1][1]
 			if h, ok := fieldHeader[tok]; ok {
 				return h
 			}

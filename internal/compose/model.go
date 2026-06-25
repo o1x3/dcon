@@ -36,7 +36,7 @@ type Service struct {
 	ContainerName string      `yaml:"container_name"`
 	Command       StringList  `yaml:"command"`
 	Entrypoint    StringList  `yaml:"entrypoint"`
-	Environment   MapList     `yaml:"environment"`
+	Environment   EnvMap      `yaml:"environment"`
 	EnvFile       EnvFile     `yaml:"env_file"`
 	Ports         PortList    `yaml:"ports"`
 	Expose        []string    `yaml:"expose"`
@@ -139,10 +139,10 @@ func (u *Ulimits) UnmarshalYAML(value *yaml.Node) error {
 
 // Build is `build:` which may be a string (context) or a mapping.
 type Build struct {
-	Context    string  `yaml:"context"`
-	Dockerfile string  `yaml:"dockerfile"`
-	Args       MapList `yaml:"args"`
-	Target     string  `yaml:"target"`
+	Context    string `yaml:"context"`
+	Dockerfile string `yaml:"dockerfile"`
+	Args       EnvMap `yaml:"args"`
+	Target     string `yaml:"target"`
 	set        bool
 }
 
@@ -282,6 +282,53 @@ func (m *MapList) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
+// EnvMap is like MapList but with docker-compose environment/build-arg
+// passthrough semantics: a bare key — list form `- FOO` or map form `FOO:`
+// (null value) — inherits FOO from the host environment, and is OMITTED when
+// the host doesn't set it. (MapList, used for labels, instead sets bare keys to
+// "" — and emitting `--env FOO=` would clobber a host FOO with empty.)
+type EnvMap map[string]string
+
+func (m *EnvMap) UnmarshalYAML(value *yaml.Node) error {
+	out := map[string]string{}
+	switch value.Kind {
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(value.Content); i += 2 {
+			k := value.Content[i].Value
+			vn := value.Content[i+1]
+			if k == "" {
+				continue
+			}
+			if vn.Kind == yaml.ScalarNode && vn.Tag == "!!null" {
+				if v, ok := os.LookupEnv(k); ok { // `FOO:` -> host passthrough
+					out[k] = v
+				}
+				continue
+			}
+			if vn.Kind == yaml.ScalarNode {
+				out[k] = vn.Value
+			}
+		}
+	case yaml.SequenceNode:
+		for _, it := range value.Content {
+			if it.Kind != yaml.ScalarNode {
+				continue
+			}
+			kv := strings.SplitN(it.Value, "=", 2)
+			if kv[0] == "" {
+				continue
+			}
+			if len(kv) == 2 {
+				out[kv[0]] = kv[1]
+			} else if v, ok := os.LookupEnv(kv[0]); ok { // `- FOO` -> host passthrough
+				out[kv[0]] = v
+			}
+		}
+	}
+	*m = out
+	return nil
+}
+
 // PortList handles compose `ports:` in both the short string form
 // ("8080:80", "127.0.0.1:8080:80/tcp", "3000") and the long mapping form
 // ({target, published, protocol, host_ip}), flattening the long form into the
@@ -296,12 +343,22 @@ func (p *PortList) UnmarshalYAML(value *yaml.Node) error {
 }
 
 func flattenLongPort(m map[string]string) string {
-	s := m["target"]
-	if pub := m["published"]; pub != "" {
-		s = pub + ":" + s
+	target := m["target"]
+	pub := m["published"]
+	s := target
+	if pub != "" {
+		s = pub + ":" + target
 	}
 	if hip := m["host_ip"]; hip != "" {
-		s = hip + ":" + s
+		// A host_ip needs a published segment to be parsed as an IP (the 3-part
+		// host_ip:host:container form). With no published port, emit the explicit
+		// empty-published form host_ip::container — otherwise "host_ip:container"
+		// is misread as host_port:container_port (host port = the IP literal).
+		if pub != "" {
+			s = hip + ":" + s
+		} else {
+			s = hip + "::" + target
+		}
 	}
 	if proto := m["protocol"]; proto != "" {
 		s += "/" + proto
@@ -534,9 +591,11 @@ func (p *Project) Order() []string {
 // Levels groups services into dependency levels: every service in level i
 // depends only on services in earlier levels, so all services within a level
 // have no ordering constraint between them and can be brought up concurrently.
-// Built on Order(), so undefined deps and cycles degrade identically (a cycle's
-// members collapse toward level 0 rather than deadlocking). Returns nil for an
-// empty project.
+// Built on Order(), so undefined deps and cycles degrade safely without
+// deadlocking: a cycle's members are still all emitted and started, but (because
+// Order breaks the cycle's back-edge) they land on successive non-zero levels
+// with an empty leading level rather than collapsing to level 0. The empty level
+// is a harmless no-op in the up loop. Returns nil for an empty project.
 func (p *Project) Levels() [][]string {
 	order := p.Order()
 	if len(order) == 0 {

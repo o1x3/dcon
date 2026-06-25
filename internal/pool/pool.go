@@ -289,7 +289,12 @@ func Claim(image string) (Member, bool) {
 	norm := NormalizeRef(image)
 	var claimed Member
 	var ok bool
-	_ = withLock(func(s *state) error {
+	// If withLock's save() fails, the in-memory removal of the member is NOT
+	// persisted — the member is still listed in pool.json on disk, so a concurrent
+	// or subsequent Claim would hand out the SAME live VM (two runs exec'ing into
+	// one microVM, breaking single-use isolation). Treat a persist failure as a
+	// pool miss so the caller cold-runs a fresh VM instead.
+	if err := withLock(func(s *state) error {
 		for i, m := range s.Members {
 			if m.Image == norm {
 				claimed = m
@@ -299,7 +304,9 @@ func Claim(image string) (Member, bool) {
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		return Member{}, false
+	}
 	return claimed, ok
 }
 

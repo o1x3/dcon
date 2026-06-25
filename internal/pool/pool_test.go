@@ -1,8 +1,48 @@
 package pool
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
+
+// TestClaimMissOnSaveFailure reproduces the isolation bug where Claim ignored a
+// state-write failure and still returned ok=true: the popped member stayed in
+// pool.json on disk, so a concurrent/next Claim could hand out the SAME live VM
+// (two runs exec'ing into one microVM). On a persist failure Claim must report a
+// miss (so the caller cold-runs) and leave the member available.
+func TestClaimMissOnSaveFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses directory permissions")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+
+	if err := Add(Member{ID: "vm1", Image: NormalizeRef("alpine")}); err != nil {
+		t.Fatalf("seed Add: %v", err)
+	}
+	d, err := dir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Read-only state dir => save()'s temp-file write fails inside withLock.
+	if err := os.Chmod(d, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(d, 0o755) //nolint:errcheck // restore for temp-dir cleanup
+
+	if _, ok := Claim("alpine"); ok {
+		t.Error("Claim must report a miss when the state write fails")
+	}
+	// Restore and confirm the member was NOT lost (still claimable later).
+	if err := os.Chmod(d, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := AvailableDepth("alpine"); got != 1 {
+		t.Errorf("member should remain available after a failed claim; depth=%d", got)
+	}
+}
 
 func TestNormalizeRef(t *testing.T) {
 	cases := map[string]string{

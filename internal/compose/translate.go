@@ -84,23 +84,29 @@ func ShellSplit(s string) []string {
 // netName, when non-empty, is attached via --network. index is the replica
 // number (1-based).
 func (p *Project) RunArgs(service string, svc *Service, index int, netName string, extraEnv map[string]string) []string {
-	a, _ := p.runArgs(service, svc, index, netName, extraEnv)
+	a, _ := p.runArgs(service, svc, index, netName, extraEnv, false)
 	return a
 }
 
 // runArgs builds the run args and returns the index of the image token, so
 // callers can split flags / image / command positionally instead of by fragile
-// string matching.
-func (p *Project) runArgs(service string, svc *Service, index int, netName string, extraEnv map[string]string) (args []string, imageIdx int) {
+// string matching. oneoff stamps the compose oneoff label True/False so a
+// `compose run` container is distinguishable from a service replica (and is
+// excluded by the replica resolvers), matching Docker.
+func (p *Project) runArgs(service string, svc *Service, index int, netName string, extraEnv map[string]string, oneoff bool) (args []string, imageIdx int) {
 	args = []string{"run", "--detach"}
 	args = append(args, "--name", p.ContainerName(service, index, svc))
 
+	oneoffVal := "False"
+	if oneoff {
+		oneoffVal = "True"
+	}
 	// compose identity labels
 	args = append(args,
 		"--label", LabelProject+"="+p.Name,
 		"--label", LabelService+"="+service,
 		"--label", fmt.Sprintf("%s=%d", LabelNumber, index),
-		"--label", LabelOneoff+"=False",
+		"--label", LabelOneoff+"="+oneoffVal,
 		"--label", LabelConfigDir+"="+p.Dir,
 	)
 	for _, k := range sortedKeys(svc.Labels) {
@@ -246,7 +252,7 @@ func (p *Project) ImageRef(service string, svc *Service) string {
 // here rather than being stripped afterward, so a literal "--rm" in the user's
 // command args is never removed.
 func (p *Project) OneOffArgs(service string, svc *Service, netName string, cmdOverride, overrides []string, entrypoint string, rm bool) []string {
-	base, imageIdx := p.runArgs(service, svc, 1, netName, nil)
+	base, imageIdx := p.runArgs(service, svc, 1, netName, nil, true) // oneoff=true
 	flags := base[1:imageIdx] // the run flags span (after "run", before image)
 	image := base[imageIdx]
 
@@ -277,7 +283,18 @@ func (p *Project) OneOffArgs(service string, svc *Service, netName string, cmdOv
 	if len(cmdOverride) > 0 {
 		return append(out, cmdOverride...) // override replaces the service command
 	}
-	return append(out, base[imageIdx+1:]...) // keep the service's own command
+	// Keep the service's own command (the tokens after the image). runArgs places
+	// the service entrypoint's extra tokens (Entrypoint[1:]) there first; when the
+	// entrypoint is being overridden, those extras belong to the OLD entrypoint and
+	// must be dropped — overriding the entrypoint replaces it whole (Docker
+	// semantics), it must not leave the old entrypoint's args bound to the new one.
+	tail := base[imageIdx+1:]
+	if entrypoint != "" && len(svc.Entrypoint) > 1 {
+		if drop := len(svc.Entrypoint) - 1; drop <= len(tail) {
+			tail = tail[drop:]
+		}
+	}
+	return append(out, tail...)
 }
 
 // CreateArgs builds the `container create ...` args for a service: the same
@@ -286,7 +303,7 @@ func (p *Project) OneOffArgs(service string, svc *Service, netName string, cmdOv
 // service command/entrypoint that itself contains a literal "--detach" token is
 // never corrupted — unlike a blind token strip.
 func (p *Project) CreateArgs(service string, svc *Service, index int, netName string) []string {
-	base, _ := p.runArgs(service, svc, index, netName, nil)
+	base, _ := p.runArgs(service, svc, index, netName, nil, false)
 	// base = ["run", "--detach", ...flags..., image, ...command...]
 	out := append([]string{"create"}, base[2:]...)
 	return out

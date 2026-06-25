@@ -293,6 +293,54 @@ services:
 	}
 }
 
+// TestEnvBareKeyHostPassthrough reproduces the bug where a bare environment key
+// (`- FOO` list form or `FOO:` null map form) was set to "" instead of
+// inheriting the host's $FOO (docker compose passthrough). An unset bare key is
+// omitted, not emitted as FOO="".
+func TestEnvBareKeyHostPassthrough(t *testing.T) {
+	t.Setenv("DCON_TEST_PASSTHRU", "from-host")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yaml")
+	yaml := `
+services:
+  list:
+    image: x
+    environment:
+      - DCON_TEST_PASSTHRU
+      - EXPLICIT=val
+      - DCON_UNSET_XYZ
+  mapform:
+    image: x
+    environment:
+      DCON_TEST_PASSTHRU:
+      KEYED: v2
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	le := p.Services["list"].Environment
+	if le["DCON_TEST_PASSTHRU"] != "from-host" {
+		t.Errorf("list bare key should inherit host value; got %q", le["DCON_TEST_PASSTHRU"])
+	}
+	if le["EXPLICIT"] != "val" {
+		t.Errorf("explicit value wrong: %q", le["EXPLICIT"])
+	}
+	if _, present := le["DCON_UNSET_XYZ"]; present {
+		t.Errorf("unset bare key must be omitted, not empty: %v", le)
+	}
+	me := p.Services["mapform"].Environment
+	if me["DCON_TEST_PASSTHRU"] != "from-host" {
+		t.Errorf("map null-value key should inherit host value; got %q", me["DCON_TEST_PASSTHRU"])
+	}
+	if me["KEYED"] != "v2" {
+		t.Errorf("map keyed value wrong: %q", me["KEYED"])
+	}
+}
+
 func TestServiceEnabledProfiles(t *testing.T) {
 	noProf := &Service{}
 	if !noProf.Enabled(map[string]bool{}) {

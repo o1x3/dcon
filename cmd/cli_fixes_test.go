@@ -8,6 +8,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"dcon/internal/dockerfmt"
+
 	"github.com/spf13/cobra"
 )
 
@@ -62,6 +64,33 @@ func TestCpIsContainerRef(t *testing.T) {
 		if !cpIsContainerRef(p) {
 			t.Errorf("%q should be treated as a container ref", p)
 		}
+	}
+}
+
+// TestPortMappingLinesExpandsRange reproduces the bug where `port` ignored a
+// published range (PublishPort.Count>1), printing only the base port. A range
+// must expand to one line per port, and per-port filtering must resolve into it.
+func TestPortMappingLinesExpandsRange(t *testing.T) {
+	ports := []dockerfmt.PublishPort{
+		{HostAddress: "0.0.0.0", HostPort: 8000, ContainerPort: 80, Proto: "tcp", Count: 3},
+	}
+	all := portMappingLines(ports, "", "")
+	want := []string{
+		"80/tcp -> 0.0.0.0:8000",
+		"81/tcp -> 0.0.0.0:8001",
+		"82/tcp -> 0.0.0.0:8002",
+	}
+	if !reflect.DeepEqual(all, want) {
+		t.Errorf("range expansion = %v, want %v", all, want)
+	}
+	// Per-port filter resolves a non-base port within the range.
+	if got := portMappingLines(ports, "81", ""); !reflect.DeepEqual(got, []string{"0.0.0.0:8001"}) {
+		t.Errorf("filter 81 = %v, want [0.0.0.0:8001]", got)
+	}
+	// Count 0 is treated as a single port.
+	single := portMappingLines([]dockerfmt.PublishPort{{HostPort: 9000, ContainerPort: 90, Proto: "tcp"}}, "", "")
+	if len(single) != 1 {
+		t.Errorf("count 0 should yield one line, got %v", single)
 	}
 }
 

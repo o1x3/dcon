@@ -112,7 +112,7 @@ func TestRunArgsBasics(t *testing.T) {
 	p := &Project{Name: "proj", Dir: "/tmp/proj"}
 	svc := &Service{
 		Image:       "nginx",
-		Environment: MapList{"A": "1"},
+		Environment: EnvMap{"A": "1"},
 		Ports:       []string{"8080:80"},
 		Command:     StringList{"nginx -g daemon"},
 	}
@@ -273,6 +273,77 @@ func TestCreateArgsPreservesDetachInCommand(t *testing.T) {
 	}
 }
 
+// TestOneOffArgsEntrypointOverrideDropsExtras reproduces the bug where a
+// service with a multi-token entrypoint (["/svc-ep","--flag"]), run with
+// --entrypoint override and no command, leaked the old entrypoint's "--flag" as
+// an argument to the new entrypoint. Overriding the entrypoint replaces it whole.
+func TestOneOffArgsEntrypointOverrideDropsExtras(t *testing.T) {
+	p := &Project{Name: "proj", Dir: "/tmp"}
+	svc := &Service{Image: "nginx", Entrypoint: StringList{"/svc-ep", "--flag"}}
+	got := p.OneOffArgs("web", svc, "", nil, nil, "/override-ep", true)
+	if indexOf(got, "--flag") != -1 {
+		t.Errorf("stale entrypoint extra --flag must be dropped on override: %v", got)
+	}
+	mustContainPair(t, got, "--entrypoint", "/override-ep")
+	// Without an override, the extras stay (they belong to the service entrypoint).
+	keep := p.OneOffArgs("web", svc, "", nil, nil, "", true)
+	if indexOf(keep, "--flag") == -1 {
+		t.Errorf("without override, the entrypoint extra should remain: %v", keep)
+	}
+}
+
+// TestOneOffArgsLabelsOneoff reproduces the cross-talk bug: a one-off `compose
+// run` container was labeled oneoff=False, indistinguishable from service
+// replica #1. It must carry oneoff=True so ps/exec/down don't treat it as a
+// replica, while RunArgs (real services) stays oneoff=False.
+func TestOneOffArgsLabelsOneoff(t *testing.T) {
+	p := &Project{Name: "proj", Dir: "/tmp"}
+	svc := &Service{Image: "nginx"}
+	one := p.OneOffArgs("web", svc, "", []string{"sh"}, nil, "", true)
+	mustContainPair(t, one, "--label", LabelOneoff+"=True")
+	if indexOf(one, LabelOneoff+"=False") != -1 {
+		t.Errorf("one-off must not also carry oneoff=False: %v", one)
+	}
+	svc2 := &Service{Image: "nginx"}
+	rep := p.RunArgs("web", svc2, 1, "", nil)
+	mustContainPair(t, rep, "--label", LabelOneoff+"=False")
+}
+
+// TestFlattenLongPortHostIP reproduces the bug where host_ip without published
+// produced "host_ip:target" (misread as host_port:container). It must use the
+// explicit empty-published 3-part form host_ip::target.
+func TestFlattenLongPortHostIP(t *testing.T) {
+	if got := flattenLongPort(map[string]string{"target": "80", "host_ip": "127.0.0.1"}); got != "127.0.0.1::80" {
+		t.Errorf("host_ip without published = %q, want 127.0.0.1::80", got)
+	}
+	if got := flattenLongPort(map[string]string{"target": "80", "published": "8080", "host_ip": "127.0.0.1"}); got != "127.0.0.1:8080:80" {
+		t.Errorf("full form = %q, want 127.0.0.1:8080:80", got)
+	}
+	if got := flattenLongPort(map[string]string{"target": "80", "published": "8080", "protocol": "udp"}); got != "8080:80/udp" {
+		t.Errorf("proto form = %q, want 8080:80/udp", got)
+	}
+}
+
+// TestLevelsCycleNoDeadlock guards that a depends_on cycle is handled safely:
+// every service is still emitted (no deadlock, no panic), even if the leading
+// level is empty.
+func TestLevelsCycleNoDeadlock(t *testing.T) {
+	p := &Project{Name: "t", Services: map[string]*Service{
+		"a": {DependsOn: DependsList{"b"}},
+		"b": {DependsOn: DependsList{"a"}},
+	}}
+	levels := p.Levels()
+	seen := map[string]bool{}
+	for _, lv := range levels {
+		for _, n := range lv {
+			seen[n] = true
+		}
+	}
+	if !seen["a"] || !seen["b"] {
+		t.Errorf("cycle members must all be emitted; got levels %v", levels)
+	}
+}
+
 func TestRunArgsEntrypointAndCommandOrder(t *testing.T) {
 	p := &Project{Name: "p", Dir: "/tmp"}
 	svc := &Service{Image: "img", Entrypoint: StringList{"/ep", "--flag"}, Command: StringList{"arg1"}}
@@ -298,7 +369,7 @@ func TestRunArgsEmptyEntrypointNotEmitted(t *testing.T) {
 
 func TestRunArgsDeterministic(t *testing.T) {
 	p := &Project{Name: "p", Dir: "/tmp"}
-	svc := &Service{Image: "img", Environment: MapList{"B": "2", "A": "1", "C": "3"}, Labels: MapList{"z": "1", "a": "2"}}
+	svc := &Service{Image: "img", Environment: EnvMap{"B": "2", "A": "1", "C": "3"}, Labels: MapList{"z": "1", "a": "2"}}
 	first := p.RunArgs("s", svc, 1, "", nil)
 	for i := 0; i < 20; i++ {
 		if !reflect.DeepEqual(first, p.RunArgs("s", svc, 1, "", nil)) {

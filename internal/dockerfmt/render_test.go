@@ -89,6 +89,23 @@ func TestRenderTableTemplateHeaders(t *testing.T) {
 	}
 }
 
+// TestRenderTableHeaderFunctionPrefixed reproduces the regression where a
+// table format whose action starts with a function/pipeline (e.g.
+// `{{upper .Name}}`) leaked the raw `{{upper .Name}}` text into the header row
+// because the header regex only matched actions beginning with `.Field`. The
+// header must derive from the field reference regardless of leading function.
+func TestRenderTableHeaderFunctionPrefixed(t *testing.T) {
+	views, def := sampleDef()
+	out := captureStdout(t, func() { Render("table {{.ID}}\t{{upper .Name}}", false, views, def) })
+	header := strings.SplitN(out, "\n", 2)[0]
+	if strings.Contains(header, "{{") || strings.Contains(header, "}}") {
+		t.Errorf("header leaked raw template text: %q", header)
+	}
+	if !strings.Contains(header, "NAME") || !strings.Contains(header, "ID") {
+		t.Errorf("header should derive NAME and ID columns: %q", header)
+	}
+}
+
 // TestRenderPlainPathByteIdentical locks the drop-in contract: with styling
 // forced OFF, the default table is byte-for-byte the tabwriter output and
 // carries no ANSI/box-drawing characters — exactly what pipes and CI parse.

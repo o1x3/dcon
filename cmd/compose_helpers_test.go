@@ -38,6 +38,45 @@ func TestComposeExecArgsTTYGating(t *testing.T) {
 	}
 }
 
+// TestComposeRunPtyFlags reproduces the bug where `compose run` never forwarded
+// --tty/--interactive: a plain run keeps stdin open and allocates a TTY (unless
+// -T or no terminal), matching docker compose run defaults.
+func TestComposeRunPtyFlags(t *testing.T) {
+	// interactive=true, not -T, real terminal -> both.
+	if got := composeRunPtyFlags(true, false, true); !reflect.DeepEqual(got, []string{"--interactive", "--tty"}) {
+		t.Errorf("run pty flags = %v, want [--interactive --tty]", got)
+	}
+	// -T suppresses the PTY but keeps interactive.
+	if got := composeRunPtyFlags(true, true, true); !reflect.DeepEqual(got, []string{"--interactive"}) {
+		t.Errorf("-T should drop --tty: %v", got)
+	}
+	// No real terminal -> no PTY (so `compose run web cmd | cat` works).
+	if got := composeRunPtyFlags(true, false, false); !reflect.DeepEqual(got, []string{"--interactive"}) {
+		t.Errorf("no TTY: %v", got)
+	}
+}
+
+// TestEffectiveReplicas reproduces the bug where `up --scale web=0` ran 1
+// replica: an explicit scale (including 0) must win over the unset default.
+func TestEffectiveReplicas(t *testing.T) {
+	svc := &compose.Service{}
+	if n := effectiveReplicas(svc, map[string]int{"web": 0}, "web"); n != 0 {
+		t.Errorf("--scale web=0 should yield 0 replicas, got %d", n)
+	}
+	if n := effectiveReplicas(svc, map[string]int{"web": 3}, "web"); n != 3 {
+		t.Errorf("--scale web=3 should yield 3, got %d", n)
+	}
+	if n := effectiveReplicas(svc, nil, "web"); n != 1 {
+		t.Errorf("no scale, no service scale -> 1, got %d", n)
+	}
+	if n := effectiveReplicas(&compose.Service{Scale: 2}, nil, "web"); n != 2 {
+		t.Errorf("service-level scale 2 -> 2, got %d", n)
+	}
+	if n := effectiveReplicas(svc, map[string]int{"web": -5}, "web"); n != 0 {
+		t.Errorf("negative scale floored to 0, got %d", n)
+	}
+}
+
 func TestServiceSet(t *testing.T) {
 	if got := serviceSet(nil); got != nil {
 		t.Errorf("serviceSet(nil) = %v, want nil", got)
