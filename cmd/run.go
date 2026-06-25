@@ -164,6 +164,26 @@ func addRunFlags(cmd *cobra.Command) {
 	_ = f.MarkHidden("detach-keys")
 }
 
+// parseCPUs converts a Docker --cpus value (which may be fractional, e.g. 1.5)
+// into the whole-CPU count the backend accepts, rounding up so 0<f<1 never
+// yields 0. It returns a warning string when the rounding was lossy, and an
+// error for non-numeric or non-positive input. Shared by `run`/`create` and
+// `machine create` so their --cpus handling can never drift.
+func parseCPUs(cv string) (n int, warning string, err error) {
+	fv, perr := strconv.ParseFloat(cv, 64)
+	if perr != nil {
+		return 0, "", fmt.Errorf("invalid --cpus value %q: must be a number", cv)
+	}
+	if fv <= 0 {
+		return 0, "", fmt.Errorf("invalid --cpus value %q: must be greater than 0", cv)
+	}
+	n = int(math.Ceil(fv))
+	if float64(n) != fv {
+		warning = fmt.Sprintf("--cpus %s rounded up to %d (backend accepts whole CPUs only)", cv, n)
+	}
+	return n, warning, nil
+}
+
 // buildContainerArgs translates the parsed Docker flags on cmd into a
 // `container <subcmd> ...` argument list. subcmd is "run" or "create".
 func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]string, error) {
@@ -203,16 +223,12 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 	// accepts only whole CPUs. Round up (so 0<f<1 never yields 0) and warn on
 	// any lossy rounding.
 	if cv, _ := f.GetString("cpus"); cv != "" {
-		fv, err := strconv.ParseFloat(cv, 64)
+		n, warn, err := parseCPUs(cv)
 		if err != nil {
-			return nil, fmt.Errorf("invalid --cpus value %q: must be a number", cv)
+			return nil, err
 		}
-		if fv <= 0 {
-			return nil, fmt.Errorf("invalid --cpus value %q: must be greater than 0", cv)
-		}
-		n := int(math.Ceil(fv))
-		if float64(n) != fv {
-			warnings = append(warnings, fmt.Sprintf("--cpus %s rounded up to %d (backend accepts whole CPUs only)", cv, n))
+		if warn != "" {
+			warnings = append(warnings, warn)
 		}
 		out = append(out, "--cpus", strconv.Itoa(n))
 	}

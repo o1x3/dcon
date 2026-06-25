@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"dcon/internal/ui"
 )
 
 type row struct {
@@ -84,6 +86,86 @@ func TestRenderTableTemplateHeaders(t *testing.T) {
 	out := captureStdout(t, func() { Render("table {{.Name}}\t{{.ID}}", false, views, def) })
 	if !strings.Contains(out, "NAME") {
 		t.Errorf("table template should derive headers: %q", out)
+	}
+}
+
+// TestRenderPlainPathByteIdentical locks the drop-in contract: with styling
+// forced OFF, the default table is byte-for-byte the tabwriter output and
+// carries no ANSI/box-drawing characters — exactly what pipes and CI parse.
+func TestRenderPlainPathByteIdentical(t *testing.T) {
+	defer ui.SetEnabled(false)()
+	views, def := sampleDef()
+	out := captureStdout(t, func() { Render("", false, views, def) })
+
+	const want = "ID    NAME\nid1   alpha\nid2   beta\n"
+	if out != want {
+		t.Errorf("plain table mismatch:\n got %q\nwant %q", out, want)
+	}
+	if strings.ContainsAny(out, "\x1b─│╭╮╰╯") {
+		t.Errorf("plain table leaked ANSI/border chars: %q", out)
+	}
+}
+
+// TestRenderMachineReadablePathsUnaffectedByStyling proves the -q / json /
+// template branches are identical whether styling is on or off — styling must
+// only ever touch the default (empty-format, non-quiet) human view.
+func TestRenderMachineReadablePathsUnaffectedByStyling(t *testing.T) {
+	views, def := sampleDef()
+	probe := func(format string, quiet bool) string {
+		return captureStdout(t, func() { Render(format, quiet, views, def) })
+	}
+	for _, c := range []struct {
+		format string
+		quiet  bool
+	}{
+		{"", true},                   // -q
+		{"json", false},              // json
+		{"{{.Name}}={{.ID}}", false}, // template
+	} {
+		restoreOn := ui.SetEnabled(true)
+		styled := probe(c.format, c.quiet)
+		restoreOn()
+		restoreOff := ui.SetEnabled(false)
+		plain := probe(c.format, c.quiet)
+		restoreOff()
+		if styled != plain {
+			t.Errorf("format=%q quiet=%v differs with styling on/off:\n on  %q\n off %q", c.format, c.quiet, styled, plain)
+		}
+		if strings.Contains(styled, "\x1b") {
+			t.Errorf("format=%q quiet=%v leaked ANSI: %q", c.format, c.quiet, styled)
+		}
+	}
+}
+
+// TestRenderStyledPath drives the styled branch in Render itself (not just
+// ui.Table in isolation): with styling forced on and non-empty views, the
+// default view becomes a bordered table that still carries every value.
+func TestRenderStyledPath(t *testing.T) {
+	defer ui.SetEnabled(true)()
+	views, def := sampleDef()
+	out := captureStdout(t, func() { Render("", false, views, def) })
+	if !strings.ContainsAny(out, "─│╭╮╰╯") {
+		t.Errorf("styled Render should draw a border, got %q", out)
+	}
+	for _, want := range []string{"ID", "NAME", "alpha", "beta"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("styled Render missing %q in %q", want, out)
+		}
+	}
+}
+
+// TestRenderEmptyListNeverBordered guards the empty-list fall-through: even on
+// a (forced) TTY, zero rows produce the plain header-only output, not a lone
+// bordered box.
+func TestRenderEmptyListNeverBordered(t *testing.T) {
+	defer ui.SetEnabled(true)()
+	_, def := sampleDef()
+	out := captureStdout(t, func() { Render("", false, nil, def) })
+	if strings.ContainsAny(out, "─│╭╮╰╯") {
+		t.Errorf("empty list should not render a bordered box: %q", out)
+	}
+	if !strings.Contains(out, "ID") || !strings.Contains(out, "NAME") {
+		t.Errorf("empty list should still print headers: %q", out)
 	}
 }
 

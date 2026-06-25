@@ -1,12 +1,12 @@
 # dcon
 
-A drop-in Docker CLI for macOS, powered by Apple container. Speak `docker`, run on Apple's per-container VMs from one ~5.3 MB static binary.
+A drop-in Docker CLI for macOS, powered by Apple container. Speak `docker`, run on Apple's per-container VMs from one ~6.2 MB static binary.
 
 <div align="center">
 
 [![CI](https://github.com/o1x3/dcon/actions/workflows/ci.yml/badge.svg)](https://github.com/o1x3/dcon/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/o1x3/dcon?sort=semver&color=blue)](https://github.com/o1x3/dcon/releases)
-[![coverage](https://img.shields.io/badge/coverage-46.8%25-yellowgreen)](https://github.com/o1x3/dcon/actions/workflows/ci.yml)
+[![coverage](https://img.shields.io/badge/coverage-47.2%25-yellowgreen)](https://github.com/o1x3/dcon/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 ![macOS](https://img.shields.io/badge/macOS-Apple%20silicon-black?logo=apple)
 ![Go](https://img.shields.io/badge/go-1.26-00ADD8?logo=go&logoColor=white)
@@ -45,7 +45,7 @@ format.
 
 ```mermaid
 flowchart LR
-    A["you / CI / Makefile<br/>docker run · compose up · build"] -->|docker-style args| B["dcon<br/>(this, ~5.3 MB static binary)"]
+    A["you / CI / Makefile<br/>docker run · compose up · build"] -->|docker-style args| B["dcon<br/>(this, ~6.2 MB static binary)"]
     B -->|container args| C["Apple container<br/>apiserver + plugins"]
     C -->|Virtualization.framework| D["per-container<br/>Linux microVM"]
 ```

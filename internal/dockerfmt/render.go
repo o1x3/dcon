@@ -8,6 +8,8 @@ import (
 	"strings"
 	"text/tabwriter"
 	"text/template"
+
+	"dcon/internal/ui"
 )
 
 // TableDef describes how to render a list of view objects as the default
@@ -73,6 +75,19 @@ func Render(format string, quiet bool, views []any, def TableDef) error {
 
 	switch {
 	case format == "":
+		// Interactive terminal: render a styled table. This is the ONLY visual
+		// upgrade — and it is gated on ui.Enabled() (a real TTY), so piped/CI
+		// output still takes the plain tabwriter path below, byte-for-byte. An
+		// empty list falls through to the plain header-only output (Docker always
+		// shows the header; a lone bordered box would read as an error).
+		if ui.Enabled() && len(views) > 0 {
+			rows := make([][]string, 0, len(views))
+			for _, v := range views {
+				rows = append(rows, def.Row(v))
+			}
+			fmt.Println(ui.Table(def.Headers, rows))
+			return nil
+		}
 		w := NewTabWriter()
 		fmt.Fprintln(w, strings.Join(def.Headers, "\t"))
 		for _, v := range views {

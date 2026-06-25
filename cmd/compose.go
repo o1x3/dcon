@@ -16,10 +16,18 @@ import (
 	"dcon/internal/compose"
 	"dcon/internal/dockerfmt"
 	"dcon/internal/runtime"
+	"dcon/internal/ui"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
+
+// composeStep formats a compose progress line such as "Building web..." or
+// "Creating db-1...", accenting the service/container name on a TTY. When
+// styling is off (pipe/CI) it returns exactly "<verb> <name>..." as before.
+func composeStep(verb, name string) string {
+	return ui.Dim(verb+" ") + ui.Accent(name) + ui.Dim("...")
+}
 
 // composeValueFlags are the compose GLOBAL flags that consume a following
 // value token; used to find the subcommand boundary without mistaking a flag's
@@ -252,6 +260,9 @@ func composeUp() *cobra.Command {
 		Use:   "up [OPTIONS] [SERVICE...]",
 		Short: "Create and start containers",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if nc, _ := cmd.Flags().GetBool("no-color"); nc {
+				ui.SetEnabled(false)
+			}
 			p, err := loadProject(cmd)
 			if err != nil {
 				return err
@@ -284,7 +295,7 @@ func composeUp() *cobra.Command {
 					fmt.Fprintf(os.Stderr, "dcon: warning: service %q hostname is not supported by the backend and was ignored\n", name)
 				}
 				if svc.Build.IsSet() && !noBuild && (doBuild || svc.Image == "") {
-					fmt.Printf("Building %s...\n", name)
+					fmt.Println(composeStep("Building", name))
 					if err := runtime.Run(p.BuildArgs(name, svc)...); err != nil {
 						return nil, fmt.Errorf("build %s: %w", name, err)
 					}
@@ -299,20 +310,20 @@ func composeUp() *cobra.Command {
 					if forceRecreate {
 						_, _ = runtime.CaptureSilent("delete", "--force", cname)
 					} else if _, err := runtime.CaptureSilent("inspect", cname); err == nil {
-						fmt.Printf("Container %s is up-to-date\n", cname)
+						fmt.Println(ui.Dim("Container ") + ui.Accent(cname) + ui.Dim(" is up-to-date"))
 						local = append(local, cname)
 						continue
 					}
 					if noStart {
 						rargs := dropFlag(p.RunArgs(name, svc, i, net, nil), "--detach")
 						rargs[0] = "create"
-						fmt.Printf("Creating %s...\n", cname)
+						fmt.Println(composeStep("Creating", cname))
 						if err := runtime.Run(rargs...); err != nil {
 							return local, err
 						}
 						continue
 					}
-					fmt.Printf("Creating %s...\n", cname)
+					fmt.Println(composeStep("Creating", cname))
 					if err := runtime.Run(p.RunArgs(name, svc, i, net, nil)...); err != nil {
 						return local, fmt.Errorf("start %s: %w", name, err)
 					}
@@ -387,7 +398,7 @@ func composeUp() *cobra.Command {
 	f.Bool("no-deps", false, "Don't start linked services")
 	f.BoolP("renew-anon-volumes", "V", false, "Recreate anonymous volumes instead of retrieving data (no-op)")
 	f.Bool("quiet-pull", false, "Pull without printing progress information")
-	f.Bool("no-color", false, "Produce monochrome output (no-op)")
+	f.Bool("no-color", false, "Produce monochrome output")
 	f.Bool("no-log-prefix", false, "Don't print prefix in logs")
 	f.Bool("always-recreate-deps", false, "Recreate dependent containers (no-op)")
 	f.Bool("recreate-deps", false, "Recreate dependent containers (no-op)")
@@ -427,7 +438,7 @@ func removeOrphanContainers(p *compose.Project) {
 	}
 	for _, c := range containers {
 		if _, ok := p.Services[serviceOf(c)]; !ok {
-			fmt.Printf("Removing orphan %s...\n", c.ID)
+			fmt.Println(composeStep("Removing orphan", c.ID))
 			_, _ = runtime.CaptureSilent("delete", "--force", c.ID)
 		}
 	}
@@ -454,7 +465,7 @@ func followAndWait(p *compose.Project, names []string) error {
 			sc := bufio.NewScanner(stdout)
 			sc.Buffer(make([]byte, 1024*1024), 1024*1024)
 			for sc.Scan() {
-				fmt.Printf("%s | %s\n", svc, sc.Text())
+				fmt.Printf("%s | %s\n", ui.Accent(svc), sc.Text())
 			}
 		}()
 	}
@@ -487,7 +498,7 @@ func composeDown() *cobra.Command {
 				return err
 			}
 			for _, c := range containers {
-				fmt.Printf("Removing %s...\n", c.ID)
+				fmt.Println(composeStep("Removing", c.ID))
 				_, _ = runtime.CaptureSilent("delete", "--force", c.ID)
 			}
 			// Remove the default network plus any declared (non-external) ones.
@@ -500,7 +511,7 @@ func composeDown() *cobra.Command {
 			}
 			for _, net := range netNames {
 				if _, err := runtime.CaptureSilent("network", "inspect", net); err == nil {
-					fmt.Printf("Removing network %s...\n", net)
+					fmt.Println(composeStep("Removing network", net))
 					_, _ = runtime.CaptureSilent("network", "delete", net)
 				}
 			}
@@ -510,7 +521,7 @@ func composeDown() *cobra.Command {
 						continue
 					}
 					vol := p.VolumeName(name, spec)
-					fmt.Printf("Removing volume %s...\n", vol)
+					fmt.Println(composeStep("Removing volume", vol))
 					_, _ = runtime.CaptureSilent("volume", "delete", vol)
 				}
 			}
@@ -533,7 +544,7 @@ func composeDown() *cobra.Command {
 						continue
 					}
 					seen[ref] = true
-					fmt.Printf("Removing image %s...\n", ref)
+					fmt.Println(composeStep("Removing image", ref))
 					_, _ = runtime.CaptureSilent("image", "delete", ref)
 				}
 			}
@@ -634,6 +645,9 @@ func composeLogs() *cobra.Command {
 		Use:   "logs [OPTIONS] [SERVICE...]",
 		Short: "View output from containers",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if nc, _ := cmd.Flags().GetBool("no-color"); nc {
+				ui.SetEnabled(false)
+			}
 			p, err := loadProject(cmd)
 			if err != nil {
 				return err
@@ -686,7 +700,7 @@ func composeLogs() *cobra.Command {
 	cmd.Flags().BoolP("timestamps", "t", false, "Show timestamps (unsupported by backend)")
 	cmd.Flags().String("since", "", "Show logs since timestamp (unsupported by backend)")
 	cmd.Flags().String("until", "", "Show logs before timestamp (unsupported by backend)")
-	cmd.Flags().Bool("no-color", false, "Produce monochrome output (no-op)")
+	cmd.Flags().Bool("no-color", false, "Produce monochrome output")
 	cmd.Flags().Int("index", 0, "Index of the container if service has multiple replicas (no-op)")
 	return cmd
 }
@@ -710,7 +724,7 @@ func printLogLine(svc, line string, noPrefix bool) {
 	if noPrefix {
 		fmt.Println(line)
 	} else {
-		fmt.Printf("%s | %s\n", svc, line)
+		fmt.Printf("%s | %s\n", ui.Accent(svc), line)
 	}
 }
 
@@ -770,7 +784,7 @@ func composeBuild() *cobra.Command {
 					continue
 				}
 				if !quiet {
-					fmt.Printf("Building %s...\n", name)
+					fmt.Println(composeStep("Building", name))
 				}
 				bargs := p.BuildArgs(name, svc)
 				if noCache {
@@ -824,7 +838,7 @@ func composePull() *cobra.Command {
 					continue
 				}
 				if !quiet {
-					fmt.Printf("Pulling %s (%s)...\n", name, svc.Image)
+					fmt.Println(ui.Dim("Pulling ") + ui.Accent(name) + ui.Dim(" ("+svc.Image+")..."))
 				}
 				pargs := []string{"image", "pull"}
 				if quiet {
@@ -1033,7 +1047,7 @@ func composeCreate() *cobra.Command {
 				if forceRecreate {
 					_, _ = runtime.CaptureSilent("delete", "--force", cname)
 				}
-				fmt.Printf("Creating %s...\n", cname)
+				fmt.Println(composeStep("Creating", cname))
 				if err := runtime.Run(rargs...); err != nil {
 					return err
 				}
@@ -1159,7 +1173,7 @@ func composeRun() *cobra.Command {
 				}
 			}
 			if b, _ := cmd.Flags().GetBool("build"); b && svc.Build.IsSet() {
-				fmt.Printf("Building %s...\n", svcName)
+				fmt.Println(composeStep("Building", svcName))
 				if err := runtime.Run(p.BuildArgs(svcName, svc)...); err != nil {
 					return err
 				}
@@ -1332,7 +1346,7 @@ func composeScale() *cobra.Command {
 					if _, err := runtime.CaptureSilent("inspect", cname); err == nil {
 						continue
 					}
-					fmt.Printf("Creating %s...\n", cname)
+					fmt.Println(composeStep("Creating", cname))
 					if err := runtime.Run(p.RunArgs(svcName, svc, i, net, nil)...); err != nil {
 						return err
 					}
@@ -1347,7 +1361,7 @@ func composeScale() *cobra.Command {
 						continue
 					}
 					if num, _ := strconv.Atoi(c.Configuration.Labels[compose.LabelNumber]); num > n {
-						fmt.Printf("Removing %s...\n", c.ID)
+						fmt.Println(composeStep("Removing", c.ID))
 						_, _ = runtime.CaptureSilent("delete", "--force", c.ID)
 					}
 				}
@@ -1466,7 +1480,7 @@ func composePush() *cobra.Command {
 					continue // nothing to push for build-only services
 				}
 				if !quiet {
-					fmt.Printf("Pushing %s (%s)...\n", name, svc.Image)
+					fmt.Println(ui.Dim("Pushing ") + ui.Accent(name) + ui.Dim(" ("+svc.Image+")..."))
 				}
 				if err := runtime.Run("image", "push", svc.Image); err != nil {
 					if ignoreFail {

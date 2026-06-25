@@ -11,6 +11,7 @@ import (
 
 	"dcon/internal/dockerfmt"
 	rt "dcon/internal/runtime"
+	"dcon/internal/ui"
 
 	"github.com/spf13/cobra"
 )
@@ -68,7 +69,7 @@ func newVersionCmd() *cobra.Command {
 				}
 				return tmpl.Execute(os.Stdout, info)
 			}
-			fmt.Printf("Client: dcon (Docker-compatible)\n")
+			fmt.Printf("%s dcon (Docker-compatible)\n", ui.Title("Client:"))
 			fmt.Printf(" Version:    %s\n", info.Client.Version)
 			if Commit != "none" {
 				fmt.Printf(" Git commit: %s\n", Commit)
@@ -77,7 +78,7 @@ func newVersionCmd() *cobra.Command {
 				fmt.Printf(" Built:      %s\n", Date)
 			}
 			fmt.Printf(" OS/Arch:    %s\n", info.Client.Platform)
-			fmt.Printf("\nServer: Apple container\n")
+			fmt.Printf("\n%s Apple container\n", ui.Title("Server:"))
 			fmt.Printf(" Engine:\n")
 			fmt.Printf("  Version:   %s\n", info.Server.Version)
 			if info.Server.Build != "" {
@@ -172,10 +173,10 @@ func newInfoCmd() *cobra.Command {
 				return tmpl.Execute(os.Stdout, data)
 			}
 
-			fmt.Printf("Client:\n")
+			fmt.Printf("%s\n", ui.Title("Client:"))
 			fmt.Printf(" Version:    %s\n", Version)
 			fmt.Printf(" Context:    default\n")
-			fmt.Printf("\nServer:\n")
+			fmt.Printf("\n%s\n", ui.Title("Server:"))
 			fmt.Printf(" Containers: %d\n", len(all))
 			fmt.Printf("  Running: %d\n", running)
 			fmt.Printf("  Paused: 0\n")
@@ -349,10 +350,4 @@ func newBuilderGroupCmd() *cobra.Command {
 		prune,
 	)
 	return group
-}
-
-func newMachineGroupCmd() *cobra.Command {
-	// machine is entirely backend-native; forward the whole group.
-	m := newPassthrough("machine [SUBCOMMAND]", "Manage container machines (backend-native)", []string{"machine"}, "m")
-	return m
 }

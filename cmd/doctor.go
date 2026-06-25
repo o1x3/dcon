@@ -9,6 +9,7 @@ import (
 
 	"dcon/internal/pool"
 	rt "dcon/internal/runtime"
+	"dcon/internal/ui"
 
 	"github.com/spf13/cobra"
 )
@@ -30,6 +31,19 @@ func (l checkLevel) symbol() string {
 		return "!"
 	default:
 		return "✗"
+	}
+}
+
+// coloredSymbol is symbol() tinted by severity (green/amber/red) on a TTY; on a
+// pipe ui.* are no-ops, so it degrades to the plain glyph.
+func (l checkLevel) coloredSymbol() string {
+	switch l {
+	case levelOK:
+		return ui.Success(l.symbol())
+	case levelWarn:
+		return ui.Warning(l.symbol())
+	default:
+		return ui.Error(l.symbol())
 	}
 }
 
@@ -71,9 +85,9 @@ func renderChecks(checks []check) (string, bool) {
 		if c.level == levelFail {
 			anyFail = true
 		}
-		fmt.Fprintf(&b, "  %s  %-*s  %s\n", c.level.symbol(), width, c.name, c.detail)
+		fmt.Fprintf(&b, "  %s  %-*s  %s\n", c.level.coloredSymbol(), width, c.name, c.detail)
 		if c.level != levelOK && c.hint != "" {
-			fmt.Fprintf(&b, "      %*s  ↳ %s\n", width, "", c.hint)
+			fmt.Fprintf(&b, "      %*s  %s\n", width, "", ui.Dim("↳ "+c.hint))
 		}
 	}
 	return b.String(), anyFail
@@ -203,13 +217,13 @@ func newDoctorCmd() *cobra.Command {
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, anyFail := renderChecks(gatherChecks())
-			fmt.Fprintf(os.Stdout, "dcon doctor — environment check\n\n")
+			fmt.Fprintf(os.Stdout, "%s\n\n", ui.Title("dcon doctor — environment check"))
 			fmt.Fprint(os.Stdout, report)
 			if anyFail {
-				fmt.Fprintln(os.Stdout, "\nSome checks failed — see hints above.")
+				fmt.Fprintln(os.Stdout, "\n"+ui.Error("Some checks failed — see hints above."))
 				return fmt.Errorf("doctor: one or more checks failed")
 			}
-			fmt.Fprintln(os.Stdout, "\nAll required checks passed.")
+			fmt.Fprintln(os.Stdout, "\n"+ui.Success("All required checks passed."))
 			return nil
 		},
 	}

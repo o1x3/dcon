@@ -78,7 +78,7 @@ func init() {
 		// management groups
 		newContainerGroupCmd(), newImageGroupCmd(), newVolumeGroupCmd(),
 		newNetworkGroupCmd(), newSystemGroupCmd(), newBuilderGroupCmd(),
-		newRegistryGroupCmd(), newMachineGroupCmd(), newContextGroupCmd(),
+		newRegistryGroupCmd(), newMachineCmd(), newContextGroupCmd(),
 		newBuildxCmd(), newComposeCmd(),
 
 		// unsupported-but-recognised
