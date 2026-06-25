@@ -201,26 +201,53 @@ func TestBuildTranslation(t *testing.T) {
 
 func TestTranslateOutput(t *testing.T) {
 	cases := []struct {
-		in, want string
-		err      bool
+		in, wantOut, wantTag string
+		err                  bool
 	}{
-		{"type=oci", "type=oci", false},
-		{"type=local,dest=out", "type=local,dest=out", false},
-		{"type=docker,dest=x.tar", "type=oci,dest=x.tar", false},
-		{"type=image,name=foo", "type=oci", false},
-		{"type=registry,ref=foo", "", true},
+		{in: "type=oci", wantOut: "type=oci"},
+		{in: "type=local,dest=out", wantOut: "type=local,dest=out"},
+		{in: "type=docker,dest=x.tar", wantOut: "type=oci,dest=x.tar"},
+		// no dest: omit --output (backend default is local-store load), carry name as tag
+		{in: "type=image,name=foo", wantOut: "", wantTag: "foo"},
+		{in: "type=docker", wantOut: "", wantTag: ""},
+		{in: "type=registry,ref=foo", err: true},
 	}
 	for _, c := range cases {
-		got, err := translateOutput(c.in)
+		out, tag, err := translateOutput(c.in)
 		if c.err {
 			if err == nil {
 				t.Errorf("translateOutput(%q) expected error", c.in)
 			}
 			continue
 		}
-		if err != nil || got != c.want {
-			t.Errorf("translateOutput(%q) = (%q,%v); want %q", c.in, got, err, c.want)
+		if err != nil || out != c.wantOut || tag != c.wantTag {
+			t.Errorf("translateOutput(%q) = (out=%q,tag=%q,err=%v); want (out=%q,tag=%q)",
+				c.in, out, tag, err, c.wantOut, c.wantTag)
 		}
+	}
+}
+
+// TestBuildOutputNamePreservedAsTag reproduces the bug where '--output
+// type=docker,name=X' (no -t) silently dropped the name, producing an untagged
+// image. The name must become a --tag, and no bogus --output should be emitted
+// for the dest-less local-store load.
+func TestBuildOutputNamePreservedAsTag(t *testing.T) {
+	c := parse(t, newBuildCmd(), []string{"--output", "type=docker,name=myrepo:1", "."})
+	got, err := buildBuildArgs(c, c.Flags().Args())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsPair(got, "--tag", "myrepo:1") {
+		t.Errorf("name= should become --tag myrepo:1; got %v", got)
+	}
+	if contains(got, "--output") {
+		t.Errorf("dest-less type=docker should omit --output (backend default load); got %v", got)
+	}
+	// With an explicit -t, the name= must not add a second tag.
+	c2 := parse(t, newBuildCmd(), []string{"-t", "explicit:9", "--output", "type=image,name=other", "."})
+	got2, _ := buildBuildArgs(c2, c2.Flags().Args())
+	if !containsPair(got2, "--tag", "explicit:9") || containsPair(got2, "--tag", "other") {
+		t.Errorf("explicit -t should win; name= must not add a tag; got %v", got2)
 	}
 }
 

@@ -112,17 +112,69 @@ func inspectRaw(typ string, ids []string) (string, error) {
 	case "container":
 		return runtime.CaptureSilent(append([]string{"inspect"}, ids...)...)
 	default:
-		out, err := runtime.CaptureSilent(append([]string{"inspect"}, ids...)...)
-		if err == nil {
+		// Fast path: all ids resolve as containers, or all as images — a single
+		// batch call preserves the backend's native formatting.
+		if out, err := runtime.CaptureSilent(append([]string{"inspect"}, ids...)...); err == nil {
 			return out, nil
 		}
-		// Fall back to image inspect.
-		out2, err2 := runtime.CaptureSilent(append([]string{"image", "inspect"}, ids...)...)
-		if err2 == nil {
-			return out2, nil
+		if out, err := runtime.CaptureSilent(append([]string{"image", "inspect"}, ids...)...); err == nil {
+			return out, nil
 		}
-		return "", fmt.Errorf("no such object %v: %v; %v", ids, err, err2)
+		// Mixed (some containers, some images) or partly missing: resolve each id
+		// independently and merge, so `inspect <container> <image>` works like
+		// docker instead of failing because no single namespace holds them all.
+		var results []string
+		var missing []string
+		for _, id := range ids {
+			out, err := runtime.CaptureSilent("inspect", id)
+			if err != nil {
+				out, err = runtime.CaptureSilent("image", "inspect", id)
+			}
+			if err != nil {
+				missing = append(missing, id)
+				continue
+			}
+			results = append(results, out)
+		}
+		merged, err := mergeInspectArrays(results)
+		if err != nil {
+			return "", err
+		}
+		if merged == "" {
+			return "", fmt.Errorf("no such object: %s", strings.Join(missing, " "))
+		}
+		if len(missing) > 0 {
+			fmt.Fprintf(os.Stderr, "dcon: warning: no such object: %s\n", strings.Join(missing, " "))
+		}
+		return merged, nil
 	}
+}
+
+// mergeInspectArrays concatenates several `inspect` JSON-array outputs into a
+// single pretty-printed JSON array, so a mixed container+image inspect prints
+// one combined array (as docker does). Empty/blank outputs are skipped; an
+// all-empty input yields "".
+func mergeInspectArrays(outs []string) (string, error) {
+	var merged []json.RawMessage
+	for _, o := range outs {
+		o = strings.TrimSpace(o)
+		if o == "" {
+			continue
+		}
+		var items []json.RawMessage
+		if err := json.Unmarshal([]byte(o), &items); err != nil {
+			return "", err
+		}
+		merged = append(merged, items...)
+	}
+	if len(merged) == 0 {
+		return "", nil
+	}
+	b, err := json.MarshalIndent(merged, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 // cpIsContainerRef reports whether a `cp` argument is a CONTAINER:PATH

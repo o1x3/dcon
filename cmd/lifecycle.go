@@ -79,15 +79,12 @@ func newRestartCmd() *cobra.Command {
 		Short: "Restart one or more containers",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			tflag := []string{}
-			if cmd.Flags().Changed("time") {
-				t, _ := cmd.Flags().GetInt("time")
-				tflag = []string{"--time", fmt.Sprint(t)}
-			}
+			tv, _ := cmd.Flags().GetInt("time")
+			sig, _ := cmd.Flags().GetString("signal")
+			stopFlags := restartStopArgs(cmd.Flags().Changed("time"), tv, sig)
 			var firstErr error
 			for _, id := range args {
-				stopArgs := append([]string{"stop"}, tflag...)
-				stopArgs = append(stopArgs, id)
+				stopArgs := append(append([]string{}, stopFlags...), id)
 				// Best-effort stop (suppress its id echo), then start (which
 				// echoes the id once, matching docker restart).
 				_, _ = runtime.CaptureSilent(stopArgs...)
@@ -104,6 +101,20 @@ func newRestartCmd() *cobra.Command {
 	cmd.Flags().IntP("time", "t", 5, "Seconds to wait before killing the container")
 	cmd.Flags().StringP("signal", "s", "", "Signal to send to the container")
 	return cmd
+}
+
+// restartStopArgs builds the backend stop argv for `restart` (restart = stop +
+// start). The --signal flag was previously defined but ignored; it is forwarded
+// to the stop phase here (the backend stop accepts --signal), matching docker.
+func restartStopArgs(timeChanged bool, timeVal int, signal string) []string {
+	args := []string{"stop"}
+	if timeChanged {
+		args = append(args, "--time", fmt.Sprint(timeVal))
+	}
+	if signal != "" {
+		args = append(args, "--signal", signal)
+	}
+	return args
 }
 
 func newKillCmd() *cobra.Command {

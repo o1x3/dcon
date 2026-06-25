@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"io"
 	"reflect"
 	"strings"
@@ -61,6 +62,42 @@ func TestCpIsContainerRef(t *testing.T) {
 		if !cpIsContainerRef(p) {
 			t.Errorf("%q should be treated as a container ref", p)
 		}
+	}
+}
+
+// TestRestartStopArgsForwardsSignal reproduces the bug where restart's
+// --signal flag was defined but never used. It must be forwarded to the stop
+// phase (the backend stop accepts --signal), and --time only when set.
+func TestRestartStopArgsForwardsSignal(t *testing.T) {
+	if got := restartStopArgs(false, 5, ""); !reflect.DeepEqual(got, []string{"stop"}) {
+		t.Errorf("no flags set: got %v, want [stop]", got)
+	}
+	if got := restartStopArgs(false, 5, "SIGTERM"); !reflect.DeepEqual(got, []string{"stop", "--signal", "SIGTERM"}) {
+		t.Errorf("--signal must be forwarded: got %v", got)
+	}
+	if got := restartStopArgs(true, 10, "SIGKILL"); !reflect.DeepEqual(got, []string{"stop", "--time", "10", "--signal", "SIGKILL"}) {
+		t.Errorf("--time + --signal: got %v", got)
+	}
+}
+
+// TestMergeInspectArrays guards the mixed container+image inspect merge.
+func TestMergeInspectArrays(t *testing.T) {
+	got, err := mergeInspectArrays([]string{`[{"id":"a"}]`, "", `[{"id":"b"}]`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var items []map[string]any
+	if jerr := json.Unmarshal([]byte(got), &items); jerr != nil {
+		t.Fatalf("merged output is not valid JSON: %v (%q)", jerr, got)
+	}
+	if len(items) != 2 || items[0]["id"] != "a" || items[1]["id"] != "b" {
+		t.Errorf("merged = %v, want two elements a,b", items)
+	}
+	if out, _ := mergeInspectArrays(nil); out != "" {
+		t.Errorf("empty input should yield empty string, got %q", out)
+	}
+	if _, err := mergeInspectArrays([]string{"not json"}); err == nil {
+		t.Error("invalid JSON input should error")
 	}
 }
 

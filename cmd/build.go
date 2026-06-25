@@ -28,33 +28,53 @@ func newBuildCmd() *cobra.Command {
 }
 
 // translateOutput maps a Docker --output exporter spec onto what the container
-// backend accepts (oci|tar|local). docker/image become oci; registry errors.
-func translateOutput(spec string) (string, error) {
+// backend accepts. It returns the --output value to pass (empty = omit
+// --output) and a tag to apply via --tag (empty = none).
+//
+//   - oci/tar/local: passed through unchanged.
+//   - docker/image WITHOUT a dest: this is buildx's "load into the local image
+//     store" (the long form of --load), which is the backend's default. Omit
+//     --output entirely and carry name= through as a --tag, so the requested
+//     name isn't silently lost. (The old code remapped this to type=oci, which
+//     is an OCI-layout export, NOT a load — divergent from --load and it dropped
+//     name= outright.)
+//   - docker/image WITH a dest: a file export; remap type to oci, keep dest,
+//     drop name (a file export can't tag the local store).
+//   - registry / anything else: error.
+func translateOutput(spec string) (output, tag string, err error) {
 	fields := strings.Split(spec, ",")
-	var typ string
+	var typ, dest, name string
 	for _, fld := range fields {
-		if strings.HasPrefix(fld, "type=") {
+		switch {
+		case strings.HasPrefix(fld, "type="):
 			typ = strings.TrimPrefix(fld, "type=")
+		case strings.HasPrefix(fld, "dest="):
+			dest = strings.TrimPrefix(fld, "dest=")
+		case strings.HasPrefix(fld, "name="):
+			name = strings.TrimPrefix(fld, "name=")
 		}
 	}
 	switch typ {
 	case "", "oci", "tar", "local":
-		return spec, nil
+		return spec, "", nil
 	case "docker", "image":
-		// load into the local image store: remap to oci, keep other fields.
+		if dest == "" {
+			return "", name, nil // local-store load (backend default); name -> --tag
+		}
 		var out []string
 		for _, fld := range fields {
-			if strings.HasPrefix(fld, "type=") {
+			switch {
+			case strings.HasPrefix(fld, "type="):
 				out = append(out, "type=oci")
-			} else if strings.HasPrefix(fld, "name=") {
-				continue // covered by --tag
-			} else {
+			case strings.HasPrefix(fld, "name="):
+				// drop: a file export can't tag the local store
+			default:
 				out = append(out, fld)
 			}
 		}
-		return strings.Join(out, ","), nil
+		return strings.Join(out, ","), "", nil
 	default:
-		return "", fmt.Errorf("--output type=%s is not supported by the backend (use docker, image, oci, tar, or local); push separately with 'dcon push'", typ)
+		return "", "", fmt.Errorf("--output type=%s is not supported by the backend (use docker, image, oci, tar, or local); push separately with 'dcon push'", typ)
 	}
 }
 
@@ -96,12 +116,20 @@ func buildBuildArgs(cmd *cobra.Command, args []string) ([]string, error) {
 	if p, _ := f.GetString("platform"); p != "" {
 		cargs = append(cargs, "--platform", p)
 	}
+	userHasTag := len(mustStringArray(f, "tag")) > 0
 	for _, o := range mustStringArray(f, "output") {
-		mapped, err := translateOutput(o)
+		mapped, tag, err := translateOutput(o)
 		if err != nil {
 			return nil, err
 		}
-		cargs = append(cargs, "--output", mapped)
+		if mapped != "" {
+			cargs = append(cargs, "--output", mapped)
+		}
+		// Preserve a name= from --output as the image tag when the user gave no
+		// explicit -t, so 'build --output type=docker,name=x' still tags x.
+		if tag != "" && !userHasTag {
+			cargs = append(cargs, "--tag", tag)
+		}
 	}
 	if pr, _ := f.GetString("progress"); pr != "" && pr != "auto" {
 		// docker has rawjson/quiet; container supports auto|plain|tty.
