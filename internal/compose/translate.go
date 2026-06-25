@@ -209,6 +209,12 @@ func (p *Project) runArgs(service string, svc *Service, index int, netName strin
 		args = append(args, "--publish", normalizePort(port))
 	}
 	for _, vol := range svc.Volumes {
+		// A long-form `type: tmpfs` mount is routed to --tmpfs, not --volume,
+		// to preserve its in-memory semantics (see tmpfsVolumeMarker).
+		if target, ok := strings.CutPrefix(vol, tmpfsVolumeMarker); ok {
+			args = append(args, "--tmpfs", target)
+			continue
+		}
 		args = append(args, "--volume", p.resolveVolume(vol))
 	}
 
@@ -405,6 +411,12 @@ func (p *Project) NetworkName(key string, spec *NetworkSpec) string {
 func (p *Project) VolumeName(key string, spec *VolumeSpec) string {
 	if spec != nil && spec.Name != "" {
 		return spec.Name
+	}
+	// An external volume already exists outside the project; reference it by its
+	// exact key, never the project-prefixed name (which would mount/create a
+	// different volume than the one the user declared external).
+	if spec != nil && spec.External {
+		return key
 	}
 	return p.Name + "_" + key
 }

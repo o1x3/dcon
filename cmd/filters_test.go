@@ -138,6 +138,14 @@ func TestAncestorMatches(t *testing.T) {
 	if !ancestorMatches("alpine:3.18", "alpine:3.18") {
 		t.Error("ancestor=alpine:3.18 should match repo:tag")
 	}
+	// A fully-qualified ancestor filter must still match a shortened stored ref
+	// (and vice-versa): both sides are normalized before comparison.
+	if !ancestorMatches("alpine:latest", "docker.io/library/alpine") {
+		t.Error("fully-qualified ancestor should match a shortened image ref")
+	}
+	if !ancestorMatches("docker.io/library/alpine:latest", "alpine") {
+		t.Error("short ancestor should match a fully-qualified image ref")
+	}
 	// must NOT match superstring repos
 	for _, ref := range []string{"myalpine:latest", "alpine-test:1", "notalpine:latest"} {
 		if ancestorMatches(ref, "alpine") {

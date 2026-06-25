@@ -342,6 +342,26 @@ func TestFlattenLongVolumeReadOnlyCasing(t *testing.T) {
 	}
 }
 
+// TestFlattenLongVolumeTmpfs reproduces the bug where a long-form
+// `{type: tmpfs, target: /cache}` mount was flattened to a bare "/cache" and
+// emitted as a disk-backed anonymous --volume, silently dropping tmpfs
+// semantics. It must instead route to --tmpfs.
+func TestFlattenLongVolumeTmpfs(t *testing.T) {
+	got := flattenLongVolume(map[string]string{"type": "tmpfs", "target": "/cache"})
+	if got != tmpfsVolumeMarker+"/cache" {
+		t.Fatalf("tmpfs flatten -> %q, want marker+/cache", got)
+	}
+	p := &Project{Name: "proj", Dir: "/tmp/proj"}
+	svc := &Service{Image: "alpine", Volumes: VolumeList{got}}
+	args := p.RunArgs("web", svc, 1, "", nil)
+	mustContainPair(t, args, "--tmpfs", "/cache")
+	for _, a := range args {
+		if a == "--volume" {
+			t.Errorf("tmpfs mount must not emit a --volume; got %v", args)
+		}
+	}
+}
+
 // TestOneOffArgsKeepsEntrypointExtrasWithCmdOverride reproduces the bug where a
 // command override dropped the service entrypoint's extra tokens when the
 // entrypoint itself was NOT overridden. `compose run web shell` on a service
@@ -369,13 +389,22 @@ func TestOneOffArgsKeepsEntrypointExtrasWithCmdOverride(t *testing.T) {
 // container got a different volume than declared.
 func TestResolveVolumeNamedVolume(t *testing.T) {
 	p := &Project{
-		Name:    "proj",
-		Dir:     "/tmp/proj",
-		Volumes: map[string]*VolumeSpec{"data": {}, "named": {Name: "custom"}},
+		Name: "proj",
+		Dir:  "/tmp/proj",
+		Volumes: map[string]*VolumeSpec{
+			"data":  {},
+			"named": {Name: "custom"},
+			// An external volume must reference its exact name, never the
+			// project-prefixed one: `extkey` by key, `xname` by explicit name.
+			"extkey": {External: true},
+			"xname":  {External: true, Name: "shared-cache"},
+		},
 	}
 	svc := &Service{Image: "x", Volumes: VolumeList{
 		"data:/var/lib", // declared -> proj_data
 		"named:/n",      // declared with explicit name -> custom
+		"extkey:/x",     // external, no name -> extkey (no project prefix)
+		"xname:/c",      // external with explicit name -> shared-cache
 		"ext:/e",        // undeclared -> passthrough
 		"/abs:/a",       // absolute bind -> passthrough
 		"./rel:/r",      // relative bind -> resolved to absolute
@@ -383,6 +412,8 @@ func TestResolveVolumeNamedVolume(t *testing.T) {
 	args := p.RunArgs("web", svc, 1, "", nil)
 	mustContainPair(t, args, "--volume", "proj_data:/var/lib")
 	mustContainPair(t, args, "--volume", "custom:/n")
+	mustContainPair(t, args, "--volume", "extkey:/x")
+	mustContainPair(t, args, "--volume", "shared-cache:/c")
 	mustContainPair(t, args, "--volume", "ext:/e")
 	mustContainPair(t, args, "--volume", "/abs:/a")
 	if !containsSub(args, "/tmp/proj/rel:/r") {

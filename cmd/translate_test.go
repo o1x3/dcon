@@ -164,9 +164,32 @@ func TestRunMountValuelessTmpfsKeyNoPanic(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%q: unexpected error %v", spec, err)
 		}
-		if !contains(got, "--mount") {
-			t.Errorf("%q: expected a --mount arg; got %v", spec, got)
+		if !containsPair(got, "--mount", spec) {
+			t.Errorf("%q: expected the --mount payload passed through untouched; got %v", spec, got)
 		}
+	}
+}
+
+// TestRunRejectsMachineNamespace verifies `dcon run` cannot forge a container
+// that `dcon machine` would resolve: the reserved `dcon-machine-` name prefix
+// and the `dcon.machine*` labels are rejected, closing the confused-deputy hole
+// where `machine stop foo` could act on a user container (see cmd/run.go).
+func TestRunRejectsMachineNamespace(t *testing.T) {
+	cases := [][]string{
+		{"--name", "dcon-machine-foo", "alpine"},
+		{"--label", "dcon.machine=1", "alpine"},
+		{"--label", "dcon.machine.name=foo", "alpine"},
+	}
+	for _, cli := range cases {
+		c := parse(t, newRunCmd(), cli)
+		if _, err := buildContainerArgs(c, c.Flags().Args(), "run"); err == nil {
+			t.Errorf("args %v: expected rejection of the reserved machine namespace", cli)
+		}
+	}
+	// A normal name/label must still work.
+	c := parse(t, newRunCmd(), []string{"--name", "web", "--label", "env=prod", "alpine"})
+	if _, err := buildContainerArgs(c, c.Flags().Args(), "run"); err != nil {
+		t.Errorf("ordinary name/label must be accepted; got %v", err)
 	}
 }
 

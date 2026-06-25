@@ -12,9 +12,6 @@ import (
 // (two runs exec'ing into one microVM). On a persist failure Claim must report a
 // miss (so the caller cold-runs) and leave the member available.
 func TestClaimMissOnSaveFailure(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root bypasses directory permissions")
-	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
@@ -22,21 +19,24 @@ func TestClaimMissOnSaveFailure(t *testing.T) {
 	if err := Add(Member{ID: "vm1", Image: NormalizeRef("alpine")}); err != nil {
 		t.Fatalf("seed Add: %v", err)
 	}
-	d, err := dir()
+	p, err := statePath()
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Read-only state dir => save()'s temp-file write fails inside withLock.
-	if err := os.Chmod(d, 0o500); err != nil {
+	// A directory at the temp-file path makes save()'s os.WriteFile fail
+	// deterministically for every user (EISDIR) — unlike a chmod, which root
+	// bypasses. save() writes pool.json.tmp then renames it into place.
+	tmp := p + ".tmp"
+	if err := os.Mkdir(tmp, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(d, 0o755) //nolint:errcheck // restore for temp-dir cleanup
+	defer os.RemoveAll(tmp) //nolint:errcheck // restore for temp-dir cleanup
 
 	if _, ok := Claim("alpine"); ok {
 		t.Error("Claim must report a miss when the state write fails")
 	}
 	// Restore and confirm the member was NOT lost (still claimable later).
-	if err := os.Chmod(d, 0o755); err != nil {
+	if err := os.RemoveAll(tmp); err != nil {
 		t.Fatal(err)
 	}
 	if got := AvailableDepth("alpine"); got != 1 {

@@ -195,9 +195,13 @@ func hasStatusFilter(filters []string) bool {
 // reference: it matches the repo, the repo:tag, or the full reference — NOT a
 // loose substring (which wrongly matched `myalpine` for ancestor=alpine).
 func ancestorMatches(reference, val string) bool {
-	short := dockerfmt.ShortImage(reference)
-	repo, tag := dockerfmt.SplitRepoTag(short)
-	return val == reference || val == short || val == repo || val == repo+":"+tag
+	// Normalize both sides: a fully-qualified filter (docker.io/library/alpine)
+	// must still match a container whose stored ref is already shortened (alpine),
+	// and vice-versa, so shorten val too before comparing.
+	shortRef := dockerfmt.ShortImage(reference)
+	shortVal := dockerfmt.ShortImage(val)
+	repo, tag := dockerfmt.SplitRepoTag(shortRef)
+	return shortVal == shortRef || shortVal == repo || shortVal == repo+":"+tag
 }
 
 // applyFilters implements the common docker ps --filter predicates.

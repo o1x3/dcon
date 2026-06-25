@@ -238,10 +238,15 @@ func ReapStale() {
 	// VM out from under the live exec. Doing the removal inside the lock means a
 	// concurrent Claim and a reap can never both own the same member.
 	var stale []Member
-	_ = withLock(func(s *state) error {
+	// Destroy only after save() persists the removal. withLock can run the
+	// callback then fail to write pool.json; ignoring that and destroying anyway
+	// would tear down VMs still listed as available (and thus still claimable).
+	if err := withLock(func(s *state) error {
 		stale, s.Members = partitionStale(s.Members, cutoff)
 		return nil
-	})
+	}); err != nil {
+		return
+	}
 	for _, m := range stale {
 		DestroyAsync(m.ID)
 	}

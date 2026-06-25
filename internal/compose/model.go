@@ -378,7 +378,17 @@ func (v *VolumeList) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
+// tmpfsVolumeMarker prefixes a flattened long-form volume whose type is tmpfs so
+// RunArgs emits `--tmpfs <target>` instead of `--volume`. A NUL byte can't occur
+// in a real mount spec, so it can't collide. Without this, `{type: tmpfs, target:
+// /cache}` flattened to a bare "/cache" and became a disk-backed anonymous volume
+// — silently losing the in-memory, ephemeral tmpfs semantics.
+const tmpfsVolumeMarker = "\x00tmpfs\x00"
+
 func flattenLongVolume(m map[string]string) string {
+	if m["type"] == "tmpfs" {
+		return tmpfsVolumeMarker + m["target"]
+	}
 	s := m["target"]
 	if src := m["source"]; src != "" {
 		s = src + ":" + s

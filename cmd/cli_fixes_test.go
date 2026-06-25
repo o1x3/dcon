@@ -146,6 +146,11 @@ func TestResolveVolumeName(t *testing.T) {
 	if n, err := resolveVolumeName("", false, nil); err != nil || len(n) != 64 {
 		t.Errorf("no name -> random 64-hex id; got len %d err %v", len(n), err)
 	}
+	// An explicit but empty --name is invalid usage, not a request for an
+	// anonymous volume — it must error rather than silently generate a name.
+	if _, err := resolveVolumeName("", true, nil); err == nil {
+		t.Error("explicit empty --name must error, not generate an anonymous volume")
+	}
 }
 
 // TestComposeStopAndKillArgs reproduces the bug where compose kill --signal and

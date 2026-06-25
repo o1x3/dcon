@@ -432,7 +432,10 @@ func composeUp() *cobra.Command {
 			if removeOrphans {
 				removeOrphanContainers(p)
 			}
-			if detach || noStart {
+			// len(started)==0 also short-circuits: effectiveReplicas can legally
+			// return 0 (e.g. `up --scale web=0`), and followAndWait would otherwise
+			// print the attach banner and block on the signal channel forever.
+			if detach || noStart || len(started) == 0 {
 				return nil
 			}
 			// Foreground: stream aggregated logs until interrupted, then stop.

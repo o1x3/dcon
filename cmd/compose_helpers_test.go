@@ -121,6 +121,19 @@ func TestComposeConfigQuiet(t *testing.T) {
 	if out := run(nil); !strings.Contains(out, "nginx") {
 		t.Errorf("config (no -q) should render the config; got %q", out)
 	}
+	// -q suppresses output but must STILL validate: an invalid compose file has
+	// to error even in quiet mode (a -q that returned before loadProject would
+	// wrongly report success).
+	if err := os.WriteFile(filepath.Join(dir, "compose.yaml"),
+		[]byte("services:\n  web:\n    image: [\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := composeConfig()
+	cmd.SetArgs([]string{"-q"})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("config -q must still validate and fail on an invalid compose.yaml")
+	}
 }
 
 func TestServiceSet(t *testing.T) {

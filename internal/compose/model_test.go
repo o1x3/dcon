@@ -276,6 +276,10 @@ services:
       - "GOOD=1"
       - ""
       - "=orphan"
+    labels:
+      - "owner=team"
+      - ""
+      - "=orphan"
 `
 	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
@@ -291,6 +295,14 @@ services:
 	if env["GOOD"] != "1" || len(env) != 1 {
 		t.Errorf("environment = %v, want only GOOD=1", env)
 	}
+	// labels go through MapList (not EnvMap); blank/keyless entries must drop too.
+	labels := p.Services["web"].Labels
+	if _, bad := labels[""]; bad {
+		t.Errorf("empty-key label entry leaked: %v", labels)
+	}
+	if labels["owner"] != "team" || len(labels) != 1 {
+		t.Errorf("labels = %v, want only owner=team", labels)
+	}
 }
 
 // TestEnvBareKeyHostPassthrough reproduces the bug where a bare environment key
@@ -299,6 +311,7 @@ services:
 // omitted, not emitted as FOO="".
 func TestEnvBareKeyHostPassthrough(t *testing.T) {
 	t.Setenv("DCON_TEST_PASSTHRU", "from-host")
+	mustUnsetForTest(t, "DCON_UNSET_XYZ") // assertion below assumes it is unset
 	dir := t.TempDir()
 	path := filepath.Join(dir, "compose.yaml")
 	yaml := `
@@ -377,6 +390,7 @@ services:
 func TestExpandVar(t *testing.T) {
 	t.Setenv("SETV", "x")
 	t.Setenv("EMPTYV", "")
+	mustUnsetForTest(t, "UNSETV") // cases below assume UNSETV is absent from the env
 	// (key, want, wantErr)
 	cases := []struct {
 		key     string
@@ -415,11 +429,26 @@ func TestExpandVar(t *testing.T) {
 
 // TestLoadRequiredVarErrors confirms a required-but-unset ${VAR:?} aborts Load.
 func TestLoadRequiredVarErrors(t *testing.T) {
+	mustUnsetForTest(t, "DCON_REQ_UNSET") // the required-var error depends on it being unset
 	dir := t.TempDir()
 	path := filepath.Join(dir, "compose.yaml")
-	os.WriteFile(path, []byte("services:\n  a:\n    image: img:${DCON_REQ_UNSET:?tag required}\n"), 0o644)
+	if err := os.WriteFile(path, []byte("services:\n  a:\n    image: img:${DCON_REQ_UNSET:?tag required}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Load(path, ""); err == nil {
 		t.Error("Load should fail when a required ${VAR:?} variable is unset")
+	}
+}
+
+// mustUnsetForTest makes key deterministically absent for the duration of the
+// test, restoring whatever the host had afterward. t.Setenv records the original
+// value (and its restore), then Unsetenv clears it so assertions about an unset
+// variable don't depend on the runner's environment.
+func mustUnsetForTest(t *testing.T, key string) {
+	t.Helper()
+	t.Setenv(key, "")
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatalf("unset %s: %v", key, err)
 	}
 }
 

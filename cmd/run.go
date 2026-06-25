@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"dcon/internal/machine"
 	"dcon/internal/runtime"
 
 	"github.com/spf13/cobra"
@@ -195,6 +196,24 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 	f := cmd.Flags()
 	out := []string{subcmd}
 	var warnings []string
+
+	// Guard dcon's machine namespace: a container whose name carries the
+	// reserved `dcon-machine-` prefix AND the `dcon.machine` label satisfies
+	// matchMachine (see cmd/machine.go), so `dcon run --name dcon-machine-foo
+	// --label dcon.machine=1` could make `dcon machine stop foo` act on the
+	// user's container instead of the real machine. Reject both reserved inputs.
+	if name, _ := f.GetString("name"); strings.HasPrefix(name, machine.ContainerName("")) {
+		return nil, fmt.Errorf("container name %q uses the %q prefix reserved by dcon machine", name, machine.ContainerName(""))
+	}
+	for _, l := range mustStringArray(f, "label") {
+		key := l
+		if i := strings.IndexByte(l, '='); i >= 0 {
+			key = l[:i]
+		}
+		if key == machine.LabelMachine || strings.HasPrefix(key, machine.LabelMachine+".") {
+			return nil, fmt.Errorf("label %q is reserved by dcon machine and cannot be set on run", key)
+		}
+	}
 
 	// passthrough bool flag -> container flag
 	boolMap := []struct{ name, flag string }{

@@ -31,7 +31,10 @@ func resolveVolumeName(flagName string, nameChanged bool, args []string) (string
 		}
 		return args[0], nil
 	}
-	if flagName != "" {
+	if nameChanged {
+		if flagName == "" {
+			return "", fmt.Errorf("volume name cannot be empty")
+		}
 		return flagName, nil
 	}
 	return randomName(), nil
