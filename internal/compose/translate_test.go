@@ -363,6 +363,33 @@ func TestOneOffArgsKeepsEntrypointExtrasWithCmdOverride(t *testing.T) {
 	}
 }
 
+// TestResolveVolumeNamedVolume reproduces the bug where a declared named volume
+// was mounted by its bare compose key instead of the project-scoped backend name
+// that ensureVolumes actually creates (e.g. `data` vs `proj_data`), so the
+// container got a different volume than declared.
+func TestResolveVolumeNamedVolume(t *testing.T) {
+	p := &Project{
+		Name:    "proj",
+		Dir:     "/tmp/proj",
+		Volumes: map[string]*VolumeSpec{"data": {}, "named": {Name: "custom"}},
+	}
+	svc := &Service{Image: "x", Volumes: VolumeList{
+		"data:/var/lib", // declared -> proj_data
+		"named:/n",      // declared with explicit name -> custom
+		"ext:/e",        // undeclared -> passthrough
+		"/abs:/a",       // absolute bind -> passthrough
+		"./rel:/r",      // relative bind -> resolved to absolute
+	}}
+	args := p.RunArgs("web", svc, 1, "", nil)
+	mustContainPair(t, args, "--volume", "proj_data:/var/lib")
+	mustContainPair(t, args, "--volume", "custom:/n")
+	mustContainPair(t, args, "--volume", "ext:/e")
+	mustContainPair(t, args, "--volume", "/abs:/a")
+	if !containsSub(args, "/tmp/proj/rel:/r") {
+		t.Errorf("relative bind not resolved to absolute: %v", args)
+	}
+}
+
 // TestLevelsCycleNoDeadlock guards that a depends_on cycle is handled safely:
 // every service is still emitted (no deadlock, no panic), even if the leading
 // level is empty.

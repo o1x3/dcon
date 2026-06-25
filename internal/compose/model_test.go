@@ -371,6 +371,58 @@ services:
 	}
 }
 
+// TestExpandVar reproduces the bug where only ${VAR:-default} was honored;
+// every other operator (:?, :+, -, +, :=) silently produced empty, even for SET
+// variables. Covers bash/compose parameter-expansion semantics.
+func TestExpandVar(t *testing.T) {
+	t.Setenv("SETV", "x")
+	t.Setenv("EMPTYV", "")
+	// (key, want, wantErr)
+	cases := []struct {
+		key     string
+		want    string
+		wantErr bool
+	}{
+		{"$", "$", false},         // $$ escape
+		{"SETV", "x", false},      // ${SETV}
+		{"UNSETV", "", false},     // ${UNSETV}
+		{"SETV:-d", "x", false},   // set -> value
+		{"UNSETV:-d", "d", false}, // unset -> default
+		{"EMPTYV:-d", "d", false}, // empty (colon) -> default
+		{"EMPTYV-d", "", false},   // empty (no colon) -> the empty value
+		{"UNSETV-d", "d", false},  // unset (no colon) -> default
+		{"SETV:+a", "a", false},   // set non-empty -> alternate
+		{"EMPTYV:+a", "", false},  // empty (colon) -> "" (not "present")
+		{"EMPTYV+a", "a", false},  // empty but set (no colon) -> alternate
+		{"UNSETV:+a", "", false},  // unset -> ""
+		{"SETV:?msg", "x", false}, // set -> value
+		{"UNSETV:?msg", "", true}, // unset -> error
+		{"EMPTYV:?msg", "", true}, // empty (colon) -> error
+		{"SETV:=d", "x", false},   // set -> value
+		{"UNSETV:=d", "d", false}, // unset -> default
+	}
+	for _, c := range cases {
+		got, err := expandVar(c.key)
+		if (err != nil) != c.wantErr {
+			t.Errorf("expandVar(%q) err=%v, wantErr=%v", c.key, err, c.wantErr)
+			continue
+		}
+		if !c.wantErr && got != c.want {
+			t.Errorf("expandVar(%q) = %q, want %q", c.key, got, c.want)
+		}
+	}
+}
+
+// TestLoadRequiredVarErrors confirms a required-but-unset ${VAR:?} aborts Load.
+func TestLoadRequiredVarErrors(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yaml")
+	os.WriteFile(path, []byte("services:\n  a:\n    image: img:${DCON_REQ_UNSET:?tag required}\n"), 0o644)
+	if _, err := Load(path, ""); err == nil {
+		t.Error("Load should fail when a required ${VAR:?} variable is unset")
+	}
+}
+
 func TestServiceEnabledProfiles(t *testing.T) {
 	noProf := &Service{}
 	if !noProf.Enabled(map[string]bool{}) {

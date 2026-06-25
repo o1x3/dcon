@@ -148,6 +148,24 @@ func TestResolveVolumeName(t *testing.T) {
 	}
 }
 
+// TestComposeStopAndKillArgs reproduces the bug where compose kill --signal and
+// compose stop/restart --timeout were dropped: the backend stop accepts --time
+// and kill accepts --signal, so they must be forwarded.
+func TestComposeStopAndKillArgs(t *testing.T) {
+	if got := composeStopArgs(false, 10, "c1"); !reflect.DeepEqual(got, []string{"stop", "c1"}) {
+		t.Errorf("timeout unset: %v, want [stop c1]", got)
+	}
+	if got := composeStopArgs(true, 30, "c1"); !reflect.DeepEqual(got, []string{"stop", "--time", "30", "c1"}) {
+		t.Errorf("timeout 30: %v, want [stop --time 30 c1]", got)
+	}
+	if got := composeKillArgs("SIGTERM", "c1"); !reflect.DeepEqual(got, []string{"kill", "--signal", "SIGTERM", "c1"}) {
+		t.Errorf("kill -s SIGTERM: %v", got)
+	}
+	if got := composeKillArgs("", "c1"); !reflect.DeepEqual(got, []string{"kill", "c1"}) {
+		t.Errorf("kill no signal: %v", got)
+	}
+}
+
 // TestSystemPrunePlan covers the prune step plan that the error-propagating
 // loop runs (the bug fixed alongside it was that every step's error was
 // discarded and the command always exited 0).

@@ -880,6 +880,13 @@ func lifecycleOnProject(verb string) func(cmd *cobra.Command, args []string) err
 			return err
 		}
 		selected := serviceSet(args)
+		// Forward the verb's honored flags (defined only on the relevant
+		// subcommands; absent flags read as zero/unchanged): kill --signal, and
+		// stop/restart --timeout. These were previously dropped, so `compose kill
+		// -s SIGTERM` hard-killed and `compose stop -t 30` ignored the grace period.
+		signal, _ := cmd.Flags().GetString("signal")
+		timeoutChanged := cmd.Flags().Changed("timeout")
+		timeout, _ := cmd.Flags().GetInt("timeout")
 		for _, c := range containers {
 			if selected != nil && !selected[serviceOf(c)] {
 				continue
@@ -888,19 +895,39 @@ func lifecycleOnProject(verb string) func(cmd *cobra.Command, args []string) err
 			case "rm":
 				_, _ = runtime.CaptureSilent("delete", "--force", c.ID)
 			case "stop":
-				_, _ = runtime.CaptureSilent("stop", c.ID)
+				_, _ = runtime.CaptureSilent(composeStopArgs(timeoutChanged, timeout, c.ID)...)
 			case "start":
 				_, _ = runtime.CaptureSilent("start", c.ID)
 			case "kill":
-				_, _ = runtime.CaptureSilent("kill", c.ID)
+				_, _ = runtime.CaptureSilent(composeKillArgs(signal, c.ID)...)
 			case "restart":
-				_, _ = runtime.CaptureSilent("stop", c.ID)
+				_, _ = runtime.CaptureSilent(composeStopArgs(timeoutChanged, timeout, c.ID)...)
 				_, _ = runtime.CaptureSilent("start", c.ID)
 			}
 			fmt.Println(c.ID)
 		}
 		return nil
 	}
+}
+
+// composeStopArgs builds the backend stop argv for compose stop/restart,
+// forwarding --time only when the user set --timeout.
+func composeStopArgs(timeoutChanged bool, timeout int, id string) []string {
+	args := []string{"stop"}
+	if timeoutChanged {
+		args = append(args, "--time", strconv.Itoa(timeout))
+	}
+	return append(args, id)
+}
+
+// composeKillArgs builds the backend kill argv for compose kill, forwarding the
+// chosen --signal (defaults to SIGKILL).
+func composeKillArgs(signal, id string) []string {
+	args := []string{"kill"}
+	if signal != "" {
+		args = append(args, "--signal", signal)
+	}
+	return append(args, id)
 }
 
 func composeStart() *cobra.Command {

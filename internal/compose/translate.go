@@ -333,8 +333,14 @@ func (p *Project) resolve(path string) string {
 	return filepath.Join(p.Dir, path)
 }
 
-// resolveVolume rewrites a bind-mount source to an absolute path (named volumes
-// and absolute paths pass through unchanged).
+// resolveVolume rewrites a service volume spec's source so it matches what the
+// up/create flow actually provisions: a relative bind source becomes absolute,
+// and a declared named volume (a key in the top-level volumes:) becomes its
+// project-scoped backend name (VolumeName). Without the latter, the container
+// mounted a bare-keyed volume (e.g. `data`) while ensureVolumes created
+// `<project>_data`, so the service got a different volume than declared and
+// `down -v` removed the wrong one. Absolute paths and undeclared names pass
+// through unchanged.
 func (p *Project) resolveVolume(spec string) string {
 	parts := strings.SplitN(spec, ":", 2)
 	if len(parts) < 2 {
@@ -343,6 +349,9 @@ func (p *Project) resolveVolume(spec string) string {
 	src := parts[0]
 	if strings.HasPrefix(src, "./") || strings.HasPrefix(src, "../") || src == "." {
 		return p.resolve(src) + ":" + parts[1]
+	}
+	if vs, ok := p.Volumes[src]; ok { // declared named volume -> backend name
+		return p.VolumeName(src, vs) + ":" + parts[1]
 	}
 	return spec
 }

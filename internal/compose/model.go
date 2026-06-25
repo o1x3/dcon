@@ -507,24 +507,21 @@ func Load(path, projectOverride string) (*Project, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Expand ${VAR} / $VAR from the environment, like compose does.
+	// Expand ${VAR} / $VAR from the environment, like compose does, supporting
+	// the bash-style operators compose honors: :-/- (default), :+/+ (alternate),
+	// :?/? (required, error if missing), :=/= (default). A required-but-missing
+	// variable is surfaced as a load error.
+	var interpErr error
 	expanded := os.Expand(string(data), func(key string) string {
-		// `$$` is compose's escape for a literal `$`: os.Expand calls us with
-		// key=="$" for it, so collapse it back to a single dollar rather than
-		// treating "$" as a variable name (which would delete the escaped dollar).
-		if key == "$" {
-			return "$"
+		v, err := expandVar(key)
+		if err != nil && interpErr == nil {
+			interpErr = err
 		}
-		// support ${VAR:-default}
-		if i := strings.Index(key, ":-"); i >= 0 {
-			name, def := key[:i], key[i+2:]
-			if v, ok := os.LookupEnv(name); ok {
-				return v
-			}
-			return def
-		}
-		return os.Getenv(key)
+		return v
 	})
+	if interpErr != nil {
+		return nil, interpErr
+	}
 
 	var p Project
 	if err := yaml.Unmarshal([]byte(expanded), &p); err != nil {
@@ -539,6 +536,74 @@ func Load(path, projectOverride string) (*Project, error) {
 		p.Name = SanitizeName(filepath.Base(p.Dir))
 	}
 	return &p, nil
+}
+
+// expandVar resolves one os.Expand key (the text inside ${...} or after $) using
+// docker-compose / bash parameter-expansion semantics. os.Expand passes the
+// whole brace body as key, so operators must be parsed here. Supported:
+//
+//	$$ (key=="$")      -> literal "$"
+//	${VAR}             -> value (empty if unset)
+//	${VAR:-d} / ${VAR-d} -> value, or d when unset (:- also when empty)
+//	${VAR:=d} / ${VAR=d} -> same substitution as :- here (no real assignment)
+//	${VAR:+a} / ${VAR+a} -> a when set (:+ requires non-empty), else ""
+//	${VAR:?m} / ${VAR?m} -> value when set, else an error (m is the message)
+func expandVar(key string) (string, error) {
+	if key == "$" { // $$ escape
+		return "$", nil
+	}
+	i := 0
+	for i < len(key) && isNameChar(key[i]) {
+		i++
+	}
+	name, rest := key[:i], key[i:]
+	if name == "" {
+		return os.Getenv(key), nil // unrecognized form: best-effort
+	}
+	val, set := os.LookupEnv(name)
+	if rest == "" {
+		return val, nil // ${VAR} / $VAR
+	}
+	colon := rest[0] == ':'
+	if colon {
+		rest = rest[1:]
+	}
+	if rest == "" {
+		return val, nil
+	}
+	op, arg := rest[0], rest[1:]
+	// With a colon, an empty value counts as "not present" (bash semantics).
+	present := set && (!colon || val != "")
+	switch op {
+	case '-', '=':
+		if present {
+			return val, nil
+		}
+		return arg, nil
+	case '+':
+		if present {
+			return arg, nil
+		}
+		return "", nil
+	case '?':
+		if present {
+			return val, nil
+		}
+		msg := arg
+		if msg == "" {
+			msg = "required variable is not set"
+		}
+		return "", fmt.Errorf("compose variable %q: %s", name, msg)
+	default:
+		return os.Getenv(key), nil // unknown operator: best-effort
+	}
+}
+
+func isNameChar(b byte) bool {
+	return b == '_' ||
+		(b >= 'a' && b <= 'z') ||
+		(b >= 'A' && b <= 'Z') ||
+		(b >= '0' && b <= '9')
 }
 
 // SanitizeName makes a string safe for use as a container/network/volume name.
