@@ -122,6 +122,28 @@ func TestRenderTableHeaderDottedLiteral(t *testing.T) {
 	}
 }
 
+// TestRenderTableFormatUnescapesTabs reproduces the bug where a shell-supplied
+// `--format 'table {{.Name}}\t{{.ID}}'` (literal backslash-t) emitted a literal
+// "\t" and never aligned columns. The escape must become a real tab (matching
+// docker), so no literal backslash-t survives in header or rows.
+func TestRenderTableFormatUnescapesTabs(t *testing.T) {
+	views, def := sampleDef()
+	// The Go literal `\t` here is a real backslash + t — what a single-quoted
+	// shell argument delivers.
+	out := captureStdout(t, func() { Render(`table {{.Name}}\t{{.ID}}`, false, views, def) })
+	if strings.Contains(out, `\t`) {
+		t.Errorf("literal backslash-t must be unescaped to a tab; got %q", out)
+	}
+	if !strings.Contains(out, "NAME") || !strings.Contains(out, "ID") {
+		t.Errorf("header columns missing: %q", out)
+	}
+	// The plain (non-table) template branch unescapes too.
+	out2 := captureStdout(t, func() { Render(`{{.Name}}\t{{.ID}}`, false, views, def) })
+	if strings.Contains(out2, `\t`) {
+		t.Errorf("plain template must unescape backslash-t; got %q", out2)
+	}
+}
+
 // TestRenderPlainPathByteIdentical locks the drop-in contract: with styling
 // forced OFF, the default table is byte-for-byte the tabwriter output and
 // carries no ANSI/box-drawing characters — exactly what pipes and CI parse.

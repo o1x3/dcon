@@ -174,6 +174,11 @@ func parseCPUs(cv string) (n int, warning string, err error) {
 	if perr != nil {
 		return 0, "", fmt.Errorf("invalid --cpus value %q: must be a number", cv)
 	}
+	// ParseFloat accepts inf/NaN; reject them before the round-up, which would
+	// otherwise emit --cpus 9223372036854775807 (Inf) or --cpus 0 (NaN).
+	if math.IsNaN(fv) || math.IsInf(fv, 0) {
+		return 0, "", fmt.Errorf("invalid --cpus value %q: must be a finite number", cv)
+	}
 	if fv <= 0 {
 		return 0, "", fmt.Errorf("invalid --cpus value %q: must be greater than 0", cv)
 	}

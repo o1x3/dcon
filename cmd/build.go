@@ -132,8 +132,9 @@ func buildBuildArgs(cmd *cobra.Command, args []string) ([]string, error) {
 		}
 	}
 	if pr, _ := f.GetString("progress"); pr != "" && pr != "auto" {
-		// docker has rawjson/quiet; container supports auto|plain|tty.
-		if pr == "rawjson" {
+		// docker has rawjson/quiet; container supports auto|plain|tty. Remap the
+		// docker-only values to plain so the backend doesn't reject them.
+		if pr == "rawjson" || pr == "quiet" {
 			pr = "plain"
 		}
 		cargs = append(cargs, "--progress", pr)

@@ -73,6 +73,14 @@ var (
 	strLitRe = regexp.MustCompile("\"[^\"]*\"|`[^`]*`|'[^']*'")
 )
 
+// formatUnescaper turns the literal two-character escapes a shell passes in a
+// single-quoted --format (\t, \n) into real tab/newline bytes, matching the
+// Docker CLI. Without it, `--format 'table {{.A}}\t{{.B}}'` emits a literal
+// "\t" and the tabwriter never sees a tab, so columns don't align.
+var formatUnescaper = strings.NewReplacer(`\t`, "\t", `\n`, "\n")
+
+func unescapeFormat(s string) string { return formatUnescaper.Replace(s) }
+
 // Render emits a list of view objects honouring Docker's -q / --format /
 // default-table conventions.
 func Render(format string, quiet bool, views []any, def TableDef) error {
@@ -117,7 +125,7 @@ func Render(format string, quiet bool, views []any, def TableDef) error {
 		return nil
 
 	case strings.HasPrefix(format, "table"):
-		body := strings.TrimSpace(strings.TrimPrefix(format, "table"))
+		body := unescapeFormat(strings.TrimSpace(strings.TrimPrefix(format, "table")))
 		if body == "" {
 			// `--format table` with no template => default table.
 			return Render("", false, views, def)
@@ -152,7 +160,7 @@ func Render(format string, quiet bool, views []any, def TableDef) error {
 		return w.Flush()
 
 	default:
-		tmpl, err := template.New("row").Funcs(tmplFuncs).Parse(format + "\n")
+		tmpl, err := template.New("row").Funcs(tmplFuncs).Parse(unescapeFormat(format) + "\n")
 		if err != nil {
 			return err
 		}

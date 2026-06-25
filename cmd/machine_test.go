@@ -157,4 +157,11 @@ func TestParseCPUs(t *testing.T) {
 	if _, _, err := parseCPUs("abc"); err == nil {
 		t.Error("parseCPUs(abc) should error")
 	}
+	// Non-finite floats parse via ParseFloat but must be rejected, not turned
+	// into --cpus 0 (NaN) or --cpus 9223372036854775807 (Inf).
+	for _, v := range []string{"NaN", "nan", "inf", "Inf", "+Inf", "infinity"} {
+		if n, _, err := parseCPUs(v); err == nil {
+			t.Errorf("parseCPUs(%q) should error; got n=%d", v, n)
+		}
+	}
 }

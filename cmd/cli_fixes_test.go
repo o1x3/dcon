@@ -166,6 +166,40 @@ func TestComposeStopAndKillArgs(t *testing.T) {
 	}
 }
 
+// TestBuildProgressQuiet reproduces the bug where `build --progress quiet` was
+// forwarded verbatim (the backend only accepts auto|plain|tty); quiet (like
+// rawjson) must be remapped to plain.
+func TestBuildProgressQuiet(t *testing.T) {
+	for _, v := range []string{"quiet", "rawjson"} {
+		c := parse(t, newBuildCmd(), []string{"--progress", v, "."})
+		got, err := buildBuildArgs(c, c.Flags().Args())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !containsPair(got, "--progress", "plain") {
+			t.Errorf("--progress %s should map to plain; got %v", v, got)
+		}
+		if containsPair(got, "--progress", v) {
+			t.Errorf("--progress %s should not be forwarded verbatim; got %v", v, got)
+		}
+	}
+}
+
+// TestBuilderRunning reproduces the doctor bug where the substring "running"
+// also matched "not running".
+func TestBuilderRunning(t *testing.T) {
+	for _, out := range []string{"running", "Builder is running", "status: running"} {
+		if !builderRunning(out) {
+			t.Errorf("builderRunning(%q) = false, want true", out)
+		}
+	}
+	for _, out := range []string{"not running", "Builder is not running", "stopped", ""} {
+		if builderRunning(out) {
+			t.Errorf("builderRunning(%q) = true, want false", out)
+		}
+	}
+}
+
 // TestSystemPrunePlan covers the prune step plan that the error-propagating
 // loop runs (the bug fixed alongside it was that every step's error was
 // discarded and the command always exited 0).
