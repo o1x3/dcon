@@ -67,6 +67,10 @@ var fieldHeader = map[string]string{
 var (
 	actionRe   = regexp.MustCompile(`{{[^}]*}}`)
 	fieldRefRe = regexp.MustCompile(`\.([A-Za-z0-9_]+)`)
+	// strLitRe matches Go-template string literals ("…", `…`, '…') so a dotted
+	// token inside one (e.g. the "%s.txt" in `{{.Names | printf "%s.txt"}}`) is
+	// not mistaken for a field reference during header derivation.
+	strLitRe = regexp.MustCompile("\"[^\"]*\"|`[^`]*`|'[^']*'")
 )
 
 // Render emits a list of view objects honouring Docker's -q / --format /
@@ -128,7 +132,8 @@ func Render(format string, quiet bool, views []any, def TableDef) error {
 		// or pipeline-prefixed actions resolve too); literal text between actions
 		// is preserved verbatim. An action with no field reference is dropped.
 		header := actionRe.ReplaceAllStringFunc(body, func(m string) string {
-			refs := fieldRefRe.FindAllStringSubmatch(m, -1)
+			clean := strLitRe.ReplaceAllString(m, "") // drop string literals first
+			refs := fieldRefRe.FindAllStringSubmatch(clean, -1)
 			if len(refs) == 0 {
 				return ""
 			}

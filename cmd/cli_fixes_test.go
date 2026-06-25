@@ -130,6 +130,24 @@ func TestMergeInspectArrays(t *testing.T) {
 	}
 }
 
+// TestResolveVolumeName reproduces the bug where `volume create --name X` was
+// ignored (a random-named volume was created). --name (and the positional) must
+// be honored, with both-supplied a conflict.
+func TestResolveVolumeName(t *testing.T) {
+	if n, err := resolveVolumeName("myvol", true, nil); err != nil || n != "myvol" {
+		t.Errorf("--name myvol -> (%q,%v), want myvol", n, err)
+	}
+	if n, err := resolveVolumeName("", false, []string{"posvol"}); err != nil || n != "posvol" {
+		t.Errorf("positional -> (%q,%v), want posvol", n, err)
+	}
+	if _, err := resolveVolumeName("myvol", true, []string{"posvol"}); err == nil {
+		t.Error("supplying both --name and a positional must error")
+	}
+	if n, err := resolveVolumeName("", false, nil); err != nil || len(n) != 64 {
+		t.Errorf("no name -> random 64-hex id; got len %d err %v", len(n), err)
+	}
+}
+
 // TestSystemPrunePlan covers the prune step plan that the error-propagating
 // loop runs (the bug fixed alongside it was that every step's error was
 // discarded and the command always exited 0).

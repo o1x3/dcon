@@ -324,6 +324,45 @@ func TestFlattenLongPortHostIP(t *testing.T) {
 	}
 }
 
+// TestFlattenLongVolumeReadOnlyCasing reproduces the bug where read_only was
+// honored only for lowercase "true"; True/TRUE/1 are valid YAML booleans and
+// must also produce a :ro (read-only) mount, not a silently writable one.
+func TestFlattenLongVolumeReadOnlyCasing(t *testing.T) {
+	for _, v := range []string{"true", "True", "TRUE", "1"} {
+		got := flattenLongVolume(map[string]string{"source": "./d", "target": "/d", "read_only": v})
+		if got != "./d:/d:ro" {
+			t.Errorf("read_only=%q -> %q, want ./d:/d:ro", v, got)
+		}
+	}
+	for _, v := range []string{"false", "False", "0", ""} {
+		got := flattenLongVolume(map[string]string{"source": "./d", "target": "/d", "read_only": v})
+		if got != "./d:/d" {
+			t.Errorf("read_only=%q -> %q, want ./d:/d (writable)", v, got)
+		}
+	}
+}
+
+// TestOneOffArgsKeepsEntrypointExtrasWithCmdOverride reproduces the bug where a
+// command override dropped the service entrypoint's extra tokens when the
+// entrypoint itself was NOT overridden. `compose run web shell` on a service
+// with entrypoint [python,-m,flask] + command [run] must run
+// `python -m flask shell` (command replaced, entrypoint kept whole).
+func TestOneOffArgsKeepsEntrypointExtrasWithCmdOverride(t *testing.T) {
+	p := &Project{Name: "proj", Dir: "/tmp"}
+	svc := &Service{Image: "nginx", Entrypoint: StringList{"python", "-m", "flask"}, Command: StringList{"run"}}
+	got := p.OneOffArgs("web", svc, "", []string{"shell"}, nil, "", true)
+	mustContainPair(t, got, "--entrypoint", "python")
+	img := indexOf(got, "nginx")
+	if img < 0 {
+		t.Fatalf("image not found: %v", got)
+	}
+	post := got[img+1:]
+	want := []string{"-m", "flask", "shell"}
+	if !reflect.DeepEqual(post, want) {
+		t.Errorf("post-image tokens = %v, want %v (entrypoint extras kept, command replaced)", post, want)
+	}
+}
+
 // TestLevelsCycleNoDeadlock guards that a depends_on cycle is handled safely:
 // every service is still emitted (no deadlock, no panic), even if the leading
 // level is empty.

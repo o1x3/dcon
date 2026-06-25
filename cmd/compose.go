@@ -994,13 +994,20 @@ func composeLs() *cobra.Command {
 					configDir[proj] = d
 				}
 			}
-			w := dockerfmt.NewTabWriter()
-			fmt.Fprintln(w, "NAME\tSTATUS\tCONFIG FILES")
 			names := make([]string, 0, len(projects))
 			for n := range projects {
 				names = append(names, n)
 			}
 			sort.Strings(names)
+			// -q/--quiet: only project names, one per line (matches docker).
+			if quiet, _ := cmd.Flags().GetBool("quiet"); quiet {
+				for _, n := range names {
+					fmt.Println(n)
+				}
+				return nil
+			}
+			w := dockerfmt.NewTabWriter()
+			fmt.Fprintln(w, "NAME\tSTATUS\tCONFIG FILES")
 			for _, n := range names {
 				running := projects[n]["running"]
 				total := 0

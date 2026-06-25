@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -382,7 +383,10 @@ func flattenLongVolume(m map[string]string) string {
 	if src := m["source"]; src != "" {
 		s = src + ":" + s
 	}
-	if m["read_only"] == "true" {
+	// read_only is a YAML boolean; its node text may be true/True/TRUE (and 1).
+	// Parse it rather than comparing to the lowercase literal, so a read-only
+	// mount spelled `read_only: True` isn't silently emitted as writable.
+	if b, err := strconv.ParseBool(m["read_only"]); err == nil && b {
 		s += ":ro"
 	}
 	return s

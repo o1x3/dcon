@@ -106,6 +106,22 @@ func TestRenderTableHeaderFunctionPrefixed(t *testing.T) {
 	}
 }
 
+// TestRenderTableHeaderDottedLiteral reproduces the regression where a dotted
+// token inside a string literal in a pipeline action (e.g. "%s.txt") was
+// mistaken for the field reference, deriving the wrong header (TXT) instead of
+// the actual field's column (NAME).
+func TestRenderTableHeaderDottedLiteral(t *testing.T) {
+	views, def := sampleDef()
+	out := captureStdout(t, func() { Render(`table {{.Name | printf "%s.txt"}}`, false, views, def) })
+	header := strings.SplitN(out, "\n", 2)[0]
+	if strings.Contains(header, "TXT") {
+		t.Errorf("dotted literal inside a string must not become the header: %q", header)
+	}
+	if !strings.Contains(header, "NAME") {
+		t.Errorf("header should derive from the real field .Name: %q", header)
+	}
+}
+
 // TestRenderPlainPathByteIdentical locks the drop-in contract: with styling
 // forced OFF, the default table is byte-for-byte the tabwriter output and
 // carries no ANSI/box-drawing characters — exactly what pipes and CI parse.

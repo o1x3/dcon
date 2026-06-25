@@ -280,21 +280,32 @@ func (p *Project) OneOffArgs(service string, svc *Service, netName string, cmdOv
 	}
 	out = append(out, overrides...) // raw CLI override tokens, before the image
 	out = append(out, image)
+
+	// The tokens after the image are the service entrypoint's extra tokens
+	// (Entrypoint[1:], which runArgs places here because the backend --entrypoint
+	// takes a single token) followed by the service command. Split them so each is
+	// handled per Docker semantics:
+	//   - entrypoint extras: kept when the entrypoint is NOT overridden (they
+	//     belong to the surviving entrypoint); dropped when --entrypoint replaces
+	//     the whole entrypoint.
+	//   - command: replaced by cmdOverride when given, else the service command.
+	var extras, command []string
+	if n := len(svc.Entrypoint) - 1; n > 0 {
+		if avail := len(base) - (imageIdx + 1); n > avail {
+			n = avail
+		}
+		extras = base[imageIdx+1 : imageIdx+1+n]
+		command = base[imageIdx+1+n:]
+	} else {
+		command = base[imageIdx+1:]
+	}
+	if entrypoint == "" {
+		out = append(out, extras...) // keep the service entrypoint's own args
+	}
 	if len(cmdOverride) > 0 {
 		return append(out, cmdOverride...) // override replaces the service command
 	}
-	// Keep the service's own command (the tokens after the image). runArgs places
-	// the service entrypoint's extra tokens (Entrypoint[1:]) there first; when the
-	// entrypoint is being overridden, those extras belong to the OLD entrypoint and
-	// must be dropped — overriding the entrypoint replaces it whole (Docker
-	// semantics), it must not leave the old entrypoint's args bound to the new one.
-	tail := base[imageIdx+1:]
-	if entrypoint != "" && len(svc.Entrypoint) > 1 {
-		if drop := len(svc.Entrypoint) - 1; drop <= len(tail) {
-			tail = tail[drop:]
-		}
-	}
-	return append(out, tail...)
+	return append(out, command...)
 }
 
 // CreateArgs builds the `container create ...` args for a service: the same
