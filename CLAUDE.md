@@ -11,7 +11,7 @@ Pipeline: `you/CI → dcon (Go) → container CLI → container-apiserver + plug
 ## Commands
 
 ```sh
-make build          # build ./dcon with release flags (-s -w -trimpath, ~5.3 MB); plain `go build` is larger/unstripped
+make build          # build ./dcon with release flags (-s -w -trimpath, ~6.2 MB); plain `go build` is larger/unstripped
 make test           # go test ./...
 make test-race      # go test -race ./...   (what CI runs, with coverage)
 make cover          # scripts/coverage.sh — total coverage + refreshes the README badge
@@ -36,6 +36,10 @@ To **run** dcon for real you need Apple `container` installed and started (`dcon
 **`internal/dockerfmt`** holds JSON models of `container … --format json` output plus Docker-style table/template rendering. `ps`/`images`/`inspect` parse container JSON, then re-render it as Docker would.
 
 **`internal/compose`** is a built-in compose engine: `model.go` parses `compose.yaml` into a `Project`; `translate.go` turns each service into `container run` args. `Project.Order()` is topological; `Project.Levels()` groups services into dependency levels. `cmd/compose.go`'s `up` brings each level up **concurrently** (capped by `DCON_COMPOSE_PARALLEL`, default 8), preserving `depends_on` across levels.
+
+**`internal/ui`** is the optional Charm/lipgloss styling layer. `ui.Enabled()` is the single gate — true only when stdout is a TTY and neither `DCON_PLAIN` nor `NO_COLOR` is set. `dockerfmt.Render` upgrades the default (non `--format`/`-q`) table to a styled `ui.Table` **only** when `ui.Enabled() && len(views) > 0`; every machine-readable path (json/template/`-q`, pipes, CI, empty lists) falls through to the byte-identical tabwriter output. `doctor`/`version`/`info`/`compose` colourise via `ui.*` helpers, which are no-ops when disabled. **Non-TTY output must never change** — `internal/dockerfmt/render_test.go` locks the byte-for-byte contract; `ui.SetEnabled(bool)` forces the gate in tests (CI has no TTY).
+
+**`internal/machine` + `cmd/machine.go`** are OrbStack-style persistent Linux machines: a machine is a long-lived detached `container run -d --entrypoint sleep <distro-image> 2147483647` with labels `dcon.machine=1`/`.name`/`.distro`, named `dcon-machine-<name>` so it can never collide with a user container. `registry.go` maps 16 distro ids → images; `run.go`'s `BuildRunArgs` is the pure (unit-tested) arg builder; `state.go` persists only the *default* machine pointer (flock JSON, same pattern as pool) — the machine list is derived from the backend by label. Every mutating command resolves bare name → prefixed id via `resolveMachine`, which **re-verifies the label** before acting. Persistence across stop/start is the standard container lifecycle (verified manually). `rename` is unsupported (the backend container name is immutable).
 
 **`internal/pool`** is the warm-VM pool — the one subsystem with real concurrency and persisted state. It pre-boots single-use microVMs so an eligible `--rm` run can `exec` into a ready VM (~90 ms) instead of cold-booting (~700 ms). Key invariants:
 - **Daemonless state**: a flock-guarded JSON file (`~/Library/Application Support/dcon/pool.json`) lists only *available* members; `Claim` pops one atomically so concurrent runs never share a VM.
