@@ -38,9 +38,9 @@ type Service struct {
 	Entrypoint    StringList  `yaml:"entrypoint"`
 	Environment   MapList     `yaml:"environment"`
 	EnvFile       EnvFile     `yaml:"env_file"`
-	Ports         []string    `yaml:"ports"`
+	Ports         PortList    `yaml:"ports"`
 	Expose        []string    `yaml:"expose"`
-	Volumes       []string    `yaml:"volumes"`
+	Volumes       VolumeList  `yaml:"volumes"`
 	Networks      StringKeys  `yaml:"networks"`
 	DependsOn     DependsList `yaml:"depends_on"`
 	Restart       string      `yaml:"restart"`
@@ -266,6 +266,11 @@ func (m *MapList) UnmarshalYAML(value *yaml.Node) error {
 		}
 		for _, item := range list {
 			kv := strings.SplitN(item, "=", 2)
+			// Skip blank / keyless entries (e.g. "" or "=value"): they would
+			// otherwise inject a malformed empty-key `--env =…` arg.
+			if kv[0] == "" {
+				continue
+			}
 			if len(kv) == 2 {
 				out[kv[0]] = kv[1]
 			} else {
@@ -275,6 +280,84 @@ func (m *MapList) UnmarshalYAML(value *yaml.Node) error {
 	}
 	*m = out
 	return nil
+}
+
+// PortList handles compose `ports:` in both the short string form
+// ("8080:80", "127.0.0.1:8080:80/tcp", "3000") and the long mapping form
+// ({target, published, protocol, host_ip}), flattening the long form into the
+// [host_ip:][published:]target[/protocol] string the translator emits via
+// --publish. Without this, a sequence-of-maps fails to unmarshal into []string
+// and breaks the entire compose file.
+type PortList []string
+
+func (p *PortList) UnmarshalYAML(value *yaml.Node) error {
+	*p = decodeShortOrLong(value, flattenLongPort)
+	return nil
+}
+
+func flattenLongPort(m map[string]string) string {
+	s := m["target"]
+	if pub := m["published"]; pub != "" {
+		s = pub + ":" + s
+	}
+	if hip := m["host_ip"]; hip != "" {
+		s = hip + ":" + s
+	}
+	if proto := m["protocol"]; proto != "" {
+		s += "/" + proto
+	}
+	return s
+}
+
+// VolumeList handles compose `volumes:` in both the short string form
+// ("./data:/data", "named:/data:ro") and the long mapping form
+// ({type, source, target, read_only}), flattening the long form into the
+// [source:]target[:ro] string the translator emits via --volume.
+type VolumeList []string
+
+func (v *VolumeList) UnmarshalYAML(value *yaml.Node) error {
+	*v = decodeShortOrLong(value, flattenLongVolume)
+	return nil
+}
+
+func flattenLongVolume(m map[string]string) string {
+	s := m["target"]
+	if src := m["source"]; src != "" {
+		s = src + ":" + s
+	}
+	if m["read_only"] == "true" {
+		s += ":ro"
+	}
+	return s
+}
+
+// decodeShortOrLong flattens a compose sequence whose items are either scalar
+// strings (short form, kept verbatim) or mappings (long form, flattened by fn).
+// A bare scalar (single, unwrapped value) is also accepted. yaml scalar nodes
+// carry their raw text in .Value, so numeric ports like `- 8080` and
+// `target: 80` are read as "8080"/"80" without an int→string decode error.
+func decodeShortOrLong(value *yaml.Node, fn func(map[string]string) string) []string {
+	var out []string
+	switch value.Kind {
+	case yaml.ScalarNode:
+		out = append(out, value.Value)
+	case yaml.SequenceNode:
+		for _, it := range value.Content {
+			switch it.Kind {
+			case yaml.ScalarNode:
+				out = append(out, it.Value)
+			case yaml.MappingNode:
+				m := map[string]string{}
+				for i := 0; i+1 < len(it.Content); i += 2 {
+					m[it.Content[i].Value] = it.Content[i+1].Value
+				}
+				if s := fn(m); s != "" {
+					out = append(out, s)
+				}
+			}
+		}
+	}
+	return out
 }
 
 // StringKeys handles networks which can be a list or a map (keyed by name).

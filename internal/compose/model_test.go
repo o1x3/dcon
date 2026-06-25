@@ -189,6 +189,89 @@ services:
 	}
 }
 
+// TestLongFormPortsAndVolumes reproduces the bug where `ports:`/`volumes:` in
+// the Compose long (mapping) form failed to unmarshal into []string, hard-
+// erroring the entire compose file. They must parse and flatten to the same
+// short-form strings the translator emits, alongside short-form entries.
+func TestLongFormPortsAndVolumes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yaml")
+	yaml := `
+services:
+  web:
+    image: nginx
+    ports:
+      - "8080:80"
+      - target: 443
+        published: "8443"
+        protocol: tcp
+      - 9000
+    volumes:
+      - ./short:/short
+      - type: bind
+        source: ./data
+        target: /data
+        read_only: true
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(path, "")
+	if err != nil {
+		t.Fatalf("Load must not fail on long-form ports/volumes: %v", err)
+	}
+	web := p.Services["web"]
+	wantPorts := []string{"8080:80", "8443:443/tcp", "9000"}
+	if len(web.Ports) != len(wantPorts) {
+		t.Fatalf("ports = %v, want %v", web.Ports, wantPorts)
+	}
+	for i, w := range wantPorts {
+		if web.Ports[i] != w {
+			t.Errorf("ports[%d] = %q, want %q", i, web.Ports[i], w)
+		}
+	}
+	wantVols := []string{"./short:/short", "./data:/data:ro"}
+	if len(web.Volumes) != len(wantVols) {
+		t.Fatalf("volumes = %v, want %v", web.Volumes, wantVols)
+	}
+	for i, w := range wantVols {
+		if web.Volumes[i] != w {
+			t.Errorf("volumes[%d] = %q, want %q", i, web.Volumes[i], w)
+		}
+	}
+}
+
+// TestMapListSkipsEmptyKeys reproduces the bug where a blank ("") or keyless
+// ("=value") environment/labels list entry produced an empty-key map entry,
+// later emitted as a malformed `--env =…` arg. Such entries must be dropped.
+func TestMapListSkipsEmptyKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yaml")
+	yaml := `
+services:
+  web:
+    image: nginx
+    environment:
+      - "GOOD=1"
+      - ""
+      - "=orphan"
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := p.Services["web"].Environment
+	if _, bad := env[""]; bad {
+		t.Errorf("empty-key env entry leaked: %v", env)
+	}
+	if env["GOOD"] != "1" || len(env) != 1 {
+		t.Errorf("environment = %v, want only GOOD=1", env)
+	}
+}
+
 func TestServiceEnabledProfiles(t *testing.T) {
 	noProf := &Service{}
 	if !noProf.Enabled(map[string]bool{}) {
