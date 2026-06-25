@@ -1730,4 +1730,3 @@ func firstServiceContainer(project, service string) (string, error) {
 	}
 	return "", fmt.Errorf("no running container for service %q", service)
 }
-

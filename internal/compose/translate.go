@@ -253,7 +253,7 @@ func (p *Project) ImageRef(service string, svc *Service) string {
 // command args is never removed.
 func (p *Project) OneOffArgs(service string, svc *Service, netName string, cmdOverride, overrides []string, entrypoint string, rm bool) []string {
 	base, imageIdx := p.runArgs(service, svc, 1, netName, nil, true) // oneoff=true
-	flags := base[1:imageIdx] // the run flags span (after "run", before image)
+	flags := base[1:imageIdx]                                        // the run flags span (after "run", before image)
 	image := base[imageIdx]
 
 	out := []string{"run"}
