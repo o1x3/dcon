@@ -66,6 +66,36 @@ type Service struct {
 	Profiles      []string    `yaml:"profiles"`
 	Ulimits       Ulimits     `yaml:"ulimits"`
 	Deploy        Deploy      `yaml:"deploy"`
+	Extends       ExtendsSpec `yaml:"extends"`
+}
+
+// ExtendsSpec captures `extends:` (string or {file, service} mapping) so its
+// presence can be detected and warned about — dcon does not implement the
+// extends merge, and silently dropping it left users baffled by a service
+// missing its inherited config.
+type ExtendsSpec struct {
+	File    string `yaml:"file"`
+	Service string `yaml:"service"`
+	set     bool
+}
+
+func (e *ExtendsSpec) IsSet() bool { return e.set }
+
+func (e *ExtendsSpec) UnmarshalYAML(value *yaml.Node) error {
+	e.set = true
+	value = deref(value)
+	if value.Kind == yaml.ScalarNode { // `extends: other-service` short form
+		e.Service = value.Value
+		return nil
+	}
+	type raw ExtendsSpec
+	var r raw
+	if err := value.Decode(&r); err != nil {
+		return err
+	}
+	*e = ExtendsSpec(r)
+	e.set = true
+	return nil
 }
 
 // Enabled reports whether a service runs given the set of active profiles. A
@@ -183,6 +213,19 @@ type NetworkSpec struct {
 	Labels   MapList `yaml:"labels"`
 }
 
+// deref follows YAML alias nodes to their anchored target. The manual node
+// iterators below (EnvMap, EnvFile, decodeShortOrLong) walk node.Content
+// directly, so an alias item (`- *tcp`) or aliased value arrives as an
+// AliasNode whose .Value is empty — without dereferencing it the entry is
+// silently dropped. yaml.v3's Decode does this automatically; hand-rolled
+// iterators must do it themselves.
+func deref(n *yaml.Node) *yaml.Node {
+	for n != nil && n.Kind == yaml.AliasNode && n.Alias != nil {
+		n = n.Alias
+	}
+	return n
+}
+
 // EnvFileEntry is one env_file reference; Required defaults to true.
 type EnvFileEntry struct {
 	Path     string
@@ -214,12 +257,13 @@ func (e *EnvFile) UnmarshalYAML(value *yaml.Node) error {
 		}
 		return nil
 	}
+	value = deref(value)
 	switch value.Kind {
 	case yaml.ScalarNode:
 		return add(*value)
 	case yaml.SequenceNode:
 		for _, it := range value.Content {
-			if err := add(*it); err != nil {
+			if err := add(*deref(it)); err != nil {
 				return err
 			}
 		}
@@ -301,26 +345,13 @@ type EnvMap map[string]string
 
 func (m *EnvMap) UnmarshalYAML(value *yaml.Node) error {
 	out := map[string]string{}
+	value = deref(value)
 	switch value.Kind {
 	case yaml.MappingNode:
-		for i := 0; i+1 < len(value.Content); i += 2 {
-			k := value.Content[i].Value
-			vn := value.Content[i+1]
-			if k == "" {
-				continue
-			}
-			if vn.Kind == yaml.ScalarNode && vn.Tag == "!!null" {
-				if v, ok := os.LookupEnv(k); ok { // `FOO:` -> host passthrough
-					out[k] = v
-				}
-				continue
-			}
-			if vn.Kind == yaml.ScalarNode {
-				out[k] = vn.Value
-			}
-		}
+		expandEnvMapping(value, out)
 	case yaml.SequenceNode:
 		for _, it := range value.Content {
+			it = deref(it)
 			if it.Kind != yaml.ScalarNode {
 				continue
 			}
@@ -337,6 +368,49 @@ func (m *EnvMap) UnmarshalYAML(value *yaml.Node) error {
 	}
 	*m = out
 	return nil
+}
+
+// expandEnvMapping walks a mapping node into out, expanding YAML merge keys
+// (`<<: *anchor` / `<<: [*a, *b]`) by recursing into the dereferenced
+// mapping(s). Merged keys are applied first so the mapping's own (local) keys
+// win, per the YAML merge-key spec.
+func expandEnvMapping(node *yaml.Node, out map[string]string) {
+	// First pass: merge keys (defaults).
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		kn, vn := node.Content[i], deref(node.Content[i+1])
+		if kn.Value != "<<" && kn.Tag != "!!merge" {
+			continue
+		}
+		switch vn.Kind {
+		case yaml.MappingNode:
+			expandEnvMapping(vn, out)
+		case yaml.SequenceNode: // `<<: [*a, *b]`
+			for _, it := range vn.Content {
+				if it = deref(it); it.Kind == yaml.MappingNode {
+					expandEnvMapping(it, out)
+				}
+			}
+		}
+	}
+	// Second pass: local keys override merged ones.
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		kn, vn := node.Content[i], deref(node.Content[i+1])
+		k := kn.Value
+		if k == "" || k == "<<" || kn.Tag == "!!merge" {
+			continue
+		}
+		if vn.Kind == yaml.ScalarNode && vn.Tag == "!!null" {
+			if v, ok := os.LookupEnv(k); ok { // `FOO:` -> host passthrough
+				out[k] = v
+			} else {
+				delete(out, k) // an explicit null also masks a merged default
+			}
+			continue
+		}
+		if vn.Kind == yaml.ScalarNode {
+			out[k] = vn.Value
+		}
+	}
 }
 
 // PortList handles compose `ports:` in both the short string form
@@ -434,18 +508,20 @@ func flattenLongVolume(m map[string]string) string {
 // `target: 80` are read as "8080"/"80" without an int→string decode error.
 func decodeShortOrLong(value *yaml.Node, fn func(map[string]string) string) []string {
 	var out []string
+	value = deref(value)
 	switch value.Kind {
 	case yaml.ScalarNode:
 		out = append(out, value.Value)
 	case yaml.SequenceNode:
 		for _, it := range value.Content {
+			it = deref(it)
 			switch it.Kind {
 			case yaml.ScalarNode:
 				out = append(out, it.Value)
 			case yaml.MappingNode:
 				m := map[string]string{}
 				for i := 0; i+1 < len(it.Content); i += 2 {
-					m[it.Content[i].Value] = it.Content[i+1].Value
+					m[it.Content[i].Value] = deref(it.Content[i+1]).Value
 				}
 				if s := fn(m); s != "" {
 					out = append(out, s)
@@ -482,10 +558,15 @@ func (s *StringKeys) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
-// DependsList handles depends_on as a list or a conditions map.
+// DependsList handles depends_on as a list or a conditions map. Long-form
+// conditions other than service_started (service_healthy,
+// service_completed_successfully) cannot be honored — the backend exposes no
+// health or exit state — so they degrade to plain start ordering with a
+// one-time warning instead of silently.
 type DependsList []string
 
 func (d *DependsList) UnmarshalYAML(value *yaml.Node) error {
+	value = deref(value)
 	switch value.Kind {
 	case yaml.SequenceNode:
 		var list []string
@@ -494,13 +575,19 @@ func (d *DependsList) UnmarshalYAML(value *yaml.Node) error {
 		}
 		*d = list
 	case yaml.MappingNode:
-		raw := map[string]yaml.Node{}
+		raw := map[string]struct {
+			Condition string `yaml:"condition"`
+		}{}
 		if err := value.Decode(&raw); err != nil {
 			return err
 		}
 		keys := make([]string, 0, len(raw))
-		for k := range raw {
+		for k, v := range raw {
 			keys = append(keys, k)
+			if v.Condition != "" && v.Condition != "service_started" {
+				warnOnce("depends-condition-"+v.Condition,
+					"depends_on condition %q is not supported by the backend; falling back to service_started (start ordering only)", v.Condition)
+			}
 		}
 		sort.Strings(keys)
 		*d = keys
@@ -514,17 +601,73 @@ var candidateFiles = []string{
 	"docker-compose.yaml", "docker-compose.yml",
 }
 
-// Find locates the compose file, honouring an explicit path.
+// overrideFiles are the conventional override filenames auto-merged on top of
+// the base file when no -f is given, like docker compose.
+var overrideFiles = []string{
+	"compose.override.yaml", "compose.override.yml",
+	"docker-compose.override.yaml", "docker-compose.override.yml",
+}
+
+// FindFiles resolves the compose file set, in merge order: the explicit -f
+// paths when given; else the COMPOSE_FILE environment variable (split on
+// COMPOSE_PATH_SEPARATOR, default ":"); else the first conventional filename
+// in the working directory plus, when present, the first conventional
+// override file (compose.override.yaml and friends).
+func FindFiles(explicit []string) ([]string, error) {
+	if len(explicit) == 0 {
+		if cf := os.Getenv("COMPOSE_FILE"); cf != "" {
+			sep := os.Getenv("COMPOSE_PATH_SEPARATOR")
+			if sep == "" {
+				sep = ":"
+			}
+			for _, part := range strings.Split(cf, sep) {
+				if part != "" {
+					explicit = append(explicit, part)
+				}
+			}
+		}
+	}
+	if len(explicit) > 0 {
+		out := make([]string, 0, len(explicit))
+		for _, e := range explicit {
+			abs, err := filepath.Abs(e)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := os.Stat(abs); err != nil {
+				return nil, fmt.Errorf("compose file %q not found", e)
+			}
+			out = append(out, abs)
+		}
+		return out, nil
+	}
+	for _, name := range candidateFiles {
+		if _, err := os.Stat(name); err != nil {
+			continue
+		}
+		abs, _ := filepath.Abs(name)
+		out := []string{abs}
+		for _, o := range overrideFiles {
+			if _, err := os.Stat(o); err == nil {
+				oabs, _ := filepath.Abs(o)
+				out = append(out, oabs)
+				break
+			}
+		}
+		return out, nil
+	}
+	return nil, fmt.Errorf("no compose file found (looked for %s)", strings.Join(candidateFiles, ", "))
+}
+
+// Find locates a single compose file, honouring an explicit path (no override
+// auto-load, no COMPOSE_FILE). Kept for callers that need exactly one path.
 func Find(explicit string) (string, error) {
 	if explicit != "" {
-		abs, err := filepath.Abs(explicit)
+		paths, err := FindFiles([]string{explicit})
 		if err != nil {
 			return "", err
 		}
-		if _, err := os.Stat(abs); err != nil {
-			return "", fmt.Errorf("compose file %q not found", explicit)
-		}
-		return abs, nil
+		return paths[0], nil
 	}
 	for _, name := range candidateFiles {
 		if _, err := os.Stat(name); err == nil {
@@ -535,32 +678,59 @@ func Find(explicit string) (string, error) {
 	return "", fmt.Errorf("no compose file found (looked for %s)", strings.Join(candidateFiles, ", "))
 }
 
-// Load parses the compose file at path, defaulting the project name to the
-// containing directory when not set.
+// Load parses one compose file (see LoadFiles).
 func Load(path, projectOverride string) (*Project, error) {
-	data, err := os.ReadFile(path)
+	return LoadFiles([]string{path}, projectOverride, nil)
+}
+
+// LoadFiles parses and merges one or more compose files. Later files override
+// earlier ones with docker's merge semantics: scalars replace, mappings merge
+// recursively (so environment/labels merge by key), sequences concatenate —
+// except command/entrypoint, which docker treats as single-valued and
+// replaces; volume mounts are keyed by container target (a later mount of the
+// same target replaces the earlier one).
+//
+// ${VAR} interpolation consults the OS environment first, then the env files
+// (the envFiles paths when given, else <dir>/.env), matching docker compose
+// precedence. The project name comes from, in order: the explicit override
+// (-p), COMPOSE_PROJECT_NAME (environment or env file), the top-level
+// `name:`, the compose directory name.
+func LoadFiles(paths []string, projectOverride string, envFiles []string) (*Project, error) {
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("no compose file given")
+	}
+	dir := filepath.Dir(paths[0])
+	lookup, err := envLookup(dir, envFiles)
 	if err != nil {
 		return nil, err
 	}
-	// Expand ${VAR} / $VAR from the environment, like compose does, supporting
-	// the bash-style operators compose honors: :-/- (default), :+/+ (alternate),
-	// :?/? (required, error if missing), :=/= (default). A required-but-missing
-	// variable is surfaced as a load error.
-	var interpErr error
-	expanded := os.Expand(string(data), func(key string) string {
-		v, err := expandVar(key)
-		if err != nil && interpErr == nil {
-			interpErr = err
+
+	var merged *yaml.Node
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
 		}
-		return v
-	})
-	if interpErr != nil {
-		return nil, interpErr
+		expanded, err := expandString(string(data), lookup)
+		if err != nil {
+			return nil, err
+		}
+		doc := &yaml.Node{}
+		if err := yaml.Unmarshal([]byte(expanded), doc); err != nil {
+			return nil, fmt.Errorf("parsing %s: %w", path, err)
+		}
+		if merged == nil {
+			merged = doc
+			continue
+		}
+		mergeDocs(merged, doc)
 	}
 
 	var p Project
-	if err := yaml.Unmarshal([]byte(expanded), &p); err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	if merged != nil && len(merged.Content) > 0 {
+		if err := merged.Decode(&p); err != nil {
+			return nil, fmt.Errorf("parsing %s: %w", paths[0], err)
+		}
 	}
 	// Drop empty/null service bodies (`web:` with no mapping under it), which yaml
 	// decodes to a present key with a nil *Service. They are not runnable services;
@@ -573,42 +743,239 @@ func Load(path, projectOverride string) (*Project, error) {
 			delete(p.Services, name)
 		}
 	}
-	p.File = path
-	p.Dir = filepath.Dir(path)
+	p.File = paths[0]
+	p.Dir = dir
 	if projectOverride != "" {
 		p.Name = projectOverride
+	} else if v, ok := lookup("COMPOSE_PROJECT_NAME"); ok && v != "" {
+		p.Name = SanitizeName(v)
 	}
 	if p.Name == "" {
 		p.Name = SanitizeName(filepath.Base(p.Dir))
 	}
+	dedupeVolumeTargets(&p)
+	warnUnsupported(&p)
 	return &p, nil
 }
 
-// expandVar resolves one os.Expand key (the text inside ${...} or after $) using
-// docker-compose / bash parameter-expansion semantics. os.Expand passes the
-// whole brace body as key, so operators must be parsed here. Supported:
+// mergeDocs merges the src compose document into dst (both document nodes).
+func mergeDocs(dst, src *yaml.Node) {
+	if len(src.Content) == 0 {
+		return
+	}
+	if len(dst.Content) == 0 {
+		dst.Content = src.Content
+		return
+	}
+	d, s := deref(dst.Content[0]), deref(src.Content[0])
+	if d.Kind == yaml.MappingNode && s.Kind == yaml.MappingNode {
+		mergeMappings(d, s)
+	} else {
+		dst.Content[0] = src.Content[0]
+	}
+}
+
+// replaceListKeys are keys whose sequence value docker treats as single-valued
+// in the multi-file merge: the later file replaces it instead of concatenating.
+var replaceListKeys = map[string]bool{"command": true, "entrypoint": true}
+
+// mergeMappings merges src's entries into dst per docker's multi-file rules:
+// same-key mappings merge recursively, same-key sequences concatenate (except
+// replaceListKeys), anything else from src replaces, and new keys append.
+func mergeMappings(dst, src *yaml.Node) {
+	for i := 0; i+1 < len(src.Content); i += 2 {
+		k, v := src.Content[i], src.Content[i+1]
+		found := false
+		for j := 0; j+1 < len(dst.Content); j += 2 {
+			if dst.Content[j].Value != k.Value {
+				continue
+			}
+			found = true
+			dv, sv := deref(dst.Content[j+1]), deref(v)
+			switch {
+			case dv.Kind == yaml.MappingNode && sv.Kind == yaml.MappingNode:
+				mergeMappings(dv, sv)
+			case dv.Kind == yaml.SequenceNode && sv.Kind == yaml.SequenceNode && !replaceListKeys[k.Value]:
+				dv.Content = append(dv.Content, sv.Content...)
+			default:
+				dst.Content[j+1] = v
+			}
+			break
+		}
+		if !found {
+			dst.Content = append(dst.Content, k, v)
+		}
+	}
+}
+
+// dedupeVolumeTargets keeps only the last volume spec per container target in
+// each service: docker's multi-file merge keys volumes by target (an override
+// file remaps the mount), and the sequence concat in mergeMappings would
+// otherwise double-mount the target.
+func dedupeVolumeTargets(p *Project) {
+	for _, svc := range p.Services {
+		if svc == nil || len(svc.Volumes) < 2 {
+			continue
+		}
+		seen := map[string]int{} // target -> index in out
+		out := svc.Volumes[:0]
+		for _, v := range svc.Volumes {
+			t := volumeTarget(v)
+			if j, ok := seen[t]; ok && t != "" {
+				out[j] = v // later spec replaces the earlier mount of the same target
+				continue
+			}
+			seen[t] = len(out)
+			out = append(out, v)
+		}
+		svc.Volumes = out
+	}
+}
+
+// volumeTarget extracts the container path from a flattened volume spec.
+func volumeTarget(spec string) string {
+	if t, ok := strings.CutPrefix(spec, tmpfsVolumeMarker); ok {
+		return t
+	}
+	parts := strings.Split(spec, ":")
+	if len(parts) == 1 {
+		return parts[0] // anonymous volume: the spec IS the target
+	}
+	return parts[1]
+}
+
+// warnUnsupported emits one-time warnings for parsed-but-unimplemented
+// service options that would otherwise be silently dropped.
+func warnUnsupported(p *Project) {
+	names := make([]string, 0, len(p.Services))
+	for n := range p.Services {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		svc := p.Services[n]
+		if svc != nil && svc.Extends.IsSet() {
+			warnOnce("extends-"+n, "service %q uses extends:, which dcon does not support; the extends configuration is IGNORED", n)
+		}
+	}
+}
+
+// envLookup builds the interpolation resolver: OS environment first, then the
+// env files (explicit paths when given — replacing the default <dir>/.env —
+// with later files winning), matching docker compose precedence.
+func envLookup(dir string, envFiles []string) (func(string) (string, bool), error) {
+	fileEnv := map[string]string{}
+	if len(envFiles) == 0 {
+		def := filepath.Join(dir, ".env")
+		if _, err := os.Stat(def); err == nil {
+			m, err := ParseEnvFile(def)
+			if err != nil {
+				return nil, err
+			}
+			fileEnv = m
+		}
+	}
+	for _, f := range envFiles {
+		m, err := ParseEnvFile(f)
+		if err != nil {
+			return nil, fmt.Errorf("env file %s: %w", f, err)
+		}
+		for k, v := range m {
+			fileEnv[k] = v
+		}
+	}
+	return func(key string) (string, bool) {
+		if v, ok := os.LookupEnv(key); ok {
+			return v, true
+		}
+		v, ok := fileEnv[key]
+		return v, ok
+	}, nil
+}
+
+// expandString interpolates $VAR / ${VAR...} throughout s using lookup. Unlike
+// os.Expand it is brace-depth aware, so nested defaults like
+// ${IMG:-nginx:${TAG}} resolve instead of splitting at the first "}". "$$"
+// escapes a literal "$".
+func expandString(s string, lookup func(string) (string, bool)) (string, error) {
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if c != '$' || i+1 >= len(s) {
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		switch {
+		case s[i+1] == '$': // $$ escape
+			b.WriteByte('$')
+			i += 2
+		case s[i+1] == '{':
+			depth, j := 1, i+2
+			for ; j < len(s); j++ {
+				if s[j] == '$' && j+1 < len(s) && s[j+1] == '{' {
+					depth++
+					j++
+					continue
+				}
+				if s[j] == '}' {
+					if depth--; depth == 0 {
+						break
+					}
+				}
+			}
+			if depth != 0 { // unterminated ${...}: keep literally
+				b.WriteString(s[i:])
+				return b.String(), nil
+			}
+			v, err := expandBody(s[i+2:j], lookup)
+			if err != nil {
+				return "", err
+			}
+			b.WriteString(v)
+			i = j + 1
+		case isNameChar(s[i+1]):
+			j := i + 1
+			for j < len(s) && isNameChar(s[j]) {
+				j++
+			}
+			v, _ := lookup(s[i+1 : j])
+			b.WriteString(v)
+			i = j
+		default: // "$-", "$ ", ...: literal $
+			b.WriteByte('$')
+			i++
+		}
+	}
+	return b.String(), nil
+}
+
+// expandBody resolves one ${...} body using docker-compose / bash
+// parameter-expansion semantics. Supported:
 //
-//	$$ (key=="$")      -> literal "$"
-//	${VAR}             -> value (empty if unset)
+//	${VAR}               -> value (empty if unset)
 //	${VAR:-d} / ${VAR-d} -> value, or d when unset (:- also when empty)
 //	${VAR:=d} / ${VAR=d} -> same substitution as :- here (no real assignment)
 //	${VAR:+a} / ${VAR+a} -> a when set (:+ requires non-empty), else ""
 //	${VAR:?m} / ${VAR?m} -> value when set, else an error (m is the message)
-func expandVar(key string) (string, error) {
-	if key == "$" { // $$ escape
-		return "$", nil
-	}
+//
+// The operator argument is itself interpolated (only when used), so nested
+// forms like ${IMG:-nginx:${TAG}} work.
+func expandBody(body string, lookup func(string) (string, bool)) (string, error) {
 	i := 0
-	for i < len(key) && isNameChar(key[i]) {
+	for i < len(body) && isNameChar(body[i]) {
 		i++
 	}
-	name, rest := key[:i], key[i:]
+	name, rest := body[:i], body[i:]
 	if name == "" {
-		return os.Getenv(key), nil // unrecognized form: best-effort
+		v, _ := lookup(body)
+		return v, nil // unrecognized form: best-effort
 	}
-	val, set := os.LookupEnv(name)
+	val, set := lookup(name)
 	if rest == "" {
-		return val, nil // ${VAR} / $VAR
+		return val, nil // ${VAR}
 	}
 	colon := rest[0] == ':'
 	if colon {
@@ -625,10 +992,10 @@ func expandVar(key string) (string, error) {
 		if present {
 			return val, nil
 		}
-		return arg, nil
+		return expandString(arg, lookup)
 	case '+':
 		if present {
-			return arg, nil
+			return expandString(arg, lookup)
 		}
 		return "", nil
 	case '?':
@@ -641,8 +1008,18 @@ func expandVar(key string) (string, error) {
 		}
 		return "", fmt.Errorf("compose variable %q: %s", name, msg)
 	default:
-		return os.Getenv(key), nil // unknown operator: best-effort
+		v, _ := lookup(body)
+		return v, nil // unknown operator: best-effort
 	}
+}
+
+// expandVar resolves one interpolation body against the OS environment alone;
+// retained as the historical entry point (expandBody is the general form).
+func expandVar(key string) (string, error) {
+	if key == "$" { // $$ escape (os.Expand-style body)
+		return "$", nil
+	}
+	return expandBody(key, os.LookupEnv)
 }
 
 func isNameChar(b byte) bool {
@@ -695,6 +1072,13 @@ func (p *Project) Order() []string {
 		deps := append([]string{}, svc.DependsOn...)
 		sort.Strings(deps)
 		for _, d := range deps {
+			if _, ok := p.Services[d]; !ok {
+				// Keep the no-panic skip, but say so: a typo'd depends_on
+				// otherwise vanishes without a trace.
+				warnOnce("missing-dep-"+name+"/"+d,
+					"service %q depends on undefined service %q; ignoring the dependency", name, d)
+				continue
+			}
 			visit(d)
 		}
 		temp[name] = false

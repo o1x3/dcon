@@ -1,6 +1,8 @@
 package compose
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"os"
@@ -29,7 +31,32 @@ const (
 	LabelNumber    = "com.docker.compose.container-number"
 	LabelOneoff    = "com.docker.compose.oneoff"
 	LabelConfigDir = "com.docker.compose.project.working_dir"
+
+	// LabelConfigHash fingerprints the generated run-arg list so `up` can
+	// recreate a container when its compose config changed (the
+	// com.docker.compose.config-hash pattern).
+	LabelConfigHash = "dcon.compose.confighash"
 )
+
+// configHash fingerprints a generated arg list (computed before the hash
+// label itself is inserted, so it is stable and comparable).
+func configHash(args []string) string {
+	h := sha256.Sum256([]byte(strings.Join(args, "\x1f")))
+	return hex.EncodeToString(h[:])
+}
+
+// ConfigHashFromArgs extracts the LabelConfigHash value stamped into a
+// generated arg list, or "" when absent.
+func ConfigHashFromArgs(args []string) string {
+	for i, a := range args {
+		if a == "--label" && i+1 < len(args) {
+			if v, ok := strings.CutPrefix(args[i+1], LabelConfigHash+"="); ok {
+				return v
+			}
+		}
+	}
+	return ""
+}
 
 // ContainerName returns the conventional compose container name.
 func (p *Project) ContainerName(service string, index int, svc *Service) string {
@@ -249,20 +276,33 @@ func (p *Project) runArgs(service string, svc *Service, index int, netName strin
 		args = append(args, "--entrypoint", "")
 	}
 
-	for _, k := range sortedKeys(svc.Environment) {
-		args = append(args, "--env", k+"="+svc.Environment[k])
+	// env_file is parsed by dcon and merged UNDER environment (environment
+	// wins), then emitted as plain --env pairs. Forwarding --env-file to the
+	// backend delegated to its different dotenv dialect (no `export ` prefix,
+	// no quote stripping) and its precedence (env-file AFTER --env flags),
+	// silently changing values.
+	env := map[string]string{}
+	for _, ef := range svc.EnvFile {
+		rp := p.resolve(ef.Path)
+		m, err := ParseEnvFile(rp)
+		if err != nil {
+			if ef.Required {
+				warnOnce("envfile-"+rp, "env_file %s could not be read and was skipped: %v", rp, err)
+			}
+			continue // optional (or unreadable) env_file — skip
+		}
+		for k, v := range m {
+			env[k] = v
+		}
+	}
+	for k, v := range svc.Environment {
+		env[k] = v
+	}
+	for _, k := range sortedKeys(env) {
+		args = append(args, "--env", k+"="+env[k])
 	}
 	for _, k := range sortedKeys(extraEnv) {
 		args = append(args, "--env", k+"="+extraEnv[k])
-	}
-	for _, ef := range svc.EnvFile {
-		rp := p.resolve(ef.Path)
-		if !ef.Required {
-			if _, err := os.Stat(rp); err != nil {
-				continue // optional env_file absent — skip
-			}
-		}
-		args = append(args, "--env-file", rp)
 	}
 	for _, c := range svc.CapAdd {
 		args = append(args, "--cap-add", c)
@@ -309,7 +349,16 @@ func (p *Project) runArgs(service string, svc *Service, index int, netName strin
 	} else if len(svc.Command) > 1 {
 		args = append(args, svc.Command...)
 	}
-	return args, imageIdx
+
+	// Stamp the config hash (computed over the args WITHOUT the hash label,
+	// so it is deterministic) right after `run --detach --name <name>` — a
+	// fixed position, so CreateArgs' positional --detach drop still works.
+	h := configHash(args)
+	labeled := make([]string, 0, len(args)+2)
+	labeled = append(labeled, args[:4]...)
+	labeled = append(labeled, "--label", LabelConfigHash+"="+h)
+	labeled = append(labeled, args[4:]...)
+	return labeled, imageIdx + 2
 }
 
 // imageRef returns the image to run: explicit image, else the build-tagged
@@ -441,8 +490,15 @@ func (p *Project) resolveVolume(spec string) string {
 		return spec
 	}
 	src := parts[0]
-	if strings.HasPrefix(src, "./") || strings.HasPrefix(src, "../") || src == "." {
+	if strings.HasPrefix(src, "./") || strings.HasPrefix(src, "../") || src == "." || src == ".." {
 		return p.resolve(src) + ":" + parts[1]
+	}
+	// ~/ bind sources: the backend does no shell-style expansion, so a literal
+	// "~" reached it as a (bogus) named volume. Expand against the home dir.
+	if src == "~" || strings.HasPrefix(src, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, strings.TrimPrefix(src, "~")) + ":" + parts[1]
+		}
 	}
 	if vs, ok := p.Volumes[src]; ok { // declared named volume -> backend name
 		return p.VolumeName(src, vs) + ":" + parts[1]
@@ -450,10 +506,46 @@ func (p *Project) resolveVolume(spec string) string {
 	return spec
 }
 
-// normalizePort strips the optional host IP and any long-form mapping down to
-// what container --publish accepts ([host-ip:]host:container[/proto]).
+// normalizePort rewrites compose port forms the backend rejects. The backend
+// --publish grammar is strictly [host-ip:]host-port:container-port[/proto]:
+// it has no ephemeral-port support, so the container-only forms ("3000", and
+// the long form's host_ip-with-no-published "ip::3000") would fail the whole
+// service. They are published 1:1 (host port = container port) with a
+// one-time warning. Port ranges pass through (so a future backend could
+// accept them) but warn, since today's backend rejects them.
 func normalizePort(spec string) string {
-	// already in host:container or ip:host:container form; pass through.
+	body, proto := spec, ""
+	if i := strings.LastIndexByte(spec, '/'); i >= 0 {
+		body, proto = spec[:i], spec[i:]
+	}
+	if strings.HasPrefix(body, "[") { // bracketed IPv6 host: pass through
+		return spec
+	}
+	parts := strings.Split(body, ":")
+	switch len(parts) {
+	case 1: // container-only "3000"
+		if strings.Contains(parts[0], "-") {
+			warnOnce("port-range", "port range %q: the backend does not support port ranges; the mapping may fail", spec)
+			return spec
+		}
+		warnOnce("port-ephemeral",
+			"container-only port %q: the backend cannot assign an ephemeral host port; publishing %s:%s instead",
+			spec, parts[0], parts[0])
+		return parts[0] + ":" + parts[0] + proto
+	case 3:
+		if parts[1] == "" { // "ip::3000" (long form with host_ip, no published)
+			warnOnce("port-ephemeral",
+				"port %q has no published (host) port: the backend cannot assign an ephemeral one; publishing container port %s as the host port",
+				spec, parts[2])
+			if parts[0] == "" { // degenerate "::3000"
+				return parts[2] + ":" + parts[2] + proto
+			}
+			return parts[0] + ":" + parts[2] + ":" + parts[2] + proto
+		}
+	}
+	if strings.Contains(body, "-") {
+		warnOnce("port-range", "port range %q: the backend does not support port ranges; the mapping may fail", spec)
+	}
 	return spec
 }
 

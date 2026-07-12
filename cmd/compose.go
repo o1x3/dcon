@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -129,20 +130,45 @@ func rewriteComposeGlobalShorthands(args []string) []string {
 func loadProject(cmd *cobra.Command) (*compose.Project, error) {
 	files, _ := cmd.Flags().GetStringArray("file")
 	project, _ := cmd.Flags().GetString("project-name")
-	var explicit string
-	if len(files) > 0 {
-		explicit = files[0]
-	}
-	if len(files) > 1 {
-		// Docker merges multiple -f files (later override earlier); dcon does not
-		// yet. Warn loudly rather than silently dropping the override files.
-		fmt.Fprintf(os.Stderr, "dcon: warning: multiple -f/--file compose files are not merged; using only %s\n", explicit)
-	}
-	path, err := compose.Find(explicit)
+	envFiles, _ := cmd.Flags().GetStringArray("env-file")
+	// FindFiles resolves -f paths, else COMPOSE_FILE (split on
+	// COMPOSE_PATH_SEPARATOR), else the conventional filenames plus an
+	// auto-loaded compose.override.yaml; LoadFiles merges them (later files
+	// override) and threads the --env-file / .env interpolation variables.
+	paths, err := compose.FindFiles(files)
 	if err != nil {
 		return nil, err
 	}
-	return compose.Load(path, project)
+	return compose.LoadFiles(paths, project, envFiles)
+}
+
+// withDeps expands a `SERVICE...` selection to its transitive depends_on
+// closure, so `up web` also starts what web needs (docker behavior). A nil
+// selection (= all services) passes through; unknown names are kept so the
+// existing "silently no-op" behavior for typos is unchanged.
+func withDeps(p *compose.Project, selected map[string]bool) map[string]bool {
+	if selected == nil {
+		return nil
+	}
+	out := map[string]bool{}
+	var visit func(string)
+	visit = func(name string) {
+		if out[name] {
+			return
+		}
+		out[name] = true
+		svc, ok := p.Services[name]
+		if !ok {
+			return
+		}
+		for _, d := range svc.DependsOn {
+			visit(d)
+		}
+	}
+	for name := range selected {
+		visit(name)
+	}
+	return out
 }
 
 // projectContainers returns all backend containers belonging to a project.
@@ -204,7 +230,7 @@ func newComposeCmd() *cobra.Command {
 	pf.StringArray("profile", nil, "Specify a profile to enable")
 	// Docker Compose global flags. Accepted so `docker compose --progress plain
 	// up`-style invocations don't hard-fail; dcon's output styling is fixed.
-	pf.StringArray("env-file", nil, "Environment file(s) for interpolation (accepted)")
+	pf.StringArray("env-file", nil, "Environment file(s) for interpolation (replaces the default .env)")
 	pf.Int("parallel", -1, "Max parallelism, -1 for unlimited (accepted; see DCON_COMPOSE_PARALLEL)")
 	pf.Bool("compatibility", false, "Run in backward-compatibility mode (accepted)")
 	pf.String("progress", "", "Set type of progress output (accepted)")
@@ -315,13 +341,22 @@ func composeUp() *cobra.Command {
 			removeOrphans, _ := cmd.Flags().GetBool("remove-orphans")
 			scaleSpecs, _ := cmd.Flags().GetStringArray("scale")
 			scale := parseScale(scaleSpecs)
-			for _, flag := range []string{"abort-on-container-exit", "abort-on-container-failure", "exit-code-from"} {
-				if cmd.Flags().Changed(flag) {
-					fmt.Fprintf(os.Stderr, "dcon: warning: --%s is not supported by the backend; foreground exit is driven by Ctrl-C\n", flag)
-				}
+			abortOnExit, _ := cmd.Flags().GetBool("abort-on-container-exit")
+			exitCodeFrom, _ := cmd.Flags().GetString("exit-code-from")
+			if exitCodeFrom != "" {
+				abortOnExit = true // docker: --exit-code-from implies --abort-on-container-exit
+				fmt.Fprintln(os.Stderr, "dcon: warning: --exit-code-from is best-effort: the backend exposes no container exit codes")
+			}
+			if cmd.Flags().Changed("abort-on-container-failure") {
+				fmt.Fprintln(os.Stderr, "dcon: warning: --abort-on-container-failure is not supported (the backend exposes no exit codes); use --abort-on-container-exit")
 			}
 
 			selected := serviceSet(args)
+			// `up SERVICE` starts the selected services AND their transitive
+			// depends_on closure (docker behavior) unless --no-deps.
+			if noDeps, _ := cmd.Flags().GetBool("no-deps"); !noDeps {
+				selected = withDeps(p, selected)
+			}
 			active := enabledProfiles(cmd)
 			net := ensureNetwork(p)
 			ensureVolumes(p)
@@ -348,12 +383,19 @@ func composeUp() *cobra.Command {
 			}
 
 			// bringUp creates/starts every replica of one service and returns the
-			// container names it brought up. Pure per-service work so independent
-			// services can run concurrently.
-			bringUp := func(name string) ([]string, error) {
+			// container names it brought up. existing is the per-level backend
+			// snapshot (one `ls --all` for the whole level instead of one inspect
+			// per replica), read-only here so concurrent services can share it.
+			bringUp := func(name string, existing map[string]dockerfmt.Container) ([]string, error) {
 				svc := p.Services[name]
 				if svc.Hostname != "" {
 					fmt.Fprintf(os.Stderr, "dcon: warning: service %q hostname is not supported by the backend and was ignored\n", name)
+				}
+				if svc.Restart != "" && svc.Restart != "no" {
+					fmt.Fprintf(os.Stderr, "dcon: warning: service %q restart policy %q is not supported by the backend and was ignored\n", name, svc.Restart)
+				}
+				if svc.StdinOpen {
+					fmt.Fprintf(os.Stderr, "dcon: warning: service %q stdin_open is not supported for detached services and was ignored\n", name)
 				}
 				if svc.Build.IsSet() && !noBuild && (doBuild || svc.Image == "") {
 					fmt.Println(composeStep("Building", name))
@@ -368,42 +410,47 @@ func composeUp() *cobra.Command {
 				var local []string
 				for i := 1; i <= count; i++ {
 					cname := p.ContainerName(name, i, svc)
-					if forceRecreate {
+					rargs := p.RunArgs(name, svc, i, net, nil)
+					c, exists := existing[cname]
+					if exists && forceRecreate {
 						_, _ = runtime.CaptureSilent("delete", "--force", cname)
-					} else if exists, running := composeContainerState(cname); exists {
-						// docker `compose up`: a running container with unchanged config
-						// is left as-is ("up-to-date"); an existing but STOPPED one is
-						// started (not skipped). The old code treated any existing
-						// container as up-to-date, so stop→up / create→up / post-reboot
-						// up silently left services down.
-						switch {
-						case running:
+						exists = false
+					}
+					if exists {
+						// Recreate when the stored config hash differs from the
+						// one the current compose file generates (docker's
+						// config-hash pattern). A container without the label
+						// (pre-hash dcon, or hand-made) is left alone.
+						stored := c.Configuration.Labels[compose.LabelConfigHash]
+						if stored != "" && stored != compose.ConfigHashFromArgs(rargs) {
+							fmt.Println(composeStep("Recreating", cname))
+							_, _ = runtime.CaptureSilent("delete", "--force", cname)
+						} else {
+							// docker `compose up`: a running container with unchanged
+							// config is left as-is ("up-to-date"); an existing but
+							// STOPPED one is started (not skipped), so stop→up /
+							// post-reboot up don't silently leave services down.
 							fmt.Println(ui.Dim("Container ") + ui.Accent(cname) + ui.Dim(" is up-to-date"))
-							local = append(local, cname)
-							continue
-						case noStart:
-							// --no-start: don't start it, just acknowledge it exists.
-							local = append(local, cname)
-							continue
-						default:
-							fmt.Println(composeStep("Starting", cname))
-							if err := runtime.Run("start", cname); err != nil {
-								return local, fmt.Errorf("start %s: %w", name, err)
+							if !noStart && c.Status.State != "running" {
+								fmt.Println(composeStep("Starting", cname))
+								if err := runtime.Run("start", cname); err != nil {
+									return local, fmt.Errorf("start %s: %w", name, err)
+								}
 							}
 							local = append(local, cname)
 							continue
 						}
 					}
 					if noStart {
-						rargs := p.CreateArgs(name, svc, i, net)
+						cargs := p.CreateArgs(name, svc, i, net)
 						fmt.Println(composeStep("Creating", cname))
-						if err := runtime.Run(rargs...); err != nil {
+						if err := runtime.Run(cargs...); err != nil {
 							return local, err
 						}
 						continue
 					}
 					fmt.Println(composeStep("Creating", cname))
-					if err := runtime.Run(p.RunArgs(name, svc, i, net, nil)...); err != nil {
+					if err := runtime.Run(rargs...); err != nil {
 						return local, fmt.Errorf("start %s: %w", name, err)
 					}
 					local = append(local, cname)
@@ -434,6 +481,15 @@ func composeUp() *cobra.Command {
 			var mu sync.Mutex
 			sem := make(chan struct{}, parallelLimit())
 			for _, level := range p.Levels() {
+				// One backend snapshot per level: existence, run state, and the
+				// config hash all come from this single `ls --all`, replacing
+				// the previous one-inspect-per-replica pattern.
+				existing := map[string]dockerfmt.Container{}
+				if cs, err := projectContainers(p.Name); err == nil {
+					for _, c := range cs {
+						existing[c.ID] = c
+					}
+				}
 				var wg sync.WaitGroup
 				var levelErr error
 				var errOnce sync.Once
@@ -448,7 +504,7 @@ func composeUp() *cobra.Command {
 							sem <- struct{}{}
 							defer func() { <-sem }()
 						}
-						names, err := bringUp(name)
+						names, err := bringUp(name, existing)
 						mu.Lock()
 						started = append(started, names...)
 						mu.Unlock()
@@ -478,11 +534,11 @@ func composeUp() *cobra.Command {
 			if detach || noStart || wait || len(started) == 0 {
 				return nil
 			}
-			// Foreground: stream aggregated logs until interrupted, then stop.
+			// Foreground: stream aggregated logs until interrupted (or, with
+			// --abort-on-container-exit, until any container stops), then stop.
 			noPrefix, _ := cmd.Flags().GetBool("no-log-prefix")
-			timeoutChanged := cmd.Flags().Changed("timeout")
 			timeout, _ := cmd.Flags().GetInt("timeout")
-			return followAndWait(p, started, noPrefix, timeoutChanged, timeout)
+			return followAndWait(p, started, noPrefix, timeout, abortOnExit, exitCodeFrom)
 		},
 	}
 	f := cmd.Flags()
@@ -498,8 +554,8 @@ func composeUp() *cobra.Command {
 	f.Bool("wait", false, "Wait for services to be running|healthy")
 	// Additional Docker Compose `up` flags. Registered so real-world invocations
 	// don't hard-fail; those whose semantics the backend can't reproduce warn.
-	// --no-recreate / --no-deps already match dcon's default behavior (existing
-	// containers are kept; only named services start), so they are silent.
+	// --no-recreate matches dcon's default for unchanged configs; --no-deps
+	// disables the depends_on closure expansion of `up SERVICE...`.
 	f.Bool("no-recreate", false, "If containers already exist, don't recreate them")
 	f.Bool("no-deps", false, "Don't start linked services")
 	f.BoolP("renew-anon-volumes", "V", false, "Recreate anonymous volumes instead of retrieving data (no-op)")
@@ -550,7 +606,7 @@ func removeOrphanContainers(p *compose.Project) {
 	}
 }
 
-func followAndWait(p *compose.Project, names []string, noPrefix bool, timeoutChanged bool, timeout int) error {
+func followAndWait(p *compose.Project, names []string, noPrefix bool, timeout int, abortOnExit bool, exitCodeFrom string) error {
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
 
@@ -576,17 +632,73 @@ func followAndWait(p *compose.Project, names []string, noPrefix bool, timeoutCha
 		}()
 	}
 
+	// --abort-on-container-exit: poll the project until any started container
+	// leaves the running state, then stop the rest (docker behavior).
+	exited := make(chan struct{})
+	if abortOnExit {
+		go func() {
+			for {
+				time.Sleep(2 * time.Second)
+				cs, err := projectContainers(p.Name)
+				if err != nil {
+					continue
+				}
+				state := map[string]string{}
+				for _, c := range cs {
+					state[c.ID] = c.Status.State
+				}
+				if anyExited(names, state) {
+					close(exited)
+					return
+				}
+			}
+		}()
+	}
+
 	fmt.Println("Attached to project; press Ctrl-C to stop.")
-	<-sigc
-	fmt.Println("\nGracefully stopping...")
+	select {
+	case <-sigc:
+		fmt.Println("\nGracefully stopping...")
+	case <-exited:
+		fmt.Println("Aborting on container exit...")
+	}
 	for _, n := range names {
-		_, _ = runtime.CaptureSilent(composeStopArgs(timeoutChanged, timeout, n)...)
+		// Always forward the grace period: docker's default stop grace is 10s
+		// but the backend's is 5s, so an unset --timeout must still send 10.
+		_, _ = runtime.CaptureSilent(composeStopArgs(true, timeout, n)...)
 	}
 	for _, c := range cmds {
 		_ = c.Process.Kill()
 	}
 	wg.Wait()
+	if exitCodeFrom != "" {
+		// Best-effort: the backend exposes no exit codes, so all we can check
+		// is that the selected service's container exists and reached a
+		// cleanly-stopped state; anything else is reported as a failure (1).
+		cid, err := serviceContainerByIndex(p.Name, exitCodeFrom, 1)
+		if err != nil {
+			return fmt.Errorf("--exit-code-from %s: %w", exitCodeFrom, err)
+		}
+		var list []dockerfmt.Container
+		if err := runtime.CaptureJSON(&list, "inspect", cid); err != nil || len(list) == 0 {
+			return fmt.Errorf("--exit-code-from %s: could not inspect %s", exitCodeFrom, cid)
+		}
+		if st := list[0].Status.State; st != "stopped" {
+			return fmt.Errorf("--exit-code-from %s: container %s is in state %q", exitCodeFrom, cid, st)
+		}
+	}
 	return nil
+}
+
+// anyExited reports whether any of the started container names is no longer
+// running (missing from the state map counts as exited). Pure, for tests.
+func anyExited(names []string, state map[string]string) bool {
+	for _, n := range names {
+		if state[n] != "running" {
+			return true
+		}
+	}
+	return false
 }
 
 func composeDown() *cobra.Command {
@@ -694,14 +806,20 @@ func composePs() *cobra.Command {
 			all, _ := cmd.Flags().GetBool("all")
 			servicesOnly, _ := cmd.Flags().GetBool("services")
 			format, _ := cmd.Flags().GetString("format")
+			status, _ := cmd.Flags().GetString("status")
 			containers, err := projectContainers(p.Name)
 			if err != nil {
 				return err
 			}
 			selected := serviceSet(args)
 			if servicesOnly {
+				// --services honors the same SERVICE... selection and state
+				// filters as the table view (it previously ignored both).
 				seen := map[string]bool{}
 				for _, c := range containers {
+					if !composePsMatch(c, selected, all, status) {
+						continue
+					}
 					s := serviceOf(c)
 					if !seen[s] {
 						seen[s] = true
@@ -712,10 +830,7 @@ func composePs() *cobra.Command {
 			}
 			views := make([]any, 0, len(containers))
 			for _, c := range containers {
-				if selected != nil && !selected[serviceOf(c)] {
-					continue
-				}
-				if !all && c.Status.State != "running" {
+				if !composePsMatch(c, selected, all, status) {
 					continue
 				}
 				cmdParts := append([]string{c.Configuration.InitProcess.Executable}, c.Configuration.InitProcess.Arguments...)
@@ -746,10 +861,23 @@ func composePs() *cobra.Command {
 	cmd.Flags().Bool("services", false, "Display services")
 	cmd.Flags().String("format", "", "Format output using a Go template or 'json'")
 	cmd.Flags().String("filter", "", "Filter services by a property (unsupported)")
-	cmd.Flags().String("status", "", "Filter services by status (accepted)")
+	cmd.Flags().String("status", "", "Filter services by status (paused|restarting|removing|running|dead|created|exited)")
 	cmd.Flags().Bool("no-trunc", false, "Don't truncate output (no-op)")
 	cmd.Flags().Bool("orphans", true, "Include orphaned services (no-op)")
 	return cmd
+}
+
+// composePsMatch is the shared `compose ps` filter: SERVICE... selection, then
+// --status (Docker status vocabulary, mapped onto backend states) when given,
+// else the running-only default unless -a. Pure, for tests.
+func composePsMatch(c dockerfmt.Container, selected map[string]bool, all bool, status string) bool {
+	if selected != nil && !selected[serviceOf(c)] {
+		return false
+	}
+	if status != "" {
+		return matchStatusFilter(c.Status.State, status)
+	}
+	return all || c.Status.State == "running"
 }
 
 func composeLogs() *cobra.Command {
@@ -1000,15 +1128,20 @@ func lifecycleOnProject(verb string) func(cmd *cobra.Command, args []string) err
 		selected := serviceSet(args)
 		// Forward the verb's honored flags (defined only on the relevant
 		// subcommands; absent flags read as zero/unchanged): kill --signal, and
-		// stop/restart --timeout. These were previously dropped, so `compose kill
-		// -s SIGTERM` hard-killed and `compose stop -t 30` ignored the grace period.
+		// stop/restart --timeout. The grace period is ALWAYS forwarded for
+		// stop/restart: docker's default is 10s but the backend's is 5s, so an
+		// unset --timeout must still send --time 10.
 		signal, _ := cmd.Flags().GetString("signal")
-		timeoutChanged := cmd.Flags().Changed("timeout")
-		timeout, _ := cmd.Flags().GetInt("timeout")
+		timeout := 10
+		if t, err := cmd.Flags().GetInt("timeout"); err == nil {
+			timeout = t
+		}
+		var firstErr error
 		for _, c := range containers {
-			if selected != nil && !selected[serviceOf(c)] {
+			if lifecycleSkips(verb, c, selected) {
 				continue
 			}
+			var err error
 			switch verb {
 			case "rm":
 				// docker compose rm removes only STOPPED containers; a running one
@@ -1019,21 +1152,44 @@ func lifecycleOnProject(verb string) func(cmd *cobra.Command, args []string) err
 					fmt.Fprintf(os.Stderr, "dcon: warning: %s is running; not removed (use -s to stop and remove)\n", serviceOf(c))
 					continue
 				}
-				_, _ = runtime.CaptureSilent("delete", "--force", c.ID)
+				_, err = runtime.CaptureSilent("delete", "--force", c.ID)
 			case "stop":
-				_, _ = runtime.CaptureSilent(composeStopArgs(timeoutChanged, timeout, c.ID)...)
+				_, err = runtime.CaptureSilent(composeStopArgs(true, timeout, c.ID)...)
 			case "start":
-				_, _ = runtime.CaptureSilent("start", c.ID)
+				_, err = runtime.CaptureSilent("start", c.ID)
 			case "kill":
-				_, _ = runtime.CaptureSilent(composeKillArgs(signal, c.ID)...)
+				_, err = runtime.CaptureSilent(composeKillArgs(signal, c.ID)...)
 			case "restart":
-				_, _ = runtime.CaptureSilent(composeStopArgs(timeoutChanged, timeout, c.ID)...)
-				_, _ = runtime.CaptureSilent("start", c.ID)
+				if _, err = runtime.CaptureSilent(composeStopArgs(true, timeout, c.ID)...); err == nil {
+					_, err = runtime.CaptureSilent("start", c.ID)
+				}
+			}
+			// Report per-container failures instead of exiting 0 and echoing
+			// the ID as if the verb succeeded.
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "dcon: %s %s: %v\n", verb, c.ID, err)
+				if firstErr == nil {
+					firstErr = fmt.Errorf("%s %s: %w", verb, c.ID, err)
+				}
+				continue
 			}
 			fmt.Println(c.ID)
 		}
-		return nil
+		return firstErr
 	}
+}
+
+// lifecycleSkips filters project containers for a lifecycle verb: unselected
+// services always skip, and one-off `compose run` containers are excluded
+// from stop/kill (docker leaves one-offs alone there). Pure, for tests.
+func lifecycleSkips(verb string, c dockerfmt.Container, selected map[string]bool) bool {
+	if selected != nil && !selected[serviceOf(c)] {
+		return true
+	}
+	if c.Configuration.Labels[compose.LabelOneoff] == "True" && (verb == "stop" || verb == "kill") {
+		return true
+	}
+	return false
 }
 
 // composeStopArgs builds the backend stop argv for compose stop/restart,
@@ -1118,16 +1274,70 @@ func composeConfig() *cobra.Command {
 				}
 				return nil
 			}
+			if v, _ := cmd.Flags().GetBool("profiles"); v {
+				seen := map[string]bool{}
+				var profiles []string
+				for _, svc := range p.Services {
+					for _, prof := range svc.Profiles {
+						if !seen[prof] {
+							seen[prof] = true
+							profiles = append(profiles, prof)
+						}
+					}
+				}
+				sort.Strings(profiles)
+				for _, prof := range profiles {
+					fmt.Println(prof)
+				}
+				return nil
+			}
+			if v, _ := cmd.Flags().GetBool("images"); v {
+				seen := map[string]bool{}
+				var images []string
+				for name, svc := range p.Services {
+					img := p.ImageRef(name, svc)
+					if img != "" && !seen[img] {
+						seen[img] = true
+						images = append(images, img)
+					}
+				}
+				sort.Strings(images)
+				for _, img := range images {
+					fmt.Println(img)
+				}
+				return nil
+			}
 			out, err := yaml.Marshal(p)
 			if err != nil {
 				return err
 			}
-			fmt.Print(string(out))
+			format, _ := cmd.Flags().GetString("format")
+			switch format {
+			case "", "yaml":
+				fmt.Print(string(out))
+			case "json":
+				// Round-trip through the yaml tree so the JSON keys match the
+				// compose (yaml-tag) names rather than Go field names.
+				var tree map[string]any
+				if err := yaml.Unmarshal(out, &tree); err != nil {
+					return err
+				}
+				js, err := json.MarshalIndent(tree, "", "  ")
+				if err != nil {
+					return err
+				}
+				fmt.Println(string(js))
+			default:
+				return fmt.Errorf("unsupported --format %q: must be yaml or json", format)
+			}
 			return nil
 		},
 	}
 	cmd.Flags().Bool("services", false, "Print the service names, one per line")
 	cmd.Flags().Bool("volumes", false, "Print the volume names, one per line")
+	cmd.Flags().Bool("profiles", false, "Print the profile names, one per line")
+	cmd.Flags().Bool("images", false, "Print the image names, one per line")
+	cmd.Flags().String("format", "yaml", "Format the output (yaml|json)")
 	cmd.Flags().BoolP("quiet", "q", false, "Only validate the configuration, don't print anything")
 	return cmd
 }
@@ -1205,7 +1415,8 @@ func composeCreate() *cobra.Command {
 				return err
 			}
 			forceRecreate, _ := cmd.Flags().GetBool("force-recreate")
-			selected := serviceSet(args)
+			// `create SERVICE` also creates its depends_on closure, like docker.
+			selected := withDeps(p, serviceSet(args))
 			active := enabledProfiles(cmd)
 			net := ensureNetwork(p)
 			ensureVolumes(p)
@@ -1368,6 +1579,42 @@ func serviceContainerByIndex(project, service string, idx int) (string, error) {
 	return "", fmt.Errorf("no container for service %q (index %d)", service, idx)
 }
 
+// startDeps brings up the transitive depends_on closure of a service
+// (excluding the service itself) before a one-off `compose run`, like docker:
+// missing dependency containers are created and started, stopped ones
+// restarted, running ones left alone. Failures warn rather than abort — the
+// one-off command may not actually need the dependency.
+func startDeps(p *compose.Project, service, net string) {
+	deps := withDeps(p, map[string]bool{service: true})
+	delete(deps, service)
+	if len(deps) == 0 {
+		return
+	}
+	existing := map[string]dockerfmt.Container{}
+	if cs, err := projectContainers(p.Name); err == nil {
+		for _, c := range cs {
+			existing[c.ID] = c
+		}
+	}
+	for _, name := range p.Order() { // dependency order
+		if !deps[name] {
+			continue
+		}
+		svc := p.Services[name]
+		cname := p.ContainerName(name, 1, svc)
+		if c, ok := existing[cname]; ok {
+			if c.Status.State != "running" {
+				_, _ = runtime.CaptureSilent("start", cname)
+			}
+			continue
+		}
+		fmt.Println(composeStep("Creating", cname))
+		if err := runtime.Run(p.RunArgs(name, svc, 1, net, nil)...); err != nil {
+			fmt.Fprintf(os.Stderr, "dcon: warning: could not start dependency %q: %v\n", name, err)
+		}
+	}
+}
+
 func composeRun() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "run [OPTIONS] SERVICE [COMMAND] [ARGS...]",
@@ -1393,6 +1640,12 @@ func composeRun() *cobra.Command {
 				}
 			}
 			net := ensureNetwork(p)
+			// Bring the service's depends_on closure up first (docker compose
+			// run does), unless --no-deps.
+			if noDeps, _ := cmd.Flags().GetBool("no-deps"); !noDeps {
+				ensureVolumes(p)
+				startDeps(p, svcName, net)
+			}
 
 			// Build CLI override flag tokens, inserted before the image.
 			var overrides []string
@@ -1456,7 +1709,9 @@ func composeRun() *cobra.Command {
 		},
 	}
 	cmd.Flags().SetInterspersed(false)
-	cmd.Flags().Bool("rm", true, "Remove container after run")
+	// Docker compose run KEEPS the one-off container unless --rm is given;
+	// defaulting to true silently destroyed containers users expected to find.
+	cmd.Flags().Bool("rm", false, "Automatically remove the container when it exits")
 	cmd.Flags().BoolP("detach", "d", false, "Run container in background")
 	cmd.Flags().StringArrayP("env", "e", nil, "Set environment variables")
 	cmd.Flags().StringArrayP("volume", "v", nil, "Bind mount a volume")
