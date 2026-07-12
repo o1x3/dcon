@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	goruntime "runtime"
 	"strings"
 	"testing"
 
@@ -393,6 +394,9 @@ func TestDfViews(t *testing.T) {
 // --- item 16: docker info template fields ------------------------------------------------------
 
 func TestInfoHostFacts(t *testing.T) {
+	if goruntime.GOOS != "darwin" {
+		t.Skip("hostMemTotal/hostKernelVersion are darwin-only; stubs return zero values elsewhere")
+	}
 	if mt := hostMemTotal(); mt <= 0 {
 		t.Errorf("hostMemTotal = %d, want > 0 on darwin", mt)
 	}
