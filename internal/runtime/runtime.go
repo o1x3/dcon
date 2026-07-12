@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // Bin returns the path to the Apple `container` binary. It honours the
@@ -54,17 +55,6 @@ func Run(args ...string) error {
 	return cmd.Run()
 }
 
-// RunWith is like Run but lets the caller redirect the child's standard
-// streams (used for `cp` to stdout, `export -o -`, etc.).
-func RunWith(stdin *os.File, stdout *os.File, stderr *os.File, args ...string) error {
-	trace(args)
-	cmd := exec.Command(Bin(), args...)
-	cmd.Stdin = stdin
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	return cmd.Run()
-}
-
 // Capture runs `container <args...>` and returns its stdout. stderr is still
 // streamed to the user so progress/errors remain visible.
 func Capture(args ...string) (string, error) {
@@ -77,10 +67,23 @@ func Capture(args ...string) (string, error) {
 	return out.String(), err
 }
 
+// BackendError is returned by CaptureSilent when the backend command fails: it
+// carries the backend's stderr text as the message while wrapping the original
+// error (usually an *exec.ExitError), so errors.As — and therefore ExitCode —
+// still see the real process exit status instead of a flattened generic 1.
+type BackendError struct {
+	Msg string // trimmed stderr text (or the exec error text when stderr was empty)
+	Err error  // the underlying exec error
+}
+
+func (e *BackendError) Error() string { return e.Msg }
+func (e *BackendError) Unwrap() error { return e.Err }
+
 // CaptureSilent runs `container <args...>` capturing both stdout and stderr,
 // returning stdout and the combined error (with stderr text folded in). Used
 // when dcon needs to inspect output without leaking container's native
-// formatting to the user.
+// formatting to the user. A non-zero exit returns a *BackendError whose
+// message is the trimmed stderr text and which unwraps to the *exec.ExitError.
 func CaptureSilent(args ...string) (string, error) {
 	trace(args)
 	var out, errb bytes.Buffer
@@ -89,11 +92,11 @@ func CaptureSilent(args ...string) (string, error) {
 	cmd.Stderr = &errb
 	err := cmd.Run()
 	if err != nil {
-		msg := errb.String()
+		msg := strings.TrimSpace(errb.String())
 		if msg == "" {
 			msg = err.Error()
 		}
-		return out.String(), errors.New(msg)
+		return out.String(), &BackendError{Msg: msg, Err: err}
 	}
 	return out.String(), nil
 }

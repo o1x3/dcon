@@ -16,9 +16,11 @@
 package pool
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -76,6 +78,14 @@ func WarmCommand(m Member, userCmd []string) []string {
 
 type state struct {
 	Members []Member `json:"members"`
+	// Unwarmable is a per-image negative cache: normalized ref → unix time of
+	// the last failed warm boot (image lacks a `sleep` binary, e.g. distroless).
+	// Consulted by Replenish so DCON_WARM=auto stops re-booting doomed VMs on
+	// every run; entries expire after unwarmableBackoff.
+	Unwarmable map[string]int64 `json:"unwarmable,omitempty"`
+	// LastReconcile throttles ReapStale's backend label scan (see reapLeaked)
+	// so the run hot path stays a cheap state-file read.
+	LastReconcile int64 `json:"lastReconcile,omitempty"`
 }
 
 // dir returns dcon's private state directory (created on demand).
@@ -102,7 +112,8 @@ func statePath() (string, error) {
 // withLock runs fn while holding an exclusive advisory lock on the state file's
 // lock companion, serializing read-modify-write across concurrent dcon
 // processes. The state is loaded, passed to fn (which may mutate it), and saved
-// iff fn returns nil.
+// iff fn returns nil AND actually changed the state — read-only callers (List,
+// AvailableDepth, a Claim miss) skip the write+rename entirely.
 func withLock(fn func(s *state) error) error {
 	d, err := dir()
 	if err != nil {
@@ -123,8 +134,21 @@ func withLock(fn func(s *state) error) error {
 	if err != nil {
 		return err
 	}
+	// Dirty detection by serialized comparison: cheap (state is tiny), and
+	// immune to fn mutating members in place.
+	before, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
 	if err := fn(s); err != nil {
 		return err
+	}
+	after, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(before, after) {
+		return nil // unchanged: don't rewrite the file
 	}
 	return save(s)
 }
@@ -231,18 +255,30 @@ func ReapStale() {
 	if ttl <= 0 {
 		return
 	}
-	cutoff := time.Now().Unix() - int64(ttl.Seconds())
+	now := time.Now()
+	cutoff := now.Unix() - int64(ttl.Seconds())
 	// Pop the stale members atomically under the lock before destroying them.
 	// Removing-then-destroying as two steps (List → forget → Destroy) raced with
 	// Claim: a run could claim a member after we listed it, then we'd destroy the
 	// VM out from under the live exec. Doing the removal inside the lock means a
 	// concurrent Claim and a reap can never both own the same member.
 	var stale []Member
+	known := map[string]bool{}
+	reconcile := false
 	// Destroy only after save() persists the removal. withLock can run the
 	// callback then fail to write pool.json; ignoring that and destroying anyway
 	// would tear down VMs still listed as available (and thus still claimable).
 	if err := withLock(func(s *state) error {
 		stale, s.Members = partitionStale(s.Members, cutoff)
+		for _, m := range s.Members {
+			known[m.ID] = true
+		}
+		// Throttle the backend label scan to once per TTL so this stays a cheap
+		// state read on the run hot path.
+		if now.Unix()-s.LastReconcile >= int64(ttl.Seconds()) {
+			s.LastReconcile = now.Unix()
+			reconcile = true
+		}
 		return nil
 	}); err != nil {
 		return
@@ -250,6 +286,54 @@ func ReapStale() {
 	for _, m := range stale {
 		DestroyAsync(m.ID)
 	}
+	if reconcile {
+		reapLeaked(known, now.Add(-ttl))
+	}
+}
+
+// backendRow is the slice of `container ls --format json` output the pool
+// needs to find its members by label.
+type backendRow struct {
+	ID            string `json:"id"`
+	Configuration struct {
+		Labels       map[string]string `json:"labels"`
+		CreationDate string            `json:"creationDate"`
+	} `json:"configuration"`
+}
+
+// reapLeaked reconciles the backend against the state file: containers that
+// carry the pool label but are unknown to pool.json were leaked by a dcon
+// process that died between Claim and Destroy (crash, kill -9) — the state
+// file alone can never see them. Anything leaked and older than the TTL is
+// destroyed. A member just claimed by a live run is also absent from the state
+// file; the age cutoff is what keeps this from tearing down an in-flight exec
+// (a claimed VM is destroyed by its run within seconds, a leak sits forever).
+func reapLeaked(known map[string]bool, cutoff time.Time) {
+	var rows []backendRow
+	if err := runtime.CaptureJSON(&rows, "ls", "--all", "--format", "json"); err != nil {
+		return
+	}
+	for _, id := range leakedPoolIDs(rows, known, cutoff) {
+		DestroyAsync(id)
+	}
+}
+
+// leakedPoolIDs returns the ids in rows that carry the pool label, are absent
+// from known, and were created before cutoff. Pure so the reconcile policy is
+// unit-testable without a backend.
+func leakedPoolIDs(rows []backendRow, known map[string]bool, cutoff time.Time) []string {
+	var out []string
+	for _, r := range rows {
+		if r.Configuration.Labels[LabelPool] != "1" || known[r.ID] {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339Nano, r.Configuration.CreationDate)
+		if err != nil || !t.Before(cutoff) {
+			continue
+		}
+		out = append(out, r.ID)
+	}
+	return out
 }
 
 // partitionStale splits members into those booted before cutoff (stale) and the
@@ -433,9 +517,11 @@ func Boot(image string) (Member, error) {
 		return Member{}, fmt.Errorf("backend returned no container ID for warm boot of %s", image)
 	}
 	// Confirm the keepalive actually stuck (an image without a `sleep` binary
-	// boots then exits immediately); don't register a dead member.
+	// boots then exits immediately); don't register a dead member. Remember the
+	// failure so auto mode stops boot-and-destroying a doomed VM on every run.
 	if !IsRunning(id) {
 		_ = Destroy(id)
+		MarkUnwarmable(norm)
 		return Member{}, fmt.Errorf("warm VM for %s did not stay up (image may lack a 'sleep' binary)", image)
 	}
 	// Resolve the image's real ENTRYPOINT/CMD AFTER the boot: the `run` above
@@ -450,15 +536,103 @@ func Boot(image string) (Member, error) {
 		_ = Destroy(id)
 		return Member{}, err
 	}
+	// A successful boot proves the image is warmable (again) — e.g. the tag now
+	// points at an image that ships `sleep`.
+	clearUnwarmable(norm)
 	return m, nil
+}
+
+// ReplenishEnv marks a `dcon warm` child as a background replenisher (spawned
+// by Replenish, not typed by the user): it must take the per-image replenish
+// lock and exit quietly if another replenisher already holds it.
+const ReplenishEnv = "DCON_WARM_REPLENISH"
+
+// IsReplenisher reports whether this process is a background replenisher.
+func IsReplenisher() bool { return os.Getenv(ReplenishEnv) == "1" }
+
+// unwarmableBackoff is how long a failed warm boot blacklists an image from
+// auto-replenishment. Explicit `dcon warm IMAGE` always retries (and clears
+// the entry on success).
+const unwarmableBackoff = time.Hour
+
+// MarkUnwarmable records in the state file that image's warm boot failed to
+// stay up (e.g. distroless/scratch images with no `sleep` binary), so
+// DCON_WARM=auto stops re-booting a doomed VM after every run.
+func MarkUnwarmable(image string) {
+	norm := NormalizeRef(image)
+	_ = withLock(func(s *state) error {
+		if s.Unwarmable == nil {
+			s.Unwarmable = map[string]int64{}
+		}
+		s.Unwarmable[norm] = time.Now().Unix()
+		return nil
+	})
+}
+
+// Unwarmable reports whether image failed a warm boot within the backoff
+// window (and should therefore not be auto-replenished right now).
+func Unwarmable(image string) bool {
+	norm := NormalizeRef(image)
+	var ts int64
+	_ = withLock(func(s *state) error {
+		ts = s.Unwarmable[norm]
+		return nil
+	})
+	return ts != 0 && time.Now().Unix()-ts < int64(unwarmableBackoff.Seconds())
+}
+
+// clearUnwarmable drops image's negative-cache entry (a warm boot succeeded,
+// e.g. the tag now points at an image that does ship `sleep`).
+func clearUnwarmable(norm string) {
+	_ = withLock(func(s *state) error {
+		delete(s.Unwarmable, norm)
+		return nil
+	})
+}
+
+// AcquireReplenishLock takes the non-blocking per-image lock that serializes
+// background replenishers. K concurrent pool-miss runs each spawn a detached
+// replenisher, and all K see AvailableDepth≈0 during the ~700 ms boot window;
+// without the lock each boots its own member (K× over-provisioning). The first
+// replenisher holds the lock for the duration of its boots; later ones get
+// ok=false and exit. The lock lives next to pool.json and is released by
+// calling release (or automatically at process exit).
+//
+// Setup failures fail open (ok=true, no-op release): worst case is the old
+// over-provisioning behavior, never a pool that can't warm at all.
+func AcquireReplenishLock(image string) (release func(), ok bool) {
+	d, err := dir()
+	if err != nil {
+		return func() {}, true
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(NormalizeRef(image)))
+	name := fmt.Sprintf("replenish-%08x.lock", h.Sum32())
+	lf, err := os.OpenFile(filepath.Join(d, name), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return func() {}, true
+	}
+	if err := syscall.Flock(int(lf.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		lf.Close()
+		return nil, false
+	}
+	return func() {
+		_ = syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
+		lf.Close()
+	}, true
 }
 
 // Replenish tops the pool for image back up to TargetDepth by spawning a
 // detached background `dcon warm` that outlives the current (short-lived)
 // process. It is gated on auto mode (DCON_WARM=auto): a manually seeded pool
 // drains predictably as it is consumed, while auto mode sustains warm depth.
+// Images that recently failed a warm boot (no `sleep` binary) are skipped
+// until their negative-cache entry expires.
 func Replenish(image string) {
 	if !AutoEnabled() {
+		return
+	}
+	if Unwarmable(image) {
 		return
 	}
 	need := TargetDepth() - AvailableDepth(image)
@@ -470,9 +644,10 @@ func Replenish(image string) {
 		return
 	}
 	// --replenish marks this as background priming so the warm command clamps to
-	// TargetDepth (preventing concurrent replenishers from over-provisioning);
-	// --quiet suppresses its output. A manual `dcon warm` passes neither.
+	// TargetDepth; the env marker additionally makes the child take the per-image
+	// replenish lock (see AcquireReplenishLock) and exit if a sibling is booting.
 	c := exec.Command(exe, "warm", image, "-n", strconv.Itoa(need), "--quiet", "--replenish")
+	c.Env = append(os.Environ(), ReplenishEnv+"=1")
 	// Detach completely: no stdio, own session, not waited on.
 	c.Stdin, c.Stdout, c.Stderr = nil, nil, nil
 	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -495,6 +670,11 @@ func Destroy(id string) error {
 func DestroyAsync(id string) {
 	c := exec.Command(runtime.Bin(), "rm", "--force", id)
 	c.Stdin, c.Stdout, c.Stderr = nil, nil, nil
+	// Detached destroys normally discard stdio, so a failed teardown vanishes
+	// silently; under DCON_DEBUG keep stderr attached so it is at least visible.
+	if v := os.Getenv("DCON_DEBUG"); v == "1" || v == "true" {
+		c.Stderr = os.Stderr
+	}
 	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if c.Start() == nil && c.Process != nil {
 		_ = c.Process.Release()
@@ -522,14 +702,18 @@ func IsRunning(id string) bool {
 
 // PruneOrphans force-removes every backend container labeled as a pool member
 // and clears the state file. If image is non-empty, only that image's members
-// are removed. Returns the number of VMs torn down.
+// are removed. Returns the number of VMs torn down, plus an aggregate error
+// when any destroy failed — those members keep their state entries so they
+// stay visible to `warm ls` and retryable, instead of turning into live VMs
+// dcon no longer tracks.
+//
+// Caveat (explicit prune): pruning matches by label, and a member another dcon
+// process claimed moments ago is absent from the state file but still carries
+// the pool label — an explicit prune can therefore tear down a VM mid-exec.
+// That is inherent to "tear the whole pool down"; the automatic reap paths
+// (ReapStale) are the ones that must — and do — respect claims.
 func PruneOrphans(image string) (int, error) {
-	var rows []struct {
-		ID            string `json:"id"`
-		Configuration struct {
-			Labels map[string]string `json:"labels"`
-		} `json:"configuration"`
-	}
+	var rows []backendRow
 	if err := runtime.CaptureJSON(&rows, "ls", "--all", "--format", "json"); err != nil {
 		return 0, err
 	}
@@ -538,6 +722,8 @@ func PruneOrphans(image string) (int, error) {
 		norm = NormalizeRef(image)
 	}
 	n := 0
+	var failures []string
+	failed := map[string]bool{}
 	for _, r := range rows {
 		if r.Configuration.Labels[LabelPool] != "1" {
 			continue
@@ -545,17 +731,23 @@ func PruneOrphans(image string) (int, error) {
 		if norm != "" && r.Configuration.Labels[LabelImage] != norm {
 			continue
 		}
-		if Destroy(r.ID) == nil {
-			n++
+		if err := Destroy(r.ID); err != nil {
+			// The VM is still alive: keep its state entry and report it, rather
+			// than silently forgetting a running microVM.
+			failures = append(failures, fmt.Sprintf("%s: %v", r.ID, err))
+			failed[r.ID] = true
+			continue
 		}
+		n++
 		forget(r.ID)
 	}
 	// Drop any stale state entries for this image (members whose VM already
-	// vanished) so `warm ls` reflects reality.
+	// vanished) so `warm ls` reflects reality — but never entries whose destroy
+	// just failed.
 	_ = withLock(func(s *state) error {
 		kept := s.Members[:0]
 		for _, m := range s.Members {
-			if norm == "" || m.Image == norm {
+			if (norm == "" || m.Image == norm) && !failed[m.ID] {
 				continue
 			}
 			kept = append(kept, m)
@@ -563,5 +755,8 @@ func PruneOrphans(image string) (int, error) {
 		s.Members = kept
 		return nil
 	})
+	if len(failures) > 0 {
+		return n, fmt.Errorf("failed to remove %d warm VM(s): %s", len(failures), strings.Join(failures, "; "))
+	}
 	return n, nil
 }

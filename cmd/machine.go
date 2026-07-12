@@ -13,13 +13,13 @@ import (
 	"dcon/internal/ui"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 )
 
 // newMachineCmd builds `dcon machine ...`: OrbStack-style persistent Linux
-// machines backed by long-lived Apple-container microVMs. Replaces the old
-// passthrough to a (non-existent) `container machine` group with a real
-// implementation.
+// machines backed by long-lived Apple-container microVMs. This group shadows
+// the backend's OWN `container machine` group (Apple container 1.0+ ships one,
+// with nested-virtualization machines as of 1.1.0); `dcon machine native ...`
+// is the escape hatch that passes through to the backend's implementation.
 func newMachineCmd() *cobra.Command {
 	group := &cobra.Command{
 		Use:     "machine",
@@ -43,6 +43,9 @@ Supported distros: ` + strings.Join(machine.Distros(), ", "),
 		machineCreateCmd(), machineLsCmd(), machineShellCmd(), machineExecCmd(),
 		machineStartCmd(), machineStopCmd(), machineRmCmd(), machineDefaultCmd(),
 		machineInfoCmd(), machineLogsCmd(), machineRenameCmd(),
+		// Escape hatch: dcon's machine group shadows the backend's native
+		// `container machine` commands, so keep them reachable here.
+		newPassthrough("native [SUBCOMMAND]", "Pass through to the backend's native `container machine` commands", []string{"machine"}),
 	)
 	return group
 }
@@ -324,9 +327,7 @@ func machineShellCmd() *cobra.Command {
 				return err
 			}
 			exec := []string{"exec", "--interactive"}
-			// Allocate a PTY only when stdin is a real terminal; forcing --tty
-			// without one (e.g. scripted `shell m -- cmd`) makes the backend fail.
-			if term.IsTerminal(int(os.Stdin.Fd())) {
+			if machineWantsPTY(cmd) {
 				exec = append(exec, "--tty")
 			}
 			exec = append(exec, id)
@@ -338,10 +339,40 @@ func machineShellCmd() *cobra.Command {
 			return runtime.Run(exec...)
 		},
 	}
+	machinePTYFlags(cmd)
 	// Stop parsing flags after the machine name so a command's own flags
-	// (`shell ubuntu ls -la`) reach the machine instead of erroring here.
+	// (`shell ubuntu ls -la`) reach the machine instead of erroring here —
+	// -t/-T must therefore come before the machine name.
 	cmd.Flags().SetInterspersed(false)
 	return cmd
+}
+
+// machinePTYFlags adds the docker-compose-exec-style PTY overrides shared by
+// `machine shell` and `machine exec`.
+func machinePTYFlags(cmd *cobra.Command) {
+	cmd.Flags().BoolP("tty", "t", false, "Force PTY allocation")
+	cmd.Flags().BoolP("no-TTY", "T", false, "Disable PTY allocation")
+}
+
+// machineWantsPTY resolves the -t/-T overrides against the terminal state.
+func machineWantsPTY(cmd *cobra.Command) bool {
+	force, _ := cmd.Flags().GetBool("tty")
+	disable, _ := cmd.Flags().GetBool("no-TTY")
+	return machinePTY(force, disable, haveTTY())
+}
+
+// machinePTY decides whether machine shell/exec allocate a PTY: -T always
+// wins, -t forces one, otherwise auto-detect — and auto requires stdin AND
+// stdout to both be terminals. Keying off stdin alone made piped output
+// (`machine exec m cat file | sort`) arrive CRLF-mangled through the PTY.
+func machinePTY(force, disable, autoTTY bool) bool {
+	if disable {
+		return false
+	}
+	if force {
+		return true
+	}
+	return autoTTY
 }
 
 // splitNameAndCommand separates an optional machine name from a command, using
@@ -377,7 +408,7 @@ func machineExecCmd() *cobra.Command {
 				return err
 			}
 			exec := []string{"exec", "--interactive"}
-			if term.IsTerminal(int(os.Stdin.Fd())) {
+			if machineWantsPTY(cmd) {
 				exec = append(exec, "--tty")
 			}
 			exec = append(exec, id)
@@ -390,7 +421,9 @@ func machineExecCmd() *cobra.Command {
 			return runtime.Run(exec...)
 		},
 	}
-	// Treat everything after the machine name as the command, flags included.
+	machinePTYFlags(cmd)
+	// Treat everything after the machine name as the command, flags included
+	// (-t/-T must come before the machine name).
 	cmd.Flags().SetInterspersed(false)
 	return cmd
 }
@@ -466,24 +499,34 @@ func machineDeleteArgs(force bool) []string {
 	return []string{"delete"}
 }
 
-// forEachMachine resolves and applies fn to each named machine, surfacing the
-// first error but attempting all of them.
+// forEachMachine resolves and applies fn to each named machine, attempting all
+// of them. With a single name the error is returned as-is (root prints it
+// once). With several, every failure — resolve or fn — is printed here exactly
+// once and a terse aggregate error is returned, so root's final print doesn't
+// duplicate the first failure while the rest vanish.
 func forEachMachine(names []string, fn func(id, name string) error) error {
-	var firstErr error
+	if len(names) == 1 {
+		id, resolved, err := machineArg(names[0])
+		if err != nil {
+			return err
+		}
+		return fn(id, resolved)
+	}
+	failed := 0
 	for _, name := range names {
 		id, resolved, err := machineArg(name)
-		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			fmt.Fprintln(os.Stderr, "dcon: "+err.Error())
-			continue
+		if err == nil {
+			err = fn(id, resolved)
 		}
-		if err := fn(id, resolved); err != nil && firstErr == nil {
-			firstErr = err
+		if err != nil {
+			failed++
+			fmt.Fprintln(os.Stderr, "dcon: "+err.Error())
 		}
 	}
-	return firstErr
+	if failed > 0 {
+		return fmt.Errorf("%d of %d machines failed", failed, len(names))
+	}
+	return nil
 }
 
 func machineDefaultCmd() *cobra.Command {

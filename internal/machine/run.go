@@ -2,6 +2,7 @@ package machine
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -39,6 +40,12 @@ func NameFromContainer(id, labelName string) string {
 	return strings.TrimPrefix(id, namePrefix)
 }
 
+// validName is docker's container-name allow-list. An allow-list (not the old
+// " \t/:@" blocklist) is what keeps control characters and ANSI escapes out of
+// the name, which is stored in labels and echoed back through styled TTY
+// output by every machine command.
+var validName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+
 // ValidateName rejects machine names that would break the prefix scheme or the
 // backend's naming rules.
 func ValidateName(name string) error {
@@ -48,8 +55,8 @@ func ValidateName(name string) error {
 	if strings.HasPrefix(name, namePrefix) {
 		return fmt.Errorf("machine name %q must not start with the reserved prefix %q", name, namePrefix)
 	}
-	if strings.ContainsAny(name, " \t/:@") {
-		return fmt.Errorf("invalid machine name %q: must not contain spaces, '/', ':' or '@'", name)
+	if !validName.MatchString(name) {
+		return fmt.Errorf("invalid machine name %q: must match [A-Za-z0-9][A-Za-z0-9_.-]*", name)
 	}
 	return nil
 }

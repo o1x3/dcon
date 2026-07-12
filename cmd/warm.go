@@ -3,7 +3,9 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -35,6 +37,10 @@ var warmAllowed = map[string]bool{
 	"pull": true, "detach-keys": true,
 	// global persistent flags with no effect on execution
 	"debug": true, "host": true, "context": true, "log-level": true, "config": true,
+	// TLS compat flags (accepted and ignored by root, see cmd/root.go): they
+	// change nothing about execution, so `docker --tlsverify run --rm ...`
+	// must not silently lose the fast path.
+	"tls": true, "tlsverify": true, "tlscacert": true, "tlscert": true, "tlskey": true,
 }
 
 // warmEligible reports whether this run can be served from the warm pool: it
@@ -121,6 +127,15 @@ func tryWarmRun(cmd *cobra.Command, args []string) (handled bool, err error) {
 		return false, nil
 	}
 
+	// From here to the DestroyAsync below the claimed VM belongs to this
+	// process alone: Claim removed it from the state file, so neither `warm ls`
+	// nor ReapStale's state scan can see it. If a signal killed us with Go's
+	// default disposition, the VM would leak until the label reconcile catches
+	// it a TTL later. Catch INT/TERM/HUP, retire the VM, then re-raise so the
+	// exit status still reflects the signal.
+	stopSignalCleanup := warmSignalCleanup(m.ID)
+	defer stopSignalCleanup()
+
 	// Reproduce docker's entrypoint/cmd semantics: prepend the image entrypoint,
 	// and use the image's default command when the run gave none.
 	execCmd := pool.WarmCommand(m, userCmd)
@@ -147,6 +162,36 @@ func tryWarmRun(cmd *cobra.Command, args []string) (handled bool, err error) {
 	pool.DestroyAsync(m.ID)
 	pool.Replenish(image)
 	return true, runErr
+}
+
+// warmSignalCleanup installs a handler that retires the claimed warm VM if a
+// SIGINT/SIGTERM/SIGHUP arrives while the warm exec owns it, then re-raises
+// the signal (with the default disposition restored) so the process still dies
+// with the conventional 128+N status. The returned stop func uninstalls the
+// handler once the normal path has taken over responsibility for the VM.
+func warmSignalCleanup(id string) (stop func()) {
+	sigc := make(chan os.Signal, 1)
+	done := make(chan struct{})
+	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	go func() {
+		select {
+		case sig := <-sigc:
+			pool.DestroyAsync(id)
+			signal.Stop(sigc)
+			if s, ok := sig.(syscall.Signal); ok {
+				_ = syscall.Kill(os.Getpid(), s)
+				// Delivery of the re-raised signal is asynchronous; make sure we
+				// still exit signal-style if it somehow doesn't terminate us.
+				os.Exit(128 + int(s))
+			}
+			os.Exit(1)
+		case <-done:
+		}
+	}()
+	return func() {
+		signal.Stop(sigc)
+		close(done)
+	}
 }
 
 // maybeAutoPrime spawns a detached background warm-up when DCON_WARM=auto and
@@ -185,6 +230,17 @@ Set DCON_WARM=auto to have dcon self-prime the pool after eligible runs.`,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			image := args[0]
+			// Background replenishers serialize per image: K concurrent pool-miss
+			// runs each spawn one during the same boot window, and without this
+			// lock each would boot its own member (K× over-provisioning). Explicit
+			// `dcon warm` is the user's call and is never gated.
+			if pool.IsReplenisher() {
+				release, ok := pool.AcquireReplenishLock(image)
+				if !ok {
+					return nil // a sibling replenisher is already booting this image
+				}
+				defer release()
+			}
 			n, _ := cmd.Flags().GetInt("number")
 			if n < 1 {
 				n = 1
@@ -281,11 +337,12 @@ func newWarmPruneCmd() *cobra.Command {
 				image = args[0]
 			}
 			n, err := pool.PruneOrphans(image)
-			if err != nil {
-				return err
+			// Report the successful removals even when some destroys failed (the
+			// error, listing the survivors, is printed by root once).
+			if n > 0 || err == nil {
+				fmt.Printf("Removed %d warm VM(s)\n", n)
 			}
-			fmt.Printf("Removed %d warm VM(s)\n", n)
-			return nil
+			return err
 		},
 	}
 }
