@@ -1,7 +1,8 @@
-// Package ui is dcon's optional terminal styling layer, built on Charm's
-// lipgloss. It exists to make interactive output (tables, the doctor report,
-// compose progress, version/info) nicer to read WITHOUT ever changing the
-// bytes a script or pipeline sees.
+// Package ui is dcon's optional terminal styling layer: a small hand-rolled
+// ANSI implementation (256-colour escapes + box-drawing tables). It exists to
+// make interactive output (tables, the doctor report, compose progress,
+// version/info) nicer to read WITHOUT ever changing the bytes a script or
+// pipeline sees.
 //
 // The cardinal rule: styling is applied only when Enabled() is true, which
 // requires stdout to be an interactive terminal (and neither DCON_PLAIN nor
@@ -15,8 +16,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/charmbracelet/lipgloss/table"
+	"github.com/mattn/go-runewidth"
 	"golang.org/x/term"
 )
 
@@ -63,46 +63,49 @@ func Enabled() bool {
 	return isTTY()
 }
 
-// Palette — 256-colour values chosen to stay legible on both light and dark
+// Palette — 256-colour indexes chosen to stay legible on both light and dark
 // terminals. Kept few and named by role so the whole CLI shares one vocabulary.
-var (
-	colAccent = lipgloss.Color("39")  // cyan-blue: names, headers, the "current" marker
-	colOK     = lipgloss.Color("42")  // green: running / success / ✓
-	colWarn   = lipgloss.Color("214") // amber: warnings / !
-	colErr    = lipgloss.Color("203") // red: stopped / failure / ✗
-	colDim    = lipgloss.Color("244") // grey: secondary text, borders
+// (Same indexes the previous lipgloss implementation used.)
+const (
+	colAccent = "39"  // cyan-blue: names, headers, the "current" marker
+	colOK     = "42"  // green: running / success / ✓
+	colWarn   = "214" // amber: warnings / !
+	colErr    = "203" // red: stopped / failure / ✗
+	colDim    = "244" // grey: secondary text, borders
 )
 
-var (
-	accentStyle  = lipgloss.NewStyle().Foreground(colAccent)
-	okStyle      = lipgloss.NewStyle().Foreground(colOK)
-	warnStyle    = lipgloss.NewStyle().Foreground(colWarn)
-	errStyle     = lipgloss.NewStyle().Foreground(colErr)
-	dimStyle     = lipgloss.NewStyle().Foreground(colDim)
-	boldStyle    = lipgloss.NewStyle().Bold(true)
-	titleStyle   = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
-	headerStyle  = lipgloss.NewStyle().Foreground(colAccent).Bold(true).Padding(0, 1)
-	cellStyle    = lipgloss.NewStyle().Padding(0, 1)
-	borderColour = lipgloss.NewStyle().Foreground(colDim)
-)
+const reset = "\x1b[0m"
 
-// apply renders s with st only when styling is enabled; otherwise returns s
-// untouched so plain output is byte-for-byte what it always was.
-func apply(st lipgloss.Style, s string) string {
+// fg wraps s in a 256-colour foreground escape when styling is enabled;
+// otherwise returns s untouched so plain output is byte-for-byte what it
+// always was.
+func fg(col, s string) string {
 	if !Enabled() {
 		return s
 	}
-	return st.Render(s)
+	return "\x1b[38;5;" + col + "m" + s + reset
 }
 
 // Inline colour/emphasis helpers. Each is a no-op when styling is disabled.
-func Accent(s string) string  { return apply(accentStyle, s) }
-func Success(s string) string { return apply(okStyle, s) }
-func Warning(s string) string { return apply(warnStyle, s) }
-func Error(s string) string   { return apply(errStyle, s) }
-func Dim(s string) string     { return apply(dimStyle, s) }
-func Bold(s string) string    { return apply(boldStyle, s) }
-func Title(s string) string   { return apply(titleStyle, s) }
+func Accent(s string) string  { return fg(colAccent, s) }
+func Success(s string) string { return fg(colOK, s) }
+func Warning(s string) string { return fg(colWarn, s) }
+func Error(s string) string   { return fg(colErr, s) }
+func Dim(s string) string     { return fg(colDim, s) }
+
+func Bold(s string) string {
+	if !Enabled() {
+		return s
+	}
+	return "\x1b[1m" + s + reset
+}
+
+func Title(s string) string {
+	if !Enabled() {
+		return s
+	}
+	return "\x1b[1;38;5;" + colAccent + "m" + s + reset
+}
 
 // Symbol returns a status glyph (✓ / ! / ✗) coloured by kind, falling back to
 // the bare glyph when styling is off. kind is "ok", "warn", or anything else
@@ -122,38 +125,89 @@ func Symbol(kind string) string {
 // MUST only reach this when Enabled() is true and the user asked for the
 // default (non --format/-q) view; the plain tabwriter path remains the
 // fallback for every machine-readable case.
+//
+// Cell widths are measured with go-runewidth so CJK/emoji container names keep
+// the borders aligned. Ragged rows are tolerated: missing cells render empty,
+// extra cells are dropped.
 func Table(headers []string, rows [][]string) string {
-	t := table.New().
-		Border(lipgloss.RoundedBorder()).
-		BorderStyle(borderColour).
-		BorderRow(false).
-		Headers(headers...).
-		Rows(rows...).
-		StyleFunc(func(row, col int) lipgloss.Style {
-			if row == table.HeaderRow {
-				return headerStyle
+	// Column widths in terminal cells (not runes/bytes).
+	w := make([]int, len(headers))
+	for i, h := range headers {
+		w[i] = runewidth.StringWidth(h)
+	}
+	for _, r := range rows {
+		for i, c := range r {
+			if i < len(w) {
+				if cw := runewidth.StringWidth(c); cw > w[i] {
+					w[i] = cw
+				}
 			}
+		}
+	}
+
+	var b strings.Builder
+	rule := func(left, mid, right string) {
+		var l strings.Builder
+		l.WriteString(left)
+		for i := range w {
+			l.WriteString(strings.Repeat("─", w[i]+2))
+			if i < len(w)-1 {
+				l.WriteString(mid)
+			}
+		}
+		l.WriteString(right)
+		b.WriteString(Dim(l.String()))
+		b.WriteString("\n")
+	}
+	// cell pads s to column i's width plus one space either side.
+	cell := func(s string, i int) string {
+		pad := w[i] - runewidth.StringWidth(s)
+		if pad < 0 {
+			pad = 0
+		}
+		return " " + s + strings.Repeat(" ", pad) + " "
+	}
+	sep := Dim("│")
+
+	rule("╭", "┬", "╮")
+	b.WriteString(sep)
+	for i, h := range headers {
+		b.WriteString(Title(cell(h, i)))
+		b.WriteString(sep)
+	}
+	b.WriteString("\n")
+	rule("├", "┼", "┤")
+	for _, r := range rows {
+		b.WriteString(sep)
+		for i := range headers {
+			c := ""
+			if i < len(r) {
+				c = r[i]
+			}
+			s := cell(c, i)
 			// Light semantic colouring: tint a STATUS/STATE column by value and
 			// accent the first (id/name) column. Everything else is plain so the
-			// table stays readable rather than gaudy. Bounds are checked against
-			// both headers and the (possibly ragged) row before indexing.
-			if row >= 0 && row < len(rows) && col >= 0 && col < len(headers) && col < len(rows[row]) {
-				switch strings.ToUpper(strings.TrimSpace(headers[col])) {
-				case "STATUS", "STATE":
-					return cellStyle.Foreground(stateColour(rows[row][col]))
-				}
-				if col == 0 {
-					return cellStyle.Foreground(colAccent)
+			// table stays readable rather than gaudy.
+			switch strings.ToUpper(strings.TrimSpace(headers[i])) {
+			case "STATUS", "STATE":
+				s = fg(stateColour(c), s)
+			default:
+				if i == 0 {
+					s = Accent(s)
 				}
 			}
-			return cellStyle
-		})
-	return t.String()
+			b.WriteString(s)
+			b.WriteString(sep)
+		}
+		b.WriteString("\n")
+	}
+	rule("╰", "┴", "╯")
+	return strings.TrimSuffix(b.String(), "\n")
 }
 
 // stateColour maps a Docker-style status/state string to a palette colour:
 // green for up/running, red for exited/stopped/dead, amber otherwise.
-func stateColour(s string) lipgloss.Color {
+func stateColour(s string) string {
 	l := strings.ToLower(strings.TrimSpace(s))
 	switch {
 	case strings.HasPrefix(l, "up"), strings.HasPrefix(l, "running"):

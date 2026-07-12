@@ -3,9 +3,6 @@ package ui
 import (
 	"strings"
 	"testing"
-
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
 )
 
 func TestEnabledOverride(t *testing.T) {
@@ -20,6 +17,15 @@ func TestEnabledOverride(t *testing.T) {
 		if Enabled() {
 			t.Fatal("SetEnabled(false) should force Enabled() false")
 		}
+	})
+	t.Run("restore", func(t *testing.T) {
+		restore := SetEnabled(true)
+		inner := SetEnabled(false)
+		inner()
+		if !Enabled() {
+			t.Error("restore should reinstate the previous override")
+		}
+		restore()
 	})
 }
 
@@ -74,13 +80,30 @@ func TestHelpersIdentityWhenDisabled(t *testing.T) {
 	}
 }
 
-func TestAccentEmitsANSIWhenEnabled(t *testing.T) {
-	old := lipgloss.ColorProfile()
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	defer lipgloss.SetColorProfile(old)
+// TestHelpersEmitANSIWhenEnabled locks the escape sequences themselves: each
+// helper wraps its input in the expected 256-colour (or bold) SGR and a reset,
+// with the input preserved verbatim in between.
+func TestHelpersEmitANSIWhenEnabled(t *testing.T) {
 	defer SetEnabled(true)()
-	if got := Accent("hi"); !strings.Contains(got, "\x1b[") {
-		t.Errorf("Accent when enabled with a colour profile should emit ANSI, got %q", got)
+	cases := map[string]struct {
+		f    func(string) string
+		want string
+	}{
+		"Accent":  {Accent, "\x1b[38;5;39mhi\x1b[0m"},
+		"Success": {Success, "\x1b[38;5;42mhi\x1b[0m"},
+		"Warning": {Warning, "\x1b[38;5;214mhi\x1b[0m"},
+		"Error":   {Error, "\x1b[38;5;203mhi\x1b[0m"},
+		"Dim":     {Dim, "\x1b[38;5;244mhi\x1b[0m"},
+		"Bold":    {Bold, "\x1b[1mhi\x1b[0m"},
+		"Title":   {Title, "\x1b[1;38;5;39mhi\x1b[0m"},
+	}
+	for name, c := range cases {
+		if got := c.f("hi"); got != c.want {
+			t.Errorf("%s(\"hi\") = %q, want %q", name, got, c.want)
+		}
+	}
+	if !strings.Contains(Symbol("ok"), "\x1b[38;5;42m") {
+		t.Errorf("Symbol(\"ok\") should be green when enabled, got %q", Symbol("ok"))
 	}
 }
 
@@ -111,18 +134,104 @@ func TestTableNoPanic(t *testing.T) {
 func TestTableStyledHasBorderAndCells(t *testing.T) {
 	defer SetEnabled(true)()
 	out := Table([]string{"NAME", "STATE"}, [][]string{{"alpine", "running"}})
-	if !strings.ContainsAny(out, "─│╭╮╰╯") {
-		t.Errorf("styled table should draw a border, got %q", out)
+	for _, want := range []string{"╭", "╮", "╰", "╯", "┬", "┴", "├", "┤", "┼", "─", "│"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("styled table missing border glyph %q in %q", want, out)
+		}
 	}
 	for _, want := range []string{"NAME", "STATE", "alpine", "running"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("styled table missing %q in %q", want, out)
 		}
 	}
+	if strings.HasSuffix(out, "\n") {
+		t.Errorf("Table should not end with a trailing newline (callers Println it)")
+	}
+	// STATE column is tinted by value: running → green.
+	if !strings.Contains(out, "\x1b[38;5;42m") {
+		t.Errorf("running state cell should be green, got %q", out)
+	}
+}
+
+// stripANSI removes SGR escape sequences so alignment can be checked on the
+// visible characters alone.
+func stripANSI(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '[' {
+			j := i + 2
+			for j < len(s) && s[j] != 'm' {
+				j++
+			}
+			i = j
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// TestTableWideRuneAlignment: CJK and emoji names occupy two terminal cells
+// per rune; every row (including the border rules) must still end at the same
+// column or the box falls apart.
+func TestTableWideRuneAlignment(t *testing.T) {
+	defer SetEnabled(true)()
+	out := Table(
+		[]string{"NAME", "STATUS"},
+		[][]string{
+			{"日本語コンテナ", "Up 2 hours"},
+			{"🚀-rocket", "Exited (0)"},
+			{"plain", "created"},
+		},
+	)
+	lines := strings.Split(stripANSI(out), "\n")
+	if len(lines) < 4 {
+		t.Fatalf("expected a multi-line table, got %q", out)
+	}
+	// Width in terminal cells: wide runes (CJK, emoji) count 2, ASCII 1.
+	width := func(s string) int {
+		w := 0
+		for _, r := range s {
+			switch {
+			case r >= 0x1100 && (r <= 0x115F || // Hangul Jamo
+				r == 0x2329 || r == 0x232A ||
+				(r >= 0x2E80 && r <= 0xA4CF) || // CJK
+				(r >= 0xAC00 && r <= 0xD7A3) ||
+				(r >= 0xF900 && r <= 0xFAFF) ||
+				(r >= 0xFE30 && r <= 0xFE6F) ||
+				(r >= 0xFF00 && r <= 0xFF60) ||
+				(r >= 0xFFE0 && r <= 0xFFE6) ||
+				(r >= 0x1F300 && r <= 0x1FAFF)): // emoji
+				w += 2
+			default:
+				w++
+			}
+		}
+		return w
+	}
+	first := width(lines[0])
+	for i, l := range lines {
+		if width(l) != first {
+			t.Errorf("line %d width %d != %d; misaligned table:\n%s", i, width(l), first, stripANSI(out))
+		}
+	}
+}
+
+// TestTablePlainWhenDisabled: the box is still drawn (callers gate on
+// Enabled() themselves) but no ANSI escapes may appear.
+func TestTablePlainWhenDisabled(t *testing.T) {
+	defer SetEnabled(false)()
+	out := Table([]string{"NAME"}, [][]string{{"alpine"}})
+	if strings.Contains(out, "\x1b") {
+		t.Errorf("Table when disabled must not emit ANSI, got %q", out)
+	}
+	if !strings.Contains(out, "alpine") || !strings.Contains(out, "─") {
+		t.Errorf("Table when disabled should still render content and borders, got %q", out)
+	}
 }
 
 func TestStateColour(t *testing.T) {
-	cases := map[string]lipgloss.Color{
+	cases := map[string]string{
 		"Up 2 hours": colOK,
 		"running":    colOK,
 		"Exited (0)": colErr,
