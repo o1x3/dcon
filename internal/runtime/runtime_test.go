@@ -6,6 +6,25 @@ import (
 	"testing"
 )
 
+// TestIsExitError locks the round-4 fix: a proxied non-zero child exit is an
+// *exec.ExitError (so Execute suppresses Go's "exit status N" artifact), while
+// nil and dcon-level errors are not.
+func TestIsExitError(t *testing.T) {
+	if IsExitError(nil) {
+		t.Error("IsExitError(nil) = true, want false")
+	}
+	if IsExitError(os.ErrNotExist) {
+		t.Error("IsExitError(non-exec error) = true, want false")
+	}
+	err := exec.Command("/bin/sh", "-c", "exit 3").Run()
+	if !IsExitError(err) {
+		t.Errorf("IsExitError(exit-3) = false, want true (%v)", err)
+	}
+	if ExitCode(err) != 3 {
+		t.Errorf("ExitCode(exit-3) = %d, want 3", ExitCode(err))
+	}
+}
+
 func TestBinHonoursEnv(t *testing.T) {
 	t.Setenv("DCON_CONTAINER_BIN", "/custom/container")
 	if got := Bin(); got != "/custom/container" {

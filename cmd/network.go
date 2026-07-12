@@ -31,35 +31,52 @@ func driverForMode(mode string) string {
 }
 
 // matchNetworkFilters implements docker network ls --filter (name/id/driver/scope/label).
+// Repeated values of the same key are OR-combined and distinct keys AND-combined,
+// matching Docker (and dcon's ps/volume filters); labels AND.
 func matchNetworkFilters(n dockerfmt.Network, filters []string) bool {
+	byKey := map[string][]string{}
+	var labels []string
 	for _, fl := range filters {
 		kv := strings.SplitN(fl, "=", 2)
 		if len(kv) != 2 {
 			continue
 		}
-		switch kv[0] {
+		if kv[0] == "label" {
+			labels = append(labels, kv[1])
+			continue
+		}
+		byKey[kv[0]] = append(byKey[kv[0]], kv[1])
+	}
+	match := func(key, val string) bool {
+		switch key {
 		case "name":
-			if !strings.Contains(n.Configuration.Name, kv[1]) {
-				return false
-			}
+			return strings.Contains(n.Configuration.Name, val)
 		case "id":
-			if !strings.HasPrefix(n.ID, kv[1]) {
-				return false
-			}
+			return strings.HasPrefix(n.ID, val)
 		case "driver":
-			if !strings.EqualFold(driverForMode(n.Configuration.Mode), kv[1]) {
-				return false
-			}
+			return strings.EqualFold(driverForMode(n.Configuration.Mode), val)
 		case "scope":
-			if !strings.EqualFold("local", kv[1]) {
-				return false
+			return strings.EqualFold("local", val)
+		}
+		return true // unknown key: ignored
+	}
+	for key, vals := range byKey {
+		matched := false
+		for _, val := range vals {
+			if match(key, val) {
+				matched = true
+				break
 			}
-		case "label":
-			lkv := strings.SplitN(kv[1], "=", 2)
-			got, ok := n.Configuration.Labels[lkv[0]]
-			if !ok || (len(lkv) == 2 && got != lkv[1]) {
-				return false
-			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	for _, lv := range labels {
+		lkv := strings.SplitN(lv, "=", 2)
+		got, ok := n.Configuration.Labels[lkv[0]]
+		if !ok || (len(lkv) == 2 && got != lkv[1]) {
+			return false
 		}
 	}
 	return true
@@ -87,20 +104,22 @@ func newNetworkGroupCmd() *cobra.Command {
 			for _, o := range mustStringArray(cmd.Flags(), "opt") {
 				cargs = append(cargs, "--option", o)
 			}
-			// Docker passes IPv4 and IPv6 subnets through the same --subnet flag;
-			// the backend splits them into --subnet / --subnet-v6. Route by family.
-			if s, _ := cmd.Flags().GetString("subnet"); s != "" {
+			// Docker's --subnet is repeatable (dual-stack: one IPv4 + one IPv6
+			// pool, or several IPv4 pools); the backend splits them into --subnet /
+			// --subnet-v6. Route each value by family. A scalar flag would keep only
+			// the last value and silently drop the rest.
+			subnets := mustStringArray(cmd.Flags(), "subnet")
+			hasV6 := false
+			for _, s := range subnets {
 				if strings.Contains(s, ":") {
 					cargs = append(cargs, "--subnet-v6", s)
+					hasV6 = true
 				} else {
 					cargs = append(cargs, "--subnet", s)
 				}
 			}
-			if v6, _ := cmd.Flags().GetBool("ipv6"); v6 {
-				s, _ := cmd.Flags().GetString("subnet")
-				if !strings.Contains(s, ":") {
-					fmt.Fprintln(os.Stderr, "dcon: warning: --ipv6 has no effect without an IPv6 --subnet (e.g. --subnet 2001:db8::/64)")
-				}
+			if v6, _ := cmd.Flags().GetBool("ipv6"); v6 && !hasV6 {
+				fmt.Fprintln(os.Stderr, "dcon: warning: --ipv6 has no effect without an IPv6 --subnet (e.g. --subnet 2001:db8::/64)")
 			}
 			if p, _ := cmd.Flags().GetString("plugin"); p != "" {
 				cargs = append(cargs, "--plugin", p)
@@ -114,10 +133,18 @@ func newNetworkGroupCmd() *cobra.Command {
 				fmt.Fprintf(os.Stderr, "dcon: warning: driver %q is not supported by the backend and was ignored\n", d)
 			}
 			cargs = append(cargs, args[0])
-			if _, err := runtime.CaptureSilent(cargs...); err != nil {
+			out, err := runtime.CaptureSilent(cargs...)
+			if err != nil {
 				return err
 			}
-			fmt.Println(args[0])
+			// docker `network create` prints the new network's ID. Echo the
+			// backend's output (the id) when it is a single bare token; otherwise
+			// fall back to the name so we never print a backend status line.
+			printed := strings.TrimSpace(out)
+			if printed == "" || strings.ContainsAny(printed, " \t\n") {
+				printed = args[0]
+			}
+			fmt.Println(printed)
 			return nil
 		},
 	}
@@ -125,7 +152,7 @@ func newNetworkGroupCmd() *cobra.Command {
 	create.Flags().Bool("internal", false, "Restrict external access to the network")
 	create.Flags().StringArrayP("label", "l", nil, "Set metadata on a network")
 	create.Flags().StringArrayP("opt", "o", nil, "Set driver specific options")
-	create.Flags().String("subnet", "", "Subnet in CIDR format")
+	create.Flags().StringArray("subnet", nil, "Subnet in CIDR format (repeatable for dual-stack)")
 	create.Flags().String("plugin", "", "Network plugin (backend extra)")
 	create.Flags().String("gateway", "", "IPv4 or IPv6 Gateway (unsupported)")
 	create.Flags().String("ip-range", "", "Allocate IPs from a sub-range (unsupported)")
@@ -178,7 +205,8 @@ func newNetworkGroupCmd() *cobra.Command {
 					nv := v.(networkView)
 					return []string{nv.ID, nv.Name, nv.Driver, nv.Scope}
 				},
-				ID: func(v any) string { return v.(networkView).ID },
+				ID:           func(v any) string { return v.(networkView).ID },
+				FieldHeaders: map[string]string{".ID": "NETWORK ID"},
 			}
 			return dockerfmt.Render(format, quiet, views, def)
 		},

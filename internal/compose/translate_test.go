@@ -161,7 +161,7 @@ func indexOf(args []string, want string) int {
 func TestOneOffArgsEnvAndOverride(t *testing.T) {
 	p := &Project{Name: "proj", Dir: "/tmp"}
 	svc := &Service{Image: "nginx", Command: StringList{"orig"}}
-	got := p.OneOffArgs("web", svc, "proj_default", []string{"echo", "hi"}, []string{"--env", "FOO=bar"}, "", true)
+	got := p.OneOffArgs("web", svc, "proj_default", []string{"echo", "hi"}, []string{"--env", "FOO=bar"}, "", false, true)
 	mustContain(t, got, "--rm")
 	mustContainPair(t, got, "--env", "FOO=bar")
 	// --name and --detach must be dropped for one-off
@@ -183,7 +183,7 @@ func TestOneOffArgsImageEqualFlagValue(t *testing.T) {
 	// regression: a flag value equal to the image ref must not break splitting
 	p := &Project{Name: "proj", Dir: "/tmp"}
 	svc := &Service{Image: "myimg", Platform: "myimg"} // platform value == image
-	got := p.OneOffArgs("web", svc, "", []string{"run-cmd"}, nil, "", true)
+	got := p.OneOffArgs("web", svc, "", []string{"run-cmd"}, nil, "", false, true)
 	img := indexOf(got, "myimg")
 	// the image is the LAST occurrence (platform value is earlier as a flag arg)
 	last := -1
@@ -203,7 +203,7 @@ func TestOneOffArgsImageEqualFlagValue(t *testing.T) {
 func TestOneOffArgsOverridesEntrypoint(t *testing.T) {
 	p := &Project{Name: "proj", Dir: "/tmp"}
 	svc := &Service{Image: "nginx", Entrypoint: StringList{"/svc-ep"}}
-	got := p.OneOffArgs("web", svc, "", nil, []string{"--volume", "/a:/b"}, "/override-ep", true)
+	got := p.OneOffArgs("web", svc, "", nil, []string{"--volume", "/a:/b"}, "/override-ep", true, true)
 	// CLI entrypoint replaces the service entrypoint (no duplicate, no /svc-ep)
 	if indexOf(got, "/svc-ep") != -1 {
 		t.Errorf("service entrypoint should be replaced: %v", got)
@@ -224,7 +224,7 @@ func TestOneOffArgsOverridesEntrypoint(t *testing.T) {
 func TestOneOffArgsRmFalsePreservesCommandRm(t *testing.T) {
 	p := &Project{Name: "proj", Dir: "/tmp"}
 	svc := &Service{Image: "nginx"}
-	got := p.OneOffArgs("web", svc, "", []string{"mytool", "--rm"}, nil, "", false)
+	got := p.OneOffArgs("web", svc, "", []string{"mytool", "--rm"}, nil, "", false, false)
 	img := indexOf(got, "nginx")
 	if img < 0 {
 		t.Fatalf("image not found: %v", got)
@@ -280,13 +280,13 @@ func TestCreateArgsPreservesDetachInCommand(t *testing.T) {
 func TestOneOffArgsEntrypointOverrideDropsExtras(t *testing.T) {
 	p := &Project{Name: "proj", Dir: "/tmp"}
 	svc := &Service{Image: "nginx", Entrypoint: StringList{"/svc-ep", "--flag"}}
-	got := p.OneOffArgs("web", svc, "", nil, nil, "/override-ep", true)
+	got := p.OneOffArgs("web", svc, "", nil, nil, "/override-ep", true, true)
 	if indexOf(got, "--flag") != -1 {
 		t.Errorf("stale entrypoint extra --flag must be dropped on override: %v", got)
 	}
 	mustContainPair(t, got, "--entrypoint", "/override-ep")
 	// Without an override, the extras stay (they belong to the service entrypoint).
-	keep := p.OneOffArgs("web", svc, "", nil, nil, "", true)
+	keep := p.OneOffArgs("web", svc, "", nil, nil, "", false, true)
 	if indexOf(keep, "--flag") == -1 {
 		t.Errorf("without override, the entrypoint extra should remain: %v", keep)
 	}
@@ -299,7 +299,7 @@ func TestOneOffArgsEntrypointOverrideDropsExtras(t *testing.T) {
 func TestOneOffArgsLabelsOneoff(t *testing.T) {
 	p := &Project{Name: "proj", Dir: "/tmp"}
 	svc := &Service{Image: "nginx"}
-	one := p.OneOffArgs("web", svc, "", []string{"sh"}, nil, "", true)
+	one := p.OneOffArgs("web", svc, "", []string{"sh"}, nil, "", false, true)
 	mustContainPair(t, one, "--label", LabelOneoff+"=True")
 	if indexOf(one, LabelOneoff+"=False") != -1 {
 		t.Errorf("one-off must not also carry oneoff=False: %v", one)
@@ -370,7 +370,7 @@ func TestFlattenLongVolumeTmpfs(t *testing.T) {
 func TestOneOffArgsKeepsEntrypointExtrasWithCmdOverride(t *testing.T) {
 	p := &Project{Name: "proj", Dir: "/tmp"}
 	svc := &Service{Image: "nginx", Entrypoint: StringList{"python", "-m", "flask"}, Command: StringList{"run"}}
-	got := p.OneOffArgs("web", svc, "", []string{"shell"}, nil, "", true)
+	got := p.OneOffArgs("web", svc, "", []string{"shell"}, nil, "", false, true)
 	mustContainPair(t, got, "--entrypoint", "python")
 	img := indexOf(got, "nginx")
 	if img < 0 {
@@ -455,12 +455,22 @@ func TestRunArgsEntrypointAndCommandOrder(t *testing.T) {
 	}
 }
 
-func TestRunArgsEmptyEntrypointNotEmitted(t *testing.T) {
+// TestRunArgsEntrypointReset locks Docker Compose semantics: an EXPLICIT empty
+// entrypoint (`entrypoint: ""` or `entrypoint: []`) clears the image ENTRYPOINT
+// and must emit `--entrypoint ""`, while an UNSET entrypoint (nil) must emit no
+// --entrypoint at all. Mirrors the run path's `--entrypoint=""` forwarding.
+func TestRunArgsEntrypointReset(t *testing.T) {
 	p := &Project{Name: "p", Dir: "/tmp"}
-	svc := &Service{Image: "img", Entrypoint: StringList{""}}
-	args := p.RunArgs("s", svc, 1, "", nil)
-	if indexOf(args, "--entrypoint") != -1 {
-		t.Errorf(`entrypoint: "" must not emit --entrypoint: %v`, args)
+
+	// entrypoint: ""  -> clear (emit --entrypoint "")
+	mustContainPair(t, p.RunArgs("s", &Service{Image: "img", Entrypoint: StringList{""}}, 1, "", nil), "--entrypoint", "")
+
+	// entrypoint: []  -> clear (emit --entrypoint "")
+	mustContainPair(t, p.RunArgs("s", &Service{Image: "img", Entrypoint: StringList{}}, 1, "", nil), "--entrypoint", "")
+
+	// unset entrypoint (nil) -> no --entrypoint
+	if args := p.RunArgs("s", &Service{Image: "img"}, 1, "", nil); indexOf(args, "--entrypoint") != -1 {
+		t.Errorf("unset entrypoint must not emit --entrypoint: %v", args)
 	}
 }
 

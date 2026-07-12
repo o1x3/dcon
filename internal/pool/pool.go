@@ -418,7 +418,6 @@ func resolveImageConfig(image string) (entrypoint, cmd []string) {
 // `dcon warm`.
 func Boot(image string) (Member, error) {
 	norm := NormalizeRef(image)
-	ep, cmd := resolveImageConfig(image)
 	out, err := runtime.CaptureSilent(
 		"run", "-d",
 		"--entrypoint", "sleep", // override image entrypoint so keepalive always sleeps
@@ -439,6 +438,12 @@ func Boot(image string) (Member, error) {
 		_ = Destroy(id)
 		return Member{}, fmt.Errorf("warm VM for %s did not stay up (image may lack a 'sleep' binary)", image)
 	}
+	// Resolve the image's real ENTRYPOINT/CMD AFTER the boot: the `run` above
+	// pulls the image if it wasn't already resident, so `image inspect` now
+	// succeeds. Resolving it BEFORE the boot returned nils for a not-yet-pulled
+	// image, poisoning the first warm member of a fresh image so the hot path
+	// dropped the image ENTRYPOINT (ran the user command bare).
+	ep, cmd := resolveImageConfig(image)
 	m := Member{ID: id, Image: norm, Entrypoint: ep, Cmd: cmd, BootedAt: time.Now().Unix()}
 	if err := Add(m); err != nil {
 		// Don't leak the VM if we couldn't record it.
@@ -464,7 +469,10 @@ func Replenish(image string) {
 	if err != nil {
 		return
 	}
-	c := exec.Command(exe, "warm", image, "-n", strconv.Itoa(need), "--quiet")
+	// --replenish marks this as background priming so the warm command clamps to
+	// TargetDepth (preventing concurrent replenishers from over-provisioning);
+	// --quiet suppresses its output. A manual `dcon warm` passes neither.
+	c := exec.Command(exe, "warm", image, "-n", strconv.Itoa(need), "--quiet", "--replenish")
 	// Detach completely: no stdio, own session, not waited on.
 	c.Stdin, c.Stdout, c.Stderr = nil, nil, nil
 	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}

@@ -41,27 +41,48 @@ func resolveVolumeName(flagName string, nameChanged bool, args []string) (string
 }
 
 // matchVolumeFilters implements docker volume ls --filter (name/driver/label).
+// Repeated values of the same key (name/driver) are OR-combined and distinct
+// keys are AND-combined, matching Docker (and dcon's ps filter); labels AND.
 func matchVolumeFilters(v dockerfmt.Volume, driver string, filters []string) bool {
+	byKey := map[string][]string{}
+	var labels []string
 	for _, fl := range filters {
 		kv := strings.SplitN(fl, "=", 2)
 		if len(kv) != 2 {
 			continue
 		}
-		switch kv[0] {
+		if kv[0] == "label" {
+			labels = append(labels, kv[1])
+			continue
+		}
+		byKey[kv[0]] = append(byKey[kv[0]], kv[1])
+	}
+	match := func(key, val string) bool {
+		switch key {
 		case "name":
-			if !strings.Contains(v.Configuration.Name, kv[1]) {
-				return false
-			}
+			return strings.Contains(v.Configuration.Name, val)
 		case "driver":
-			if !strings.EqualFold(driver, kv[1]) {
-				return false
+			return strings.EqualFold(driver, val)
+		}
+		return true // unknown key: ignored
+	}
+	for key, vals := range byKey {
+		matched := false
+		for _, val := range vals {
+			if match(key, val) {
+				matched = true
+				break
 			}
-		case "label":
-			lkv := strings.SplitN(kv[1], "=", 2)
-			got, ok := v.Configuration.Labels[lkv[0]]
-			if !ok || (len(lkv) == 2 && got != lkv[1]) {
-				return false
-			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	for _, lv := range labels {
+		lkv := strings.SplitN(lv, "=", 2)
+		got, ok := v.Configuration.Labels[lkv[0]]
+		if !ok || (len(lkv) == 2 && got != lkv[1]) {
+			return false
 		}
 	}
 	return true
@@ -156,7 +177,8 @@ func newVolumeGroupCmd() *cobra.Command {
 					vv := v.(volumeView)
 					return []string{vv.Driver, vv.Name}
 				},
-				ID: func(v any) string { return v.(volumeView).Name },
+				ID:           func(v any) string { return v.(volumeView).Name },
+				FieldHeaders: map[string]string{".Name": "VOLUME NAME"},
 			}
 			return dockerfmt.Render(format, quiet, views, def)
 		},

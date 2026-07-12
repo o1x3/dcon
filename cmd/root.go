@@ -45,7 +45,12 @@ func Execute() {
 	// parses (see rewriteComposeGlobalShorthands for why this can't be a flag).
 	rootCmd.SetArgs(rewriteComposeGlobalShorthands(os.Args[1:]))
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		// A proxied backend workload that merely exited non-zero already wrote its
+		// own stderr (inherited streams); docker prints nothing here. Only print
+		// for genuine dcon-level errors — not Go's "exit status N" artifact.
+		if !runtime.IsExitError(err) {
+			fmt.Fprintln(os.Stderr, err)
+		}
 		os.Exit(runtime.ExitCode(err))
 	}
 }

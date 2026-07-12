@@ -370,10 +370,29 @@ func composeUp() *cobra.Command {
 					cname := p.ContainerName(name, i, svc)
 					if forceRecreate {
 						_, _ = runtime.CaptureSilent("delete", "--force", cname)
-					} else if _, err := runtime.CaptureSilent("inspect", cname); err == nil {
-						fmt.Println(ui.Dim("Container ") + ui.Accent(cname) + ui.Dim(" is up-to-date"))
-						local = append(local, cname)
-						continue
+					} else if exists, running := composeContainerState(cname); exists {
+						// docker `compose up`: a running container with unchanged config
+						// is left as-is ("up-to-date"); an existing but STOPPED one is
+						// started (not skipped). The old code treated any existing
+						// container as up-to-date, so stop→up / create→up / post-reboot
+						// up silently left services down.
+						switch {
+						case running:
+							fmt.Println(ui.Dim("Container ") + ui.Accent(cname) + ui.Dim(" is up-to-date"))
+							local = append(local, cname)
+							continue
+						case noStart:
+							// --no-start: don't start it, just acknowledge it exists.
+							local = append(local, cname)
+							continue
+						default:
+							fmt.Println(composeStep("Starting", cname))
+							if err := runtime.Run("start", cname); err != nil {
+								return local, fmt.Errorf("start %s: %w", name, err)
+							}
+							local = append(local, cname)
+							continue
+						}
 					}
 					if noStart {
 						rargs := p.CreateArgs(name, svc, i, net)
@@ -388,6 +407,21 @@ func composeUp() *cobra.Command {
 						return local, fmt.Errorf("start %s: %w", name, err)
 					}
 					local = append(local, cname)
+				}
+				// Reconcile down: remove surplus replicas (index > count) so a
+				// down-scale via `up --scale N` (or a plain up after a prior larger
+				// scale) converges to exactly count, matching docker. composeScale
+				// already does this; up must too. One-offs are never touched.
+				if existing, err := projectContainers(p.Name); err == nil {
+					for _, c := range existing {
+						if serviceOf(c) != name || c.Configuration.Labels[compose.LabelOneoff] == "True" {
+							continue
+						}
+						if num, _ := strconv.Atoi(c.Configuration.Labels[compose.LabelNumber]); num > count {
+							fmt.Println(composeStep("Removing", c.ID))
+							_, _ = runtime.CaptureSilent("delete", "--force", c.ID)
+						}
+					}
 				}
 				return local, nil
 			}
@@ -435,7 +469,13 @@ func composeUp() *cobra.Command {
 			// len(started)==0 also short-circuits: effectiveReplicas can legally
 			// return 0 (e.g. `up --scale web=0`), and followAndWait would otherwise
 			// print the attach banner and block on the signal channel forever.
-			if detach || noStart || len(started) == 0 {
+			// --wait implies detached mode in docker compose: bring services up,
+			// (wait for running/healthy), then RETURN — never stream logs. The
+			// backend has no healthcheck mechanism and `container run` returns once
+			// the container is running, so the services are already up here; just
+			// return instead of falling through to followAndWait (which would hang).
+			wait, _ := cmd.Flags().GetBool("wait")
+			if detach || noStart || wait || len(started) == 0 {
 				return nil
 			}
 			// Foreground: stream aggregated logs until interrupted, then stop.
@@ -563,8 +603,14 @@ func composeDown() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// docker compose down does a GRACEFUL shutdown (SIGTERM, wait up to -t,
+			// then SIGKILL) before removing — not an immediate force-kill, which can
+			// lose unflushed state on stateful services. Honor the -t/--timeout flag.
+			timeoutChanged := cmd.Flags().Changed("timeout")
+			timeout, _ := cmd.Flags().GetInt("timeout")
 			for _, c := range containers {
 				fmt.Println(composeStep("Removing", c.ID))
+				_, _ = runtime.CaptureSilent(composeStopArgs(timeoutChanged, timeout, c.ID)...)
 				_, _ = runtime.CaptureSilent("delete", "--force", c.ID)
 			}
 			// Remove the default network plus any declared (non-external) ones.
@@ -740,6 +786,11 @@ func composeLogs() *cobra.Command {
 				}
 			}
 			if follow {
+				// Nothing to follow: return immediately instead of blocking on the
+				// signal channel forever (docker compose logs -f does the same).
+				if len(targets) == 0 {
+					return nil
+				}
 				return followLogs(targets, tail, noPrefix)
 			}
 			for _, c := range targets {
@@ -960,6 +1011,14 @@ func lifecycleOnProject(verb string) func(cmd *cobra.Command, args []string) err
 			}
 			switch verb {
 			case "rm":
+				// docker compose rm removes only STOPPED containers; a running one
+				// is preserved unless -s/--stop is given. Force-deleting a running
+				// service (the old unconditional behavior) destroyed it.
+				stop, _ := cmd.Flags().GetBool("stop")
+				if c.Status.State == "running" && !stop {
+					fmt.Fprintf(os.Stderr, "dcon: warning: %s is running; not removed (use -s to stop and remove)\n", serviceOf(c))
+					continue
+				}
 				_, _ = runtime.CaptureSilent("delete", "--force", c.ID)
 			case "stop":
 				_, _ = runtime.CaptureSilent(composeStopArgs(timeoutChanged, timeout, c.ID)...)
@@ -1049,7 +1108,12 @@ func composeConfig() *cobra.Command {
 				return nil
 			}
 			if v, _ := cmd.Flags().GetBool("volumes"); v {
+				names := make([]string, 0, len(p.Volumes))
 				for n := range p.Volumes {
+					names = append(names, n)
+				}
+				sort.Strings(names) // deterministic order, like the --services branch
+				for _, n := range names {
 					fmt.Println(n)
 				}
 				return nil
@@ -1155,11 +1219,17 @@ func composeCreate() *cobra.Command {
 						return err
 					}
 				}
-				rargs := p.CreateArgs(name, svc, 1, net)
 				cname := p.ContainerName(name, 1, svc)
 				if forceRecreate {
 					_, _ = runtime.CaptureSilent("delete", "--force", cname)
+				} else if _, err := runtime.CaptureSilent("inspect", cname); err == nil {
+					// docker `compose create` is idempotent: an already-existing
+					// container is left as-is rather than erroring on a duplicate
+					// name. (composeUp's bringUp guards the same way.)
+					fmt.Println(ui.Dim("Container ") + ui.Accent(cname) + ui.Dim(" exists"))
+					continue
 				}
+				rargs := p.CreateArgs(name, svc, 1, net)
 				fmt.Println(composeStep("Creating", cname))
 				if err := runtime.Run(rargs...); err != nil {
 					return err
@@ -1313,10 +1383,8 @@ func composeRun() *cobra.Command {
 			if !ok {
 				return fmt.Errorf("no such service: %s", svcName)
 			}
-			for _, flag := range []string{"service-ports", "publish-all"} {
-				if cmd.Flags().Changed(flag) {
-					fmt.Fprintf(os.Stderr, "dcon: warning: --%s is not supported by the backend and was ignored\n", flag)
-				}
+			if cmd.Flags().Changed("publish-all") {
+				fmt.Fprintln(os.Stderr, "dcon: warning: --publish-all is not supported by the backend and was ignored")
 			}
 			if b, _ := cmd.Flags().GetBool("build"); b && svc.Build.IsSet() {
 				fmt.Println(composeStep("Building", svcName))
@@ -1335,10 +1403,25 @@ func composeRun() *cobra.Command {
 			}
 			addEach("--env", mustStringArray(cmd.Flags(), "env"))
 			addEach("--env-file", mustStringArray(cmd.Flags(), "env-file"))
-			addEach("--volume", mustStringArray(cmd.Flags(), "volume"))
+			// CLI -v overrides: strip the macOS-irrelevant mount options the backend
+			// rejects (:z/:Z/:cached/:delegated/:consistent), exactly like `dcon run
+			// -v` (normalizeVolume) and compose-file volumes (stripVolumeOpts) do —
+			// otherwise `compose run -v X:Y:cached` fails where the others succeed.
+			var volWarnings []string
+			for _, v := range mustStringArray(cmd.Flags(), "volume") {
+				overrides = append(overrides, "--volume", normalizeVolume(v, &volWarnings))
+			}
+			for _, w := range volWarnings {
+				fmt.Fprintln(os.Stderr, "dcon: warning: "+w)
+			}
 			addEach("--publish", mustStringArray(cmd.Flags(), "publish"))
 			addEach("--label", mustStringArray(cmd.Flags(), "label"))
 			addEach("--cap-add", mustStringArray(cmd.Flags(), "cap-add"))
+			// --service-ports re-publishes the service's declared ports (off by
+			// default in docker compose run to avoid colliding with the live service).
+			if sp, _ := cmd.Flags().GetBool("service-ports"); sp {
+				addEach("--publish", svc.Ports)
+			}
 			if name, _ := cmd.Flags().GetString("name"); name != "" {
 				overrides = append(overrides, "--name", name)
 			}
@@ -1349,6 +1432,9 @@ func composeRun() *cobra.Command {
 				overrides = append(overrides, "--user", u)
 			}
 			entrypoint, _ := cmd.Flags().GetString("entrypoint")
+			// Changed (not non-empty): `--entrypoint ""` is an explicit reset that
+			// must clear the entrypoint, matching the run path's f.Changed handling.
+			entrypointSet := cmd.Flags().Changed("entrypoint")
 
 			detach, _ := cmd.Flags().GetBool("detach")
 			// Forward TTY/interactive to the backend (the run RunE previously read
@@ -1362,7 +1448,7 @@ func composeRun() *cobra.Command {
 			}
 
 			rm, _ := cmd.Flags().GetBool("rm")
-			run := p.OneOffArgs(svcName, svc, net, args[1:], overrides, entrypoint, rm)
+			run := p.OneOffArgs(svcName, svc, net, args[1:], overrides, entrypoint, entrypointSet, rm)
 			if detach {
 				run = append([]string{run[0], "--detach"}, run[1:]...)
 			}
@@ -1407,10 +1493,18 @@ func effectiveReplicas(svc *compose.Service, scale map[string]int, name string) 
 		}
 		return v
 	}
-	if svc.Scale < 1 {
-		return 1 // no --scale and no service-level scale: one replica
+	if svc.Scale >= 1 {
+		return svc.Scale
 	}
-	return svc.Scale
+	// Modern `deploy: { replicas: N }` (no legacy top-level scale:). A pointer so
+	// an explicit 0 is honored as "run nothing"; nil means unset.
+	if r := svc.Deploy.Replicas; r != nil {
+		if *r < 0 {
+			return 0
+		}
+		return *r
+	}
+	return 1 // no --scale, scale:, or deploy.replicas: one replica
 }
 
 // parseScale turns ["web=3","db=2"] into {web:3, db:2}.
@@ -1470,19 +1564,53 @@ func composeImages() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Map image reference -> short image id so the IMAGE ID column matches
+			// what `dcon images` shows; fall back to the container's image
+			// descriptor digest when the image isn't in the local list.
+			idByRef := map[string]string{}
+			if imgs, err := getImages(); err == nil {
+				for _, im := range imgs {
+					idByRef[dockerfmt.ShortImage(im.Configuration.Name)] = dockerfmt.ShortID(im.ID)
+				}
+			}
 			selected := serviceSet(args) // nil => all services (docker: images [SERVICE...])
 			w := dockerfmt.NewTabWriter()
-			fmt.Fprintln(w, "CONTAINER\tREPOSITORY\tTAG\tSIZE")
+			// docker `compose images` columns: CONTAINER REPOSITORY TAG IMAGE ID SIZE.
+			fmt.Fprintln(w, "CONTAINER\tREPOSITORY\tTAG\tIMAGE ID\tSIZE")
 			for _, c := range containers {
 				if selected != nil && !selected[serviceOf(c)] {
 					continue
 				}
-				repo, tag := dockerfmt.SplitRepoTag(dockerfmt.ShortImage(c.Configuration.Image.Reference))
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", c.ID, repo, tag, "N/A")
+				ref := dockerfmt.ShortImage(c.Configuration.Image.Reference)
+				repo, tag := dockerfmt.SplitRepoTag(ref)
+				imgID := idByRef[ref]
+				if imgID == "" {
+					imgID = dockerfmt.ShortID(c.Configuration.Image.Descriptor.Digest)
+				}
+				if imgID == "" {
+					imgID = "N/A"
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", c.ID, repo, tag, imgID, "N/A")
 			}
 			return w.Flush()
 		},
 	}
+}
+
+// composeContainerState reports whether a backend container exists and, if so,
+// whether it is currently running, via `container inspect` (which succeeds for
+// stopped/created containers too). Used by `compose up` to decide whether an
+// existing container is up-to-date (running) or needs starting (stopped).
+func composeContainerState(name string) (exists, running bool) {
+	var rows []struct {
+		Status struct {
+			State string `json:"state"`
+		} `json:"status"`
+	}
+	if err := runtime.CaptureJSON(&rows, "inspect", name); err != nil || len(rows) == 0 {
+		return false, false
+	}
+	return true, rows[0].Status.State == "running"
 }
 
 func composeVersion() *cobra.Command {
@@ -1534,6 +1662,12 @@ func composeScale() *cobra.Command {
 				}
 				for _, c := range containers {
 					if serviceOf(c) != svcName {
+						continue
+					}
+					// Never touch one-off `compose run` containers (oneoff=True): scale
+					// manages only service replicas, matching the other resolvers
+					// (serviceContainerByIndex/firstServiceContainer) which skip oneoffs.
+					if c.Configuration.Labels[compose.LabelOneoff] == "True" {
 						continue
 					}
 					if num, _ := strconv.Atoi(c.Configuration.Labels[compose.LabelNumber]); num > n {
@@ -1704,15 +1838,25 @@ func composePort() *cobra.Command {
 				if pr == "" {
 					pr = "tcp"
 				}
-				if fmt.Sprint(pt.ContainerPort) != args[1] || strings.ToLower(pr) != proto {
+				if strings.ToLower(pr) != proto {
 					continue
 				}
 				host := pt.HostAddress
 				if host == "" {
 					host = "0.0.0.0"
 				}
-				fmt.Printf("%s:%d\n", host, pt.HostPort)
-				return nil
+				cnt := pt.Count
+				if cnt < 1 {
+					cnt = 1
+				}
+				// A published range arrives as one PublishPort with Count>1; expand
+				// it so an in-range query (e.g. 8001 within 8000-8002) resolves.
+				for k := 0; k < cnt; k++ {
+					if fmt.Sprint(pt.ContainerPort+k) == args[1] {
+						fmt.Printf("%s:%d\n", host, pt.HostPort+k)
+						return nil
+					}
+				}
 			}
 			return nil
 		},

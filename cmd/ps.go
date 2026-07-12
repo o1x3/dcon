@@ -204,43 +204,68 @@ func ancestorMatches(reference, val string) bool {
 	return shortVal == shortRef || shortVal == repo || shortVal == repo+":"+tag
 }
 
-// applyFilters implements the common docker ps --filter predicates.
+// applyFilters implements the common docker ps --filter predicates. Docker
+// OR-combines repeated values of the SAME key (status/name/id/ancestor) and
+// AND-combines across DISTINCT keys; the special `label` key is AND-combined
+// (every label predicate must match). A naive "set keep=false on any failing
+// predicate" loop would AND same-key filters too, so `--filter status=running
+// --filter status=exited` (Docker's union idiom) wrongly returned nothing.
 func applyFilters(list []dockerfmt.Container, filters []string) []dockerfmt.Container {
 	if len(filters) == 0 {
 		return list
 	}
+	byKey := map[string][]string{}
+	var labels []string
+	for _, fl := range filters {
+		kv := strings.SplitN(fl, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		if kv[0] == "label" {
+			labels = append(labels, kv[1])
+			continue
+		}
+		byKey[kv[0]] = append(byKey[kv[0]], kv[1])
+	}
+	matchKey := func(c dockerfmt.Container, key, val string) bool {
+		switch key {
+		case "status":
+			return matchStatusFilter(c.Status.State, val)
+		case "name":
+			return strings.Contains(c.ID, val)
+		case "id":
+			return strings.HasPrefix(c.ID, val)
+		case "ancestor":
+			return ancestorMatches(c.Configuration.Image.Reference, val)
+		}
+		return true // unknown key: ignored (never excludes), as before
+	}
 	var out []dockerfmt.Container
 	for _, c := range list {
 		keep := true
-		for _, fl := range filters {
-			kv := strings.SplitN(fl, "=", 2)
-			if len(kv) != 2 {
-				continue
+		// Across distinct keys: AND. Within a key: OR (match ANY value).
+		for key, vals := range byKey {
+			matched := false
+			for _, v := range vals {
+				if matchKey(c, key, v) {
+					matched = true
+					break
+				}
 			}
-			key, val := kv[0], kv[1]
-			switch key {
-			case "status":
-				if !matchStatusFilter(c.Status.State, val) {
-					keep = false
-				}
-			case "name":
-				if !strings.Contains(c.ID, val) {
-					keep = false
-				}
-			case "id":
-				if !strings.HasPrefix(c.ID, val) {
-					keep = false
-				}
-			case "ancestor":
-				if !ancestorMatches(c.Configuration.Image.Reference, val) {
-					keep = false
-				}
-			case "label":
-				lkv := strings.SplitN(val, "=", 2)
-				got, ok := c.Configuration.Labels[lkv[0]]
-				if !ok || (len(lkv) == 2 && got != lkv[1]) {
-					keep = false
-				}
+			if !matched {
+				keep = false
+				break
+			}
+		}
+		// label predicates: AND (every one must match).
+		for _, lv := range labels {
+			if !keep {
+				break
+			}
+			lkv := strings.SplitN(lv, "=", 2)
+			got, ok := c.Configuration.Labels[lkv[0]]
+			if !ok || (len(lkv) == 2 && got != lkv[1]) {
+				keep = false
 			}
 		}
 		if keep {
@@ -305,13 +330,25 @@ func newPsCmd() *cobra.Command {
 			for _, c := range list {
 				views = append(views, buildPsView(c, noTrunc))
 			}
-			def := dockerfmt.TableDef{
-				Headers: []string{"CONTAINER ID", "IMAGE", "COMMAND", "CREATED", "STATUS", "PORTS", "NAMES"},
-				Row: func(v any) []string {
+			// docker ps -s appends a trailing SIZE column; the default (non -s)
+			// table is left exactly as-is to preserve byte-identity.
+			size, _ := cmd.Flags().GetBool("size")
+			headers := []string{"CONTAINER ID", "IMAGE", "COMMAND", "CREATED", "STATUS", "PORTS", "NAMES"}
+			rowFn := func(v any) []string {
+				p := v.(psView)
+				return []string{p.ID, p.Image, p.Command, p.RunningFor, p.Status, p.Ports, p.Names}
+			}
+			if size {
+				headers = append(headers, "SIZE")
+				rowFn = func(v any) []string {
 					p := v.(psView)
-					return []string{p.ID, p.Image, p.Command, p.RunningFor, p.Status, p.Ports, p.Names}
-				},
-				ID: func(v any) string { return v.(psView).ID },
+					return []string{p.ID, p.Image, p.Command, p.RunningFor, p.Status, p.Ports, p.Names, p.Size}
+				}
+			}
+			def := dockerfmt.TableDef{
+				Headers: headers,
+				Row:     rowFn,
+				ID:      func(v any) string { return v.(psView).ID },
 			}
 			return dockerfmt.Render(format, quiet, views, def)
 		},

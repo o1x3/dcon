@@ -524,7 +524,7 @@ func machineInfoCmd() *cobra.Command {
 				return err
 			}
 			format, _ := cmd.Flags().GetString("format")
-			raw, err := inspectRaw("container", []string{id})
+			raw, _, err := inspectRaw("container", []string{id})
 			if err != nil {
 				return err
 			}

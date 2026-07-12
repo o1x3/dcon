@@ -2,9 +2,11 @@ package compose
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -80,6 +82,73 @@ func ShellSplit(s string) []string {
 	return args
 }
 
+// entrypointTokens normalizes a service entrypoint to argv tokens. A
+// single-element (string / shell form) entrypoint is shell-split exactly like a
+// string command, so `entrypoint: "python -m app"` becomes ["python","-m","app"]
+// rather than one executable literally named "python -m app"; a multi-element
+// list form is taken verbatim. An empty or reset entrypoint (entrypoint: "" or
+// []) yields no tokens. The first token is the backend --entrypoint; the rest
+// become leading process args after the image.
+func entrypointTokens(svc *Service) []string {
+	if len(svc.Entrypoint) == 1 {
+		return ShellSplit(svc.Entrypoint[0])
+	}
+	return svc.Entrypoint
+}
+
+// entrypointReset reports whether the service EXPLICITLY clears the image
+// ENTRYPOINT — `entrypoint: ""` or `entrypoint: []` — as opposed to leaving it
+// unset (a nil StringList). Compose, like `docker run --entrypoint ""`, treats
+// an explicit empty entrypoint as "ignore the image's ENTRYPOINT", so dcon must
+// forward `--entrypoint ""` rather than silently keeping the image's. Mirrors
+// the run path's f.Changed("entrypoint") handling (cmd/run.go).
+func entrypointReset(svc *Service) bool {
+	ep := svc.Entrypoint
+	return ep != nil && (len(ep) == 0 || (len(ep) == 1 && ep[0] == ""))
+}
+
+// roundCPUs converts a compose cpus value (which may be fractional, e.g. "0.5")
+// into the whole-CPU count the backend accepts, rounding up so 0<f<1 never
+// yields 0 — matching cmd.parseCPUs on the run path (CLAUDE.md: run/create and
+// compose --cpus handling must not drift). A non-numeric / non-finite /
+// non-positive value is returned unchanged so the backend surfaces the error.
+func roundCPUs(cv string) string {
+	fv, err := strconv.ParseFloat(cv, 64)
+	if err != nil || math.IsNaN(fv) || math.IsInf(fv, 0) || fv <= 0 {
+		return cv
+	}
+	return strconv.Itoa(int(math.Ceil(fv)))
+}
+
+// macOS-irrelevant bind-mount options the container backend rejects (SELinux
+// :z/:Z and the legacy :cached/:delegated/:consistent performance hints). The
+// run path strips these in cmd.normalizeVolume; the compose path must too, or a
+// service volume like "./src:/app:cached" reaches the backend verbatim and the
+// service fails to start (while `dcon run -v ./src:/app:cached` works).
+var droppedVolumeOpts = map[string]bool{"z": true, "Z": true, "cached": true, "delegated": true, "consistent": true}
+
+// stripVolumeOpts removes droppedVolumeOpts from a resolved volume spec's
+// trailing options field, preserving ro/rw and any other tokens.
+func stripVolumeOpts(spec string) string {
+	parts := strings.Split(spec, ":")
+	if len(parts) < 3 {
+		return spec // src:dst or named:dst — no options field to strip
+	}
+	opts := strings.Split(parts[len(parts)-1], ",")
+	var kept []string
+	for _, o := range opts {
+		if droppedVolumeOpts[o] {
+			continue
+		}
+		kept = append(kept, o)
+	}
+	base := strings.Join(parts[:len(parts)-1], ":")
+	if len(kept) == 0 {
+		return base
+	}
+	return base + ":" + strings.Join(kept, ",")
+}
+
 // RunArgs builds the `container run ...` argument list for a service.
 // netName, when non-empty, is attached via --network. index is the replica
 // number (1-based).
@@ -136,12 +205,15 @@ func (p *Project) runArgs(service string, svc *Service, index int, netName strin
 		args = append(args, "--platform", svc.Platform)
 	}
 	// cpus/memory: top-level wins, else fall back to deploy.resources.limits.
+	// cpus: top-level wins, else deploy.resources.limits. A fractional Docker
+	// quota (e.g. 0.5) is rounded up to a whole CPU, matching cmd.parseCPUs on
+	// the run path (the backend accepts whole CPUs only).
 	cpus := svc.CPUs
 	if cpus == "" {
 		cpus = svc.Deploy.Resources.Limits.CPUs
 	}
 	if cpus != "" {
-		args = append(args, "--cpus", cpus)
+		args = append(args, "--cpus", roundCPUs(cpus))
 	}
 	mem := svc.MemLimit
 	if mem == "" {
@@ -165,10 +237,16 @@ func (p *Project) runArgs(service string, svc *Service, index int, netName strin
 	if svc.Privileged {
 		args = append(args, "--cap-add", "ALL")
 	}
-	// container --entrypoint takes a single command string; skip the empty/reset
-	// forms (entrypoint: "" or []).
-	if len(svc.Entrypoint) > 0 && svc.Entrypoint[0] != "" {
-		args = append(args, "--entrypoint", svc.Entrypoint[0])
+	// container --entrypoint takes a single executable token; the rest become
+	// leading process args after the image. A string-form entrypoint is
+	// shell-split (like command), and the empty/reset forms (entrypoint: "" or
+	// []) yield no tokens.
+	ep := entrypointTokens(svc)
+	if len(ep) > 0 {
+		args = append(args, "--entrypoint", ep[0])
+	} else if entrypointReset(svc) {
+		// Explicit `entrypoint: ""` / `entrypoint: []`: clear the image ENTRYPOINT.
+		args = append(args, "--entrypoint", "")
 	}
 
 	for _, k := range sortedKeys(svc.Environment) {
@@ -215,7 +293,7 @@ func (p *Project) runArgs(service string, svc *Service, index int, netName strin
 			args = append(args, "--tmpfs", target)
 			continue
 		}
-		args = append(args, "--volume", p.resolveVolume(vol))
+		args = append(args, "--volume", stripVolumeOpts(p.resolveVolume(vol)))
 	}
 
 	imageIdx = len(args)
@@ -223,8 +301,8 @@ func (p *Project) runArgs(service string, svc *Service, index int, netName strin
 
 	// After the image: extra entrypoint tokens (beyond entrypoint[0]) become
 	// leading process args, then the command, matching Docker.
-	if len(svc.Entrypoint) > 1 {
-		args = append(args, svc.Entrypoint[1:]...)
+	if len(ep) > 1 {
+		args = append(args, ep[1:]...)
 	}
 	if len(svc.Command) == 1 {
 		args = append(args, ShellSplit(svc.Command[0])...)
@@ -257,7 +335,11 @@ func (p *Project) ImageRef(service string, svc *Service) string {
 // cannot misplace the override. rm controls --rm directly: it is added (or not)
 // here rather than being stripped afterward, so a literal "--rm" in the user's
 // command args is never removed.
-func (p *Project) OneOffArgs(service string, svc *Service, netName string, cmdOverride, overrides []string, entrypoint string, rm bool) []string {
+// entrypointSet reports whether the CLI explicitly set --entrypoint (even to
+// ""); when true, the override (including an empty value, which clears the
+// entrypoint, matching `docker compose run --entrypoint ""`) replaces the
+// service's. When false, entrypoint is ignored and the service's is kept.
+func (p *Project) OneOffArgs(service string, svc *Service, netName string, cmdOverride, overrides []string, entrypoint string, entrypointSet, rm bool) []string {
 	base, imageIdx := p.runArgs(service, svc, 1, netName, nil, true) // oneoff=true
 	flags := base[1:imageIdx]                                        // the run flags span (after "run", before image)
 	image := base[imageIdx]
@@ -273,15 +355,21 @@ func (p *Project) OneOffArgs(service string, svc *Service, netName string, cmdOv
 		case "--name":
 			i++ // skip its value
 			continue
+		case "--publish":
+			// docker compose run does NOT publish the service's declared ports
+			// (it would collide with the already-running service); they are
+			// re-injected by composeRun only when --service-ports is given.
+			i++ // skip the port spec
+			continue
 		case "--entrypoint":
-			if entrypoint != "" {
+			if entrypointSet {
 				i++ // drop the service entrypoint; the override replaces it
 				continue
 			}
 		}
 		out = append(out, flags[i])
 	}
-	if entrypoint != "" {
+	if entrypointSet {
 		out = append(out, "--entrypoint", entrypoint)
 	}
 	out = append(out, overrides...) // raw CLI override tokens, before the image
@@ -296,7 +384,7 @@ func (p *Project) OneOffArgs(service string, svc *Service, netName string, cmdOv
 	//     the whole entrypoint.
 	//   - command: replaced by cmdOverride when given, else the service command.
 	var extras, command []string
-	if n := len(svc.Entrypoint) - 1; n > 0 {
+	if n := len(entrypointTokens(svc)) - 1; n > 0 {
 		if avail := len(base) - (imageIdx + 1); n > avail {
 			n = avail
 		}
@@ -305,7 +393,7 @@ func (p *Project) OneOffArgs(service string, svc *Service, netName string, cmdOv
 	} else {
 		command = base[imageIdx+1:]
 	}
-	if entrypoint == "" {
+	if !entrypointSet {
 		out = append(out, extras...) // keep the service entrypoint's own args
 	}
 	if len(cmdOverride) > 0 {
@@ -403,6 +491,13 @@ func (p *Project) NetworkName(key string, spec *NetworkSpec) string {
 	if spec != nil && spec.Name != "" {
 		return spec.Name
 	}
+	// An external network already exists outside the project; reference it by its
+	// exact key, never the project-prefixed name (mirrors VolumeName). dcon never
+	// creates external networks, so a prefixed name would name a network that does
+	// not exist and the container would fail to attach.
+	if spec != nil && spec.External {
+		return key
+	}
 	return p.Name + "_" + key
 }
 
@@ -424,12 +519,17 @@ func (p *Project) VolumeName(key string, spec *VolumeSpec) string {
 // Replicas returns the number of instances to run for a service: the CLI/scale
 // override if > 0, else the service's `scale:`, else 1.
 func (p *Project) Replicas(svc *Service, override int) int {
-	n := svc.Scale
 	if override > 0 {
-		n = override
+		return override
 	}
-	if n < 1 {
-		n = 1
+	if svc.Scale >= 1 {
+		return svc.Scale
 	}
-	return n
+	if r := svc.Deploy.Replicas; r != nil { // modern deploy.replicas fallback
+		if *r < 0 {
+			return 0
+		}
+		return *r
+	}
+	return 1
 }

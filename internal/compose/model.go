@@ -83,8 +83,11 @@ func (s *Service) Enabled(active map[string]bool) bool {
 	return false
 }
 
-// Deploy models the subset of compose `deploy:` dcon can honor (resource limits).
+// Deploy models the subset of compose `deploy:` dcon can honor (replica count
+// and resource limits). Replicas is a pointer so an explicit `replicas: 0` is
+// distinguishable from unset (nil).
 type Deploy struct {
+	Replicas  *int `yaml:"replicas"`
 	Resources struct {
 		Limits       ResourceSpec `yaml:"limits"`
 		Reservations ResourceSpec `yaml:"reservations"`
@@ -240,6 +243,12 @@ func (s *StringList) UnmarshalYAML(value *yaml.Node) error {
 	if err := value.Decode(&list); err != nil {
 		return err
 	}
+	if list == nil {
+		// An explicit empty sequence (`entrypoint: []`) must stay non-nil so it is
+		// distinguishable from an unset field (nil) — the entrypoint-reset case
+		// needs that distinction to clear the image ENTRYPOINT.
+		list = []string{}
+	}
 	*s = list
 	return nil
 }
@@ -376,6 +385,22 @@ type VolumeList []string
 func (v *VolumeList) UnmarshalYAML(value *yaml.Node) error {
 	*v = decodeShortOrLong(value, flattenLongVolume)
 	return nil
+}
+
+// MarshalYAML renders the list for `compose config` without leaking the internal
+// tmpfs sentinel (a NUL-byte marker that is invalid YAML): a flattened long-form
+// tmpfs volume is emitted back as a `{type: tmpfs, target: <path>}` mapping;
+// everything else is its plain short-form string.
+func (v VolumeList) MarshalYAML() (any, error) {
+	out := make([]any, 0, len(v))
+	for _, vol := range v {
+		if target, ok := strings.CutPrefix(vol, tmpfsVolumeMarker); ok {
+			out = append(out, map[string]string{"type": "tmpfs", "target": target})
+		} else {
+			out = append(out, vol)
+		}
+	}
+	return out, nil
 }
 
 // tmpfsVolumeMarker prefixes a flattened long-form volume whose type is tmpfs so
@@ -537,6 +562,17 @@ func Load(path, projectOverride string) (*Project, error) {
 	if err := yaml.Unmarshal([]byte(expanded), &p); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
+	// Drop empty/null service bodies (`web:` with no mapping under it), which yaml
+	// decodes to a present key with a nil *Service. They are not runnable services;
+	// removing them here spares every command (up/pull/push/down/run/scale and any
+	// future one that iterates p.Services) a nil-pointer dereference, matching how
+	// Order()/Levels() already skip them. A lookup of a dropped name then cleanly
+	// reports "no such service" instead of panicking.
+	for name, svc := range p.Services {
+		if svc == nil {
+			delete(p.Services, name)
+		}
+	}
 	p.File = path
 	p.Dir = filepath.Dir(path)
 	if projectOverride != "" {
@@ -646,9 +682,12 @@ func (p *Project) Order() []string {
 			return
 		}
 		svc, ok := p.Services[name]
-		if !ok {
-			// Undefined dependency (typo / external) — never emit it as a
-			// service to start, so callers don't index a nil *Service.
+		if !ok || svc == nil {
+			// Undefined dependency (typo / external), or a present-but-empty
+			// service body (`web:` with nothing under it, which yaml decodes to a
+			// nil *Service) — never emit it as a service to start, so callers
+			// don't dereference a nil *Service. Skipping instead of panicking with
+			// a stack trace on a half-edited compose file.
 			visited[name] = true
 			return
 		}
@@ -692,8 +731,8 @@ func (p *Project) Levels() [][]string {
 		svc := p.Services[name]
 		lv := 0
 		for _, d := range svc.DependsOn {
-			if _, ok := p.Services[d]; !ok {
-				continue // undefined dependency: ignored, as in Order()
+			if dep, ok := p.Services[d]; !ok || dep == nil {
+				continue // undefined or empty (nil) dependency: ignored, as in Order()
 			}
 			if level[d]+1 > lv {
 				lv = level[d] + 1

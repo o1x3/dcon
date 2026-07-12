@@ -68,8 +68,10 @@ func buildImageView(img dockerfmt.Image, noTrunc bool) imageView {
 		Digest:       digest,
 		CreatedSince: dockerfmt.RelativeAgo(img.Configuration.CreationDate),
 		CreatedAt:    img.Configuration.CreationDate,
-		Size:         dockerfmt.HumanSize(float64(imageSizeBytes(img))),
-		Platform:     plat,
+		// docker images SIZE uses 3 significant figures (HumanSizeWithPrecision),
+		// not the default 4 — e.g. "13.3kB", not "13.26kB".
+		Size:     dockerfmt.HumanSizeWithPrecision(float64(imageSizeBytes(img)), 3),
+		Platform: plat,
 	}
 }
 
@@ -145,8 +147,12 @@ func runImages(cmd *cobra.Command, args []string) error {
 		}
 		views = append(views, v)
 	}
+	// Sort newest first, matching `docker images` (daemon returns created-time
+	// descending; the CLI does no alphabetical re-sort). Mirrors `dcon ps`.
 	sort.SliceStable(views, func(i, j int) bool {
-		return views[i].(imageView).Repository < views[j].(imageView).Repository
+		ti, _ := dockerfmt.ParseTime(views[i].(imageView).CreatedAt)
+		tj, _ := dockerfmt.ParseTime(views[j].(imageView).CreatedAt)
+		return ti.After(tj)
 	})
 
 	headers := []string{"REPOSITORY", "TAG", "IMAGE ID", "CREATED", "SIZE"}
@@ -162,9 +168,10 @@ func runImages(cmd *cobra.Command, args []string) error {
 		}
 	}
 	def := dockerfmt.TableDef{
-		Headers: headers,
-		Row:     rowFn,
-		ID:      func(v any) string { return v.(imageView).ID },
+		Headers:      headers,
+		Row:          rowFn,
+		ID:           func(v any) string { return v.(imageView).ID },
+		FieldHeaders: map[string]string{".ID": "IMAGE ID"},
 	}
 	return dockerfmt.Render(format, quiet, views, def)
 }
@@ -206,6 +213,7 @@ func validateImageFilters(filters []string) error {
 }
 
 func matchImageFilters(v imageView, filters []string) bool {
+	var refs []string
 	for _, fl := range filters {
 		kv := strings.SplitN(fl, "=", 2)
 		if len(kv) != 2 {
@@ -213,14 +221,7 @@ func matchImageFilters(v imageView, filters []string) bool {
 		}
 		switch kv[0] {
 		case "reference":
-			// glob match against both the tagged form and the bare repo
-			// (docker treats reference=nginx as matching any tag).
-			full := v.Repository + ":" + v.Tag
-			m1, _ := filepath.Match(kv[1], full)
-			m2, _ := filepath.Match(kv[1], v.Repository)
-			if !m1 && !m2 {
-				return false
-			}
+			refs = append(refs, kv[1])
 		case "dangling":
 			// All listed images are tagged here, so dangling=true matches none.
 			if kv[1] == "true" {
@@ -228,6 +229,24 @@ func matchImageFilters(v imageView, filters []string) bool {
 			}
 		default:
 			fmt.Fprintf(os.Stderr, "dcon: warning: image filter %q is not supported and was ignored\n", kv[0])
+		}
+	}
+	// Multiple reference= patterns are OR-combined (union), matching docker —
+	// keep the image if it matches ANY pattern (against the tagged form or the
+	// bare repo, since docker treats reference=nginx as matching any tag).
+	if len(refs) > 0 {
+		full := v.Repository + ":" + v.Tag
+		matched := false
+		for _, pat := range refs {
+			m1, _ := filepath.Match(pat, full)
+			m2, _ := filepath.Match(pat, v.Repository)
+			if m1 || m2 {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
 		}
 	}
 	return true
@@ -452,7 +471,7 @@ func newImageInspectCmd() *cobra.Command {
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			format, _ := cmd.Flags().GetString("format")
-			raw, err := inspectRaw("image", args)
+			raw, _, err := inspectRaw("image", args)
 			if err != nil {
 				return err
 			}

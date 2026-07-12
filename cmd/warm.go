@@ -25,7 +25,12 @@ var warmAllowed = map[string]bool{
 	// process options exec supports directly
 	"interactive": true, "tty": true,
 	"env": true, "env-file": true, "workdir": true,
-	"user": true, "uid": true, "gid": true, "ulimit": true,
+	"user": true, "uid": true, "gid": true,
+	// NOTE: --ulimit is deliberately NOT here. A ulimit is a creation-time
+	// resource limit (like --memory/--cpus) applied when the VM boots; `container
+	// exec` cannot apply it to an already-booted member. A run carrying --ulimit
+	// must stay warm-ineligible and take the cold path, where `container run
+	// --ulimit` honors it natively.
 	// no-ops on the warm path (image already resident / cosmetic)
 	"pull": true, "detach-keys": true,
 	// global persistent flags with no effect on execution
@@ -84,9 +89,8 @@ func warmExecArgs(cmd *cobra.Command, id string, command []string) []string {
 	for _, e := range mustStringArray(f, "env-file") {
 		out = append(out, "--env-file", e)
 	}
-	for _, l := range mustStringArray(f, "ulimit") {
-		out = append(out, "--ulimit", l)
-	}
+	// No --ulimit replay: a run carrying --ulimit is warm-ineligible (see
+	// warmAllowed) and never reaches this path; exec cannot honor it anyway.
 	out = append(out, id)
 	return append(out, command...)
 }
@@ -186,6 +190,10 @@ Set DCON_WARM=auto to have dcon self-prime the pool after eligible runs.`,
 				n = 1
 			}
 			quiet, _ := cmd.Flags().GetBool("quiet")
+			// replenish is the hidden marker pool.Replenish passes to background
+			// priming; it (NOT the user-facing --quiet) gates the depth clamp below,
+			// so an explicit `dcon warm -q -n N` still boots exactly N.
+			replenish, _ := cmd.Flags().GetBool("replenish")
 
 			// Ensure the image is resident first so each boot is a pure VM start,
 			// not a pull. Best effort — if it's missing the boot will pull anyway.
@@ -194,6 +202,16 @@ Set DCON_WARM=auto to have dcon self-prime the pool after eligible runs.`,
 			}
 			booted := 0
 			for i := 0; i < n; i++ {
+				// Background priming (Replenish-spawned, --replenish) must not
+				// overshoot TargetDepth when several replenishers race after a burst:
+				// re-check the live depth before each boot. Boots are serialized by
+				// the backend apiserver, so by the time this loop boots again a
+				// concurrent replenisher's member is already recorded and we stop.
+				// A manual `dcon warm -n N` (even with -q) sets no --replenish and
+				// always boots exactly N.
+				if replenish && pool.AvailableDepth(image) >= pool.TargetDepth() {
+					break
+				}
 				m, err := pool.Boot(image)
 				if err != nil {
 					if !quiet {
@@ -217,6 +235,10 @@ Set DCON_WARM=auto to have dcon self-prime the pool after eligible runs.`,
 	}
 	cmd.Flags().IntP("number", "n", 1, "Number of warm VMs to pre-boot")
 	cmd.Flags().BoolP("quiet", "q", false, "Suppress progress output (used by background priming)")
+	// Hidden marker set only by pool.Replenish for background priming, so the
+	// depth clamp never caps an explicit user `dcon warm -n N`.
+	cmd.Flags().Bool("replenish", false, "Internal: background replenish (clamp to target depth)")
+	_ = cmd.Flags().MarkHidden("replenish")
 
 	cmd.AddCommand(newWarmLsCmd(), newWarmPruneCmd())
 	return cmd

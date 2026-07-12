@@ -142,6 +142,18 @@ type infoData struct {
 	ServerState       string
 }
 
+// infoExit mirrors `docker info`, which prints the client/server sections AND
+// exits non-zero when the engine is unreachable. Readiness gates such as
+// `until docker info; do sleep 1; done` and `docker info >/dev/null 2>&1 && …`
+// rely on that exit code; returning 0 with the backend down makes them report
+// the engine up when it is not.
+func infoExit(serverState string) error {
+	if serverState != "running" {
+		return fmt.Errorf("errors pretty printing info: Apple container backend is not running")
+	}
+	return nil
+}
+
 func newInfoCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "info [OPTIONS]",
@@ -191,13 +203,16 @@ func newInfoCmd() *cobra.Command {
 						return err
 					}
 					fmt.Println(string(b))
-					return nil
+					return infoExit(serverState)
 				}
 				tmpl, err := template.New("info").Funcs(dockerfmt.TemplateFuncs()).Parse(format + "\n")
 				if err != nil {
 					return err
 				}
-				return tmpl.Execute(os.Stdout, data)
+				if err := tmpl.Execute(os.Stdout, data); err != nil {
+					return err
+				}
+				return infoExit(serverState)
 			}
 
 			fmt.Printf("%s\n", ui.Title("Client:"))
@@ -217,7 +232,7 @@ func newInfoCmd() *cobra.Command {
 			fmt.Printf(" OSType: linux (guest)\n")
 			fmt.Printf(" Architecture: %s\n", runtime.GOARCH)
 			fmt.Printf(" Name: %s\n", hostnameOrUnknown())
-			return nil
+			return infoExit(serverState)
 		},
 	}
 	cmd.Flags().StringP("format", "f", "", "Format output using a Go template or 'json'")

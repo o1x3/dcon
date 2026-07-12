@@ -110,6 +110,16 @@ func CaptureJSON(v any, args ...string) error {
 	return json.Unmarshal([]byte(out), v)
 }
 
+// IsExitError reports whether err is a proxied child-process non-zero exit (a
+// bare *exec.ExitError from Run) rather than a dcon-level error. The child has
+// already written its own stderr via the inherited streams, so callers should
+// propagate the exit code WITHOUT printing Go's "exit status N" artifact —
+// matching docker, which prints nothing when a workload merely exits non-zero.
+func IsExitError(err error) bool {
+	var ee *exec.ExitError
+	return errors.As(err, &ee)
+}
+
 // ExitCode extracts the process exit code from an error returned by Run.
 func ExitCode(err error) int {
 	if err == nil {

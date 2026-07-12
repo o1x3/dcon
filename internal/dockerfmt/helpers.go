@@ -2,6 +2,7 @@ package dockerfmt
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -24,6 +25,40 @@ func HumanSize(n float64) string {
 
 // HumanSizeBytes is HumanSize over an unsigned value.
 func HumanSizeBytes(n uint64) string { return HumanSize(float64(n)) }
+
+// HumanSizeWithPrecision renders a byte count in decimal SI units (base 1000)
+// with the given number of significant figures, matching go-units
+// HumanSizeWithPrecision. `docker images` SIZE and `docker stats` NET/BLOCK I/O
+// use precision 3 — the default HumanSize (precision 4) prints one digit too
+// many for those columns.
+func HumanSizeWithPrecision(n float64, precision int) string {
+	const unit = 1000.0
+	units := []string{"B", "kB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"}
+	i := 0
+	for n >= unit && i < len(units)-1 {
+		n /= unit
+		i++
+	}
+	return fmt.Sprintf("%.*g%s", precision, n, units[i])
+}
+
+// HumanSizeBinary renders a byte count in binary IEC units (base 1024) with 4
+// significant figures, matching go-units BytesSize — what `docker stats` uses
+// for the MEM USAGE / LIMIT column (KiB/MiB/GiB), distinct from the decimal SI
+// units docker uses for sizes and net/block I/O.
+func HumanSizeBinary(n float64) string {
+	const unit = 1024.0
+	units := []string{"B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB"}
+	i := 0
+	for n >= unit && i < len(units)-1 {
+		n /= unit
+		i++
+	}
+	return fmt.Sprintf("%.4g%s", n, units[i])
+}
+
+// HumanSizeBinaryBytes is HumanSizeBinary over an unsigned value.
+func HumanSizeBinaryBytes(n uint64) string { return HumanSizeBinary(float64(n)) }
 
 // ParseTime parses the ISO-8601 timestamps container emits. It tolerates a few
 // shapes (with/without fractional seconds, Z or offset).
@@ -81,6 +116,9 @@ func HumanDuration(d time.Duration) string {
 	case hours < 24*7*2:
 		return fmt.Sprintf("%d days", hours/24)
 	case hours < 24*30*2:
+		// go-units switches weeks->months at 24*30*2 (1440h / 60 days), verified
+		// against docker/go-units duration.go. (An earlier edit to 24*30*3 was a
+		// regression that mislabeled 60-89-day ages as weeks instead of months.)
 		return fmt.Sprintf("%d weeks", hours/24/7)
 	case hours < 24*365*2:
 		return fmt.Sprintf("%d months", hours/24/30)
@@ -126,13 +164,28 @@ func SplitRepoTag(ref string) (repo, tag string) {
 }
 
 // TruncCommand renders a container command list the way `docker ps` does:
-// space-joined, wrapped in quotes, truncated to 20 chars unless noTrunc.
+// space-joined, truncated to 20 chars (19 runes + a U+2026 ellipsis) unless
+// noTrunc, then strconv.Quote'd — which both wraps it in double quotes and
+// escapes embedded quotes/backslashes/control chars exactly as the Docker CLI's
+// strconv.Quote(Ellipsis(command, 20)) does.
 func TruncCommand(parts []string, noTrunc bool) string {
 	cmd := strings.Join(parts, " ")
-	cmd = strings.ReplaceAll(cmd, "\n", " ")
-	// Truncate by runes (not bytes) so multibyte UTF-8 is never split.
-	if r := []rune(cmd); !noTrunc && len(r) > 20 {
-		cmd = string(r[:20])
+	if !noTrunc {
+		cmd = ellipsis(cmd, 20)
 	}
-	return `"` + cmd + `"`
+	return strconv.Quote(cmd)
+}
+
+// ellipsis truncates s to maxLen runes the way docker/go-units Ellipsis does:
+// when s is longer than maxLen, it keeps maxLen-1 runes and appends … (U+2026)
+// so the result is exactly maxLen runes wide.
+func ellipsis(s string, maxLen int) string {
+	r := []rune(s)
+	if len(r) <= maxLen {
+		return s
+	}
+	if maxLen <= 1 {
+		return string(r[:maxLen])
+	}
+	return string(r[:maxLen-1]) + "…"
 }

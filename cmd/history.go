@@ -91,7 +91,8 @@ func newHistoryCmd() *cobra.Command {
 					h := v.(historyView)
 					return []string{h.ID, h.CreatedSince, h.CreatedBy, h.Size, h.Comment}
 				},
-				ID: func(v any) string { return v.(historyView).ID },
+				ID:           func(v any) string { return v.(historyView).ID },
+				FieldHeaders: map[string]string{".ID": "IMAGE"},
 			}
 			return dockerfmt.Render(format, quiet, views, def)
 		},

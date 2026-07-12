@@ -62,11 +62,13 @@ func renderStats(cur, prev []dockerfmt.Stats, dt float64, format string, noTrunc
 			Name:      s.ID,
 			ID:        statID(s.ID, noTrunc),
 			CPUPerc:   cpu,
-			MemUsage:  fmt.Sprintf("%s / %s", dockerfmt.HumanSizeBytes(s.MemoryUsageBytes), dockerfmt.HumanSizeBytes(s.MemoryLimitBytes)),
-			MemPerc:   memPerc,
-			NetIO:     fmt.Sprintf("%s / %s", dockerfmt.HumanSizeBytes(s.NetworkRxBytes), dockerfmt.HumanSizeBytes(s.NetworkTxBytes)),
-			BlockIO:   fmt.Sprintf("%s / %s", dockerfmt.HumanSizeBytes(s.BlockReadBytes), dockerfmt.HumanSizeBytes(s.BlockWriteBytes)),
-			PIDs:      fmt.Sprint(s.NumProcesses),
+			// docker stats: MEM USAGE/LIMIT uses binary IEC units (MiB/GiB);
+			// NET I/O and BLOCK I/O use decimal SI with 3 significant figures.
+			MemUsage: fmt.Sprintf("%s / %s", dockerfmt.HumanSizeBinaryBytes(s.MemoryUsageBytes), dockerfmt.HumanSizeBinaryBytes(s.MemoryLimitBytes)),
+			MemPerc:  memPerc,
+			NetIO:    fmt.Sprintf("%s / %s", dockerfmt.HumanSizeWithPrecision(float64(s.NetworkRxBytes), 3), dockerfmt.HumanSizeWithPrecision(float64(s.NetworkTxBytes), 3)),
+			BlockIO:  fmt.Sprintf("%s / %s", dockerfmt.HumanSizeWithPrecision(float64(s.BlockReadBytes), 3), dockerfmt.HumanSizeWithPrecision(float64(s.BlockWriteBytes), 3)),
+			PIDs:     fmt.Sprint(s.NumProcesses),
 		})
 	}
 	// --all: non-running containers appear as placeholder "--" rows.

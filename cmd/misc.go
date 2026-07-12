@@ -44,7 +44,7 @@ func newLogsCmd() *cobra.Command {
 	}
 	f := cmd.Flags()
 	f.BoolP("follow", "f", false, "Follow log output")
-	f.String("tail", "all", "Number of lines to show from the end of the logs")
+	f.StringP("tail", "n", "all", "Number of lines to show from the end of the logs")
 	f.Bool("boot", false, "Show the VM boot log instead of container stdio (backend extra)")
 	f.BoolP("timestamps", "t", false, "Show timestamps (unsupported)")
 	f.String("since", "", "Show logs since timestamp (unsupported)")
@@ -63,11 +63,22 @@ func newInspectCmd() *cobra.Command {
 			typ, _ := cmd.Flags().GetString("type")
 			format, _ := cmd.Flags().GetString("format")
 
-			raw, err := inspectRaw(typ, args)
+			raw, missing, err := inspectRaw(typ, args)
 			if err != nil {
 				return err
 			}
-			return renderInspect(raw, format)
+			// Print the objects that resolved, then — like `docker inspect` — exit
+			// non-zero if any requested id was missing, so CI guards that check the
+			// exit code still fire.
+			if raw != "" {
+				if rerr := renderInspect(raw, format); rerr != nil {
+					return rerr
+				}
+			}
+			if len(missing) > 0 {
+				return fmt.Errorf("no such object: %s", strings.Join(missing, " "))
+			}
+			return nil
 		},
 	}
 	cmd.Flags().StringP("format", "f", "", "Format output using a Go template (backend JSON schema)")
@@ -104,27 +115,30 @@ func renderInspect(raw, format string) error {
 }
 
 // inspectRaw returns the pretty JSON array for the given ids, auto-detecting
-// container vs image when type is unset.
-func inspectRaw(typ string, ids []string) (string, error) {
+// container vs image when type is unset. The returned missing slice lists ids
+// that resolved to no object (only populated on the auto-detect path); the
+// caller renders the found JSON and then exits non-zero, matching docker.
+func inspectRaw(typ string, ids []string) (raw string, missing []string, err error) {
 	switch typ {
 	case "image":
-		return runtime.CaptureSilent(append([]string{"image", "inspect"}, ids...)...)
+		out, err := runtime.CaptureSilent(append([]string{"image", "inspect"}, ids...)...)
+		return out, nil, err
 	case "container":
-		return runtime.CaptureSilent(append([]string{"inspect"}, ids...)...)
+		out, err := runtime.CaptureSilent(append([]string{"inspect"}, ids...)...)
+		return out, nil, err
 	default:
 		// Fast path: all ids resolve as containers, or all as images — a single
 		// batch call preserves the backend's native formatting.
 		if out, err := runtime.CaptureSilent(append([]string{"inspect"}, ids...)...); err == nil {
-			return out, nil
+			return out, nil, nil
 		}
 		if out, err := runtime.CaptureSilent(append([]string{"image", "inspect"}, ids...)...); err == nil {
-			return out, nil
+			return out, nil, nil
 		}
 		// Mixed (some containers, some images) or partly missing: resolve each id
 		// independently and merge, so `inspect <container> <image>` works like
 		// docker instead of failing because no single namespace holds them all.
 		var results []string
-		var missing []string
 		for _, id := range ids {
 			out, err := runtime.CaptureSilent("inspect", id)
 			if err != nil {
@@ -138,15 +152,9 @@ func inspectRaw(typ string, ids []string) (string, error) {
 		}
 		merged, err := mergeInspectArrays(results)
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
-		if merged == "" {
-			return "", fmt.Errorf("no such object: %s", strings.Join(missing, " "))
-		}
-		if len(missing) > 0 {
-			fmt.Fprintf(os.Stderr, "dcon: warning: no such object: %s\n", strings.Join(missing, " "))
-		}
-		return merged, nil
+		return merged, missing, nil
 	}
 }
 

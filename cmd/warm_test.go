@@ -25,6 +25,8 @@ func TestWarmEligible(t *testing.T) {
 		{"name disqualifies", []string{"--rm", "--name", "x", "alpine", "ls"}, false},
 		{"entrypoint disqualifies", []string{"--rm", "--entrypoint", "/b", "alpine", "ls"}, false},
 		{"cap-add disqualifies", []string{"--rm", "--cap-add", "NET_ADMIN", "alpine", "ls"}, false},
+		// --ulimit is a creation-time limit exec cannot reproduce: must force cold path.
+		{"ulimit disqualifies", []string{"--rm", "--ulimit", "nofile=1024:2048", "alpine", "ls"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -18,6 +18,11 @@ type TableDef struct {
 	Headers []string
 	Row     func(v any) []string
 	ID      func(v any) string
+	// FieldHeaders overrides, per command, the header text a `table {{.Field}}`
+	// token derives. The global fieldHeader map hardwires .ID to "CONTAINER ID",
+	// but the same token means "IMAGE ID" for images, "NETWORK ID" for networks,
+	// "IMAGE" for history; commands set the override here.
+	FieldHeaders map[string]string
 }
 
 // NewTabWriter returns a tabwriter configured like Docker's (3-space padding).
@@ -146,6 +151,9 @@ func Render(format string, quiet bool, views []any, def TableDef) error {
 				return ""
 			}
 			tok := "." + refs[len(refs)-1][1]
+			if h, ok := def.FieldHeaders[tok]; ok { // per-command override
+				return h
+			}
 			if h, ok := fieldHeader[tok]; ok {
 				return h
 			}

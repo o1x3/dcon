@@ -22,6 +22,12 @@ func addRunFlags(cmd *cobra.Command) {
 	f := cmd.Flags()
 	f.SetInterspersed(false) // everything after IMAGE is the container command
 
+	// Docker's `-h` is the hostname shorthand (see --hostname below). Pre-register
+	// a long-only --help so cobra's InitDefaultHelpFlag (which unconditionally
+	// grabs -h for help) leaves -h free for hostname; otherwise `dcon run -h web
+	// nginx` prints help and silently never runs the container.
+	f.Bool("help", false, "Show help for this command")
+
 	// --- Docker flags that map directly to container ---
 	f.BoolP("detach", "d", false, "Run container in background and print container ID")
 	f.BoolP("interactive", "i", false, "Keep STDIN open even if not attached")
@@ -80,7 +86,7 @@ func addRunFlags(cmd *cobra.Command) {
 
 	// --- Accepted-but-unsupported Docker flags (warned once when used) ---
 	f.BoolP("publish-all", "P", false, "Publish all exposed ports (unsupported by backend)")
-	f.String("hostname", "", "Container host name (unsupported by backend)")
+	f.StringP("hostname", "h", "", "Container host name (unsupported by backend)")
 	f.String("restart", "", "Restart policy (unsupported by backend)")
 	f.String("pull", "", "Pull image before running: always|missing|never (backend pulls on demand)")
 	f.String("stop-signal", "", "Signal to stop the container (unsupported by backend)")
@@ -190,6 +196,21 @@ func parseCPUs(cv string) (n int, warning string, err error) {
 	return n, warning, nil
 }
 
+// reservedMachineLabelErr returns a non-nil error when a label spec (key or
+// key=value) uses dcon's reserved dcon.machine namespace, which would otherwise
+// let a user container masquerade as a dcon machine in `machine ls`. Shared by
+// the direct --label guard and the --label-file expansion.
+func reservedMachineLabelErr(l string) error {
+	key := l
+	if i := strings.IndexByte(l, '='); i >= 0 {
+		key = l[:i]
+	}
+	if key == machine.LabelMachine || strings.HasPrefix(key, machine.LabelMachine+".") {
+		return fmt.Errorf("label %q is reserved by dcon machine and cannot be set on run", key)
+	}
+	return nil
+}
+
 // buildContainerArgs translates the parsed Docker flags on cmd into a
 // `container <subcmd> ...` argument list. subcmd is "run" or "create".
 func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]string, error) {
@@ -206,12 +227,8 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 		return nil, fmt.Errorf("container name %q uses the %q prefix reserved by dcon machine", name, machine.ContainerName(""))
 	}
 	for _, l := range mustStringArray(f, "label") {
-		key := l
-		if i := strings.IndexByte(l, '='); i >= 0 {
-			key = l[:i]
-		}
-		if key == machine.LabelMachine || strings.HasPrefix(key, machine.LabelMachine+".") {
-			return nil, fmt.Errorf("label %q is reserved by dcon machine and cannot be set on run", key)
+		if err := reservedMachineLabelErr(l); err != nil {
+			return nil, err
 		}
 	}
 
@@ -231,7 +248,7 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 	// passthrough string flag -> container flag
 	strMap := []struct{ name, flag string }{
 		{"name", "--name"}, {"workdir", "--workdir"}, {"user", "--user"},
-		{"entrypoint", "--entrypoint"}, {"memory", "--memory"},
+		{"memory", "--memory"},
 		{"cidfile", "--cidfile"}, {"shm-size", "--shm-size"}, {"platform", "--platform"},
 		{"arch", "--arch"}, {"os", "--os"}, {"kernel", "--kernel"},
 		{"init-image", "--init-image"}, {"dns-domain", "--dns-domain"},
@@ -241,6 +258,17 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 		if v, _ := f.GetString(s.name); v != "" {
 			out = append(out, s.flag, v)
 		}
+	}
+
+	// --entrypoint is forwarded whenever explicitly set, INCLUDING the empty
+	// string: `docker run --entrypoint "" IMAGE CMD` clears the image ENTRYPOINT
+	// (a documented debugging idiom). Gating on a non-empty value (like the strMap
+	// above) would conflate "unset" with "set to empty" and silently drop it,
+	// leaving the image's ENTRYPOINT in effect — so the user's command runs as an
+	// argument to it instead of replacing it.
+	if f.Changed("entrypoint") {
+		ep, _ := f.GetString("entrypoint")
+		out = append(out, "--entrypoint", ep)
 	}
 
 	// --cpus: Docker accepts a fractional CPU quota (e.g. 1.5); the backend
@@ -317,6 +345,11 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 			return nil, err
 		}
 		for _, l := range labels {
+			// Apply the same reserved-namespace guard as direct --label, so a
+			// label file can't smuggle dcon.machine* onto a user container.
+			if err := reservedMachineLabelErr(l); err != nil {
+				return nil, err
+			}
 			out = append(out, "--label", l)
 		}
 	}

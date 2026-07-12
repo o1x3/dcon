@@ -271,10 +271,18 @@ func newPortCmd() *cobra.Command {
 				filterPort = parts[0]
 				if len(parts) == 2 {
 					filterProto = parts[1]
+				} else {
+					filterProto = "tcp" // docker defaults a proto-less PORT query to tcp
 				}
 			}
-			for _, line := range portMappingLines(list[0].Configuration.Ports, filterPort, filterProto) {
+			lines := portMappingLines(list[0].Configuration.Ports, filterPort, filterProto)
+			for _, line := range lines {
 				fmt.Println(line)
+			}
+			// docker `port CONTAINER PORT` errors (exit 1) when that port is not
+			// published; the bare-listing form (no PORT) exits 0 even when empty.
+			if filterPort != "" && len(lines) == 0 {
+				return fmt.Errorf("No public port '%s/%s' published for %s", filterPort, filterProto, args[0])
 			}
 			return nil
 		},

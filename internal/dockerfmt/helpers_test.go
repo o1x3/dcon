@@ -72,8 +72,16 @@ func TestTruncCommand(t *testing.T) {
 	if got := TruncCommand([]string{"sleep", "300"}, false); got != `"sleep 300"` {
 		t.Errorf("TruncCommand = %q", got)
 	}
-	long := TruncCommand([]string{"this-is-a-very-long-command-indeed"}, false)
-	if len(long) != 22 { // 20 chars + 2 quotes
-		t.Errorf("TruncCommand truncation len = %d (%q)", len(long), long)
+	// docker truncates to 20 runes: 19 source runes + a U+2026 ellipsis, quoted.
+	if got, want := TruncCommand([]string{"this-is-a-very-long-command-indeed"}, false), `"this-is-a-very-long…"`; got != want {
+		t.Errorf("TruncCommand truncation = %q, want %q", got, want)
+	}
+	// noTrunc keeps the full command, quoted, with no ellipsis.
+	if got, want := TruncCommand([]string{"this-is-a-very-long-command-indeed"}, true), `"this-is-a-very-long-command-indeed"`; got != want {
+		t.Errorf("TruncCommand noTrunc = %q, want %q", got, want)
+	}
+	// strconv.Quote escapes embedded quotes/newlines like docker ps does.
+	if got, want := TruncCommand([]string{`sh -c "x"`}, true), `"sh -c \"x\""`; got != want {
+		t.Errorf("TruncCommand quoting = %q, want %q", got, want)
 	}
 }
