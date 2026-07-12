@@ -57,9 +57,11 @@ func newStopCmd() *cobra.Command {
 			if all {
 				cargs = append(cargs, "--all")
 			}
-			if t, _ := cmd.Flags().GetInt("time"); cmd.Flags().Changed("time") {
-				cargs = append(cargs, "--time", fmt.Sprint(t))
-			}
+			// Always forward --time: docker's default grace is 10 s, the
+			// backend's is 5 s, so relying on the backend default would kill
+			// workloads five seconds early.
+			t, _ := cmd.Flags().GetInt("time")
+			cargs = append(cargs, "--time", fmt.Sprint(t))
 			if s, _ := cmd.Flags().GetString("signal"); s != "" {
 				cargs = append(cargs, "--signal", s)
 			}
@@ -68,7 +70,7 @@ func newStopCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolP("all", "a", false, "Stop all running containers")
-	cmd.Flags().IntP("time", "t", 5, "Seconds to wait before killing the container")
+	cmd.Flags().IntP("time", "t", 10, "Seconds to wait before killing the container")
 	cmd.Flags().StringP("signal", "s", "", "Signal to send to the container")
 	return cmd
 }
@@ -81,7 +83,7 @@ func newRestartCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			tv, _ := cmd.Flags().GetInt("time")
 			sig, _ := cmd.Flags().GetString("signal")
-			stopFlags := restartStopArgs(cmd.Flags().Changed("time"), tv, sig)
+			stopFlags := restartStopArgs(tv, sig)
 			var firstErr error
 			for _, id := range args {
 				stopArgs := append(append([]string{}, stopFlags...), id)
@@ -98,19 +100,17 @@ func newRestartCmd() *cobra.Command {
 			return firstErr
 		},
 	}
-	cmd.Flags().IntP("time", "t", 5, "Seconds to wait before killing the container")
+	cmd.Flags().IntP("time", "t", 10, "Seconds to wait before killing the container")
 	cmd.Flags().StringP("signal", "s", "", "Signal to send to the container")
 	return cmd
 }
 
 // restartStopArgs builds the backend stop argv for `restart` (restart = stop +
-// start). The --signal flag was previously defined but ignored; it is forwarded
-// to the stop phase here (the backend stop accepts --signal), matching docker.
-func restartStopArgs(timeChanged bool, timeVal int, signal string) []string {
-	args := []string{"stop"}
-	if timeChanged {
-		args = append(args, "--time", fmt.Sprint(timeVal))
-	}
+// start). --signal is forwarded to the stop phase (the backend stop accepts
+// --signal) and --time is ALWAYS forwarded: docker's default grace is 10 s,
+// the backend's is 5 s, so omitting it would kill workloads early.
+func restartStopArgs(timeVal int, signal string) []string {
+	args := []string{"stop", "--time", fmt.Sprint(timeVal)}
 	if signal != "" {
 		args = append(args, "--signal", signal)
 	}
@@ -145,6 +145,13 @@ func newRmCmd() *cobra.Command {
 		Short: "Remove one or more containers",
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// docker `rm --link` removes only the network link, never the
+			// container. The backend has no links, so honoring the flag by
+			// falling through would FORCE-DELETE the named container instead —
+			// hard-error like the pause stub rather than destroy data.
+			if link, _ := cmd.Flags().GetBool("link"); link {
+				return fmt.Errorf("rm --link is not supported by the container backend (refusing to delete the container itself)")
+			}
 			cargs := []string{"delete"}
 			if force, _ := cmd.Flags().GetBool("force"); force {
 				cargs = append(cargs, "--force")

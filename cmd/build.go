@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 
+	"dcon/internal/pool"
 	"dcon/internal/runtime"
 
 	"github.com/spf13/cobra"
@@ -20,11 +22,68 @@ func newBuildCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runtime.Run(cargs...)
+			if err := runtime.Run(cargs...); err != nil {
+				return err
+			}
+			tags := mustStringArray(cmd.Flags(), "tag")
+			// The built tags now point at a new image: retire any warm pool
+			// members booted from what they used to reference.
+			for _, t := range tags {
+				pool.InvalidateImage(t)
+			}
+			if iid, _ := cmd.Flags().GetString("iidfile"); iid != "" {
+				if err := writeIidFile(iid, tags); err != nil {
+					return err
+				}
+			}
+			return nil
 		},
 	}
 	addBuildFlags(cmd)
 	return cmd
+}
+
+// writeIidFile resolves the just-built image's ID via the backend and writes
+// it (sha256-prefixed, like docker/buildx) to path. Resolution needs a tag to
+// inspect; an untagged build degrades to a warning rather than failing a
+// build that already succeeded.
+func writeIidFile(path string, tags []string) error {
+	if len(tags) == 0 {
+		fmt.Fprintln(os.Stderr, "dcon: warning: --iidfile needs -t/--tag to resolve the image ID; no file written")
+		return nil
+	}
+	out, err := runtime.CaptureSilent("image", "inspect", tags[0])
+	if err != nil {
+		return fmt.Errorf("--iidfile: cannot inspect built image %s: %w", tags[0], err)
+	}
+	var imgs []inspectImageRaw
+	if err := json.Unmarshal([]byte(out), &imgs); err != nil {
+		return fmt.Errorf("--iidfile: %w", err)
+	}
+	if len(imgs) == 0 {
+		return fmt.Errorf("--iidfile: built image %s not found in the local store", tags[0])
+	}
+	id := formatImageID(imgs[0].ID, imgs[0].Configuration.Descriptor.Digest)
+	if id == "" {
+		return fmt.Errorf("--iidfile: built image %s has no ID", tags[0])
+	}
+	return os.WriteFile(path, []byte(id), 0o644)
+}
+
+// formatImageID picks the image ID (falling back to the config descriptor
+// digest, like history) and guarantees docker's sha256: prefix. Pure for
+// testability.
+func formatImageID(id, digest string) string {
+	if id == "" {
+		id = digest
+	}
+	if id == "" {
+		return ""
+	}
+	if !strings.Contains(id, ":") {
+		id = "sha256:" + id
+	}
+	return id
 }
 
 // translateOutput maps a Docker --output exporter spec onto what the container
@@ -163,7 +222,7 @@ func buildBuildArgs(cmd *cobra.Command, args []string) ([]string, error) {
 		fmt.Fprintln(os.Stderr, "dcon: warning: --push is not supported by the backend; build, then push separately with 'dcon push'")
 	}
 	for _, name := range []string{
-		"network", "add-host", "ssh", "squash", "iidfile", "build-context",
+		"network", "add-host", "ssh", "squash", "build-context",
 		"no-cache-filter", "cgroup-parent", "isolation", "shm-size", "ulimit",
 		"memory-swap", "security-opt", "metadata-file", "allow", "builder",
 		"provenance", "sbom", "attest", "annotation", "compress",
@@ -195,7 +254,9 @@ func addBuildFlags(cmd *cobra.Command) {
 	f.String("platform", "", "Set platform if server is multi-platform capable")
 	f.StringArrayP("output", "o", nil, "Output destination (format: type=local,dest=path)")
 	f.String("progress", "auto", "Set type of progress output (auto, plain, tty, rawjson)")
-	f.StringP("cpus", "c", "", "CPUs to allocate to the builder (backend extra)")
+	// --cpus is long-only: docker's legacy `-c` shorthand means --cpu-shares,
+	// so binding -c here would silently reinterpret `docker build -c 512 .`.
+	f.String("cpus", "", "CPUs to allocate to the builder (backend extra)")
 	f.StringP("memory", "m", "", "Memory for the builder (backend extra)")
 	f.StringP("arch", "a", "", "Target architecture (backend extra)")
 	f.String("os", "", "Target OS (backend extra)")
@@ -206,7 +267,7 @@ func addBuildFlags(cmd *cobra.Command) {
 	f.StringSlice("add-host", nil, "Add a custom host-to-IP mapping (unsupported)")
 	f.StringSlice("ssh", nil, "SSH agent socket or keys to expose (unsupported)")
 	f.Bool("squash", false, "Squash newly built layers (unsupported)")
-	f.String("iidfile", "", "Write the image ID to the file (unsupported)")
+	f.String("iidfile", "", "Write the image ID to the file")
 	f.StringArray("build-context", nil, "Additional build contexts (unsupported)")
 	f.Bool("rm", true, "Remove intermediate containers after a successful build (no-op)")
 	f.Bool("force-rm", false, "Always remove intermediate containers (no-op)")

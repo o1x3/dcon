@@ -38,18 +38,42 @@ Set up a true drop-in by aliasing docker:  alias docker=dcon`,
 	// is fine. Keep flag parsing permissive so `-it` style bundling works.
 }
 
+// cliFailureExitCode maps docker's CLI-level failure convention: run/create/
+// exec failures that never reached the container (usage errors, dcon-level
+// translation errors) exit 125, leaving 126/127 to the container runtime and
+// the workload's own status untouched; every other command keeps exit 1. Pure
+// for testability.
+func cliFailureExitCode(cmdName string) int {
+	switch cmdName {
+	case "run", "create", "exec":
+		return 125
+	}
+	return 1
+}
+
 // Execute runs the root command and maps errors to a process exit code that
 // mirrors the underlying container invocation where possible.
 func Execute() {
 	// Rewrite `compose -f/-p` global shorthands to long forms before cobra
 	// parses (see rewriteComposeGlobalShorthands for why this can't be a flag).
-	rootCmd.SetArgs(rewriteComposeGlobalShorthands(os.Args[1:]))
+	argv := rewriteComposeGlobalShorthands(os.Args[1:])
+	rootCmd.SetArgs(argv)
 	if err := rootCmd.Execute(); err != nil {
 		// A proxied backend workload that merely exited non-zero already wrote its
 		// own stderr (inherited streams); docker prints nothing here. Only print
 		// for genuine dcon-level errors — not Go's "exit status N" artifact.
 		if !runtime.IsExitError(err) {
 			fmt.Fprintln(os.Stderr, err)
+			// docker exits 125 when run/create/exec fail at the CLI level
+			// (before any container process ran); a backend exit error above
+			// instead propagates the real workload status via ExitCode.
+			// Gate on the parent so `compose run`/`compose exec` (which docker
+			// compose exits 1 for) don't inherit the 125 convention.
+			if c, _, ferr := rootCmd.Find(argv); ferr == nil && c != nil && c.Parent() != nil &&
+				(c.Parent() == rootCmd || c.Parent().Name() == "container") {
+				os.Exit(cliFailureExitCode(c.Name()))
+			}
+			os.Exit(1)
 		}
 		os.Exit(runtime.ExitCode(err))
 	}

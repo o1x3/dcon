@@ -98,15 +98,17 @@ func TestPortMappingLinesExpandsRange(t *testing.T) {
 
 // TestRestartStopArgsForwardsSignal reproduces the bug where restart's
 // --signal flag was defined but never used. It must be forwarded to the stop
-// phase (the backend stop accepts --signal), and --time only when set.
+// phase (the backend stop accepts --signal). --time is now ALWAYS forwarded
+// (docker's default grace is 10 s vs the backend's 5 s), so every argv
+// carries it.
 func TestRestartStopArgsForwardsSignal(t *testing.T) {
-	if got := restartStopArgs(false, 5, ""); !reflect.DeepEqual(got, []string{"stop"}) {
-		t.Errorf("no flags set: got %v, want [stop]", got)
+	if got := restartStopArgs(10, ""); !reflect.DeepEqual(got, []string{"stop", "--time", "10"}) {
+		t.Errorf("default: got %v, want [stop --time 10]", got)
 	}
-	if got := restartStopArgs(false, 5, "SIGTERM"); !reflect.DeepEqual(got, []string{"stop", "--signal", "SIGTERM"}) {
+	if got := restartStopArgs(10, "SIGTERM"); !reflect.DeepEqual(got, []string{"stop", "--time", "10", "--signal", "SIGTERM"}) {
 		t.Errorf("--signal must be forwarded: got %v", got)
 	}
-	if got := restartStopArgs(true, 10, "SIGKILL"); !reflect.DeepEqual(got, []string{"stop", "--time", "10", "--signal", "SIGKILL"}) {
+	if got := restartStopArgs(3, "SIGKILL"); !reflect.DeepEqual(got, []string{"stop", "--time", "3", "--signal", "SIGKILL"}) {
 		t.Errorf("--time + --signal: got %v", got)
 	}
 }

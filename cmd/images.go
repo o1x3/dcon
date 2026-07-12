@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"dcon/internal/dockerfmt"
+	"dcon/internal/pool"
 	"dcon/internal/runtime"
 
 	"github.com/spf13/cobra"
@@ -389,7 +390,14 @@ func newPullCmd() *cobra.Command {
 				fmt.Fprintln(os.Stderr, "dcon: warning: -a/--all-tags is not supported by the backend and was ignored")
 			}
 			cargs = append(cargs, args[0])
-			return runtime.Run(cargs...)
+			if err := runtime.Run(cargs...); err != nil {
+				return err
+			}
+			// The ref may now point at a different image: retire any warm pool
+			// members booted from the old one so `run --rm` can't exec into a
+			// stale VM. (Teardown is detached; this is off the hot path.)
+			pool.InvalidateImage(args[0])
+			return nil
 		},
 	}
 	cmd.Flags().String("platform", "", "Set platform if server is multi-platform capable")
@@ -427,6 +435,27 @@ func pullConcurrency(cmd *cobra.Command) int {
 	return n
 }
 
+// repoTagRefs returns the stored references of every local image whose repo
+// matches repo (docker `push -a` semantics: every tag of that repo). Digest
+// pins are skipped — they are not tags. Pure, so `push --all-tags` target
+// selection is unit-testable without a backend.
+func repoTagRefs(list []dockerfmt.Image, repo string) []string {
+	want := dockerfmt.ShortImage(repo)
+	var refs []string
+	for _, img := range list {
+		name := img.Configuration.Name
+		short := dockerfmt.ShortImage(name)
+		if strings.Contains(short, "@") {
+			continue // digest pin, not a tag
+		}
+		r, _ := dockerfmt.SplitRepoTag(short)
+		if r == want {
+			refs = append(refs, name)
+		}
+	}
+	return refs
+}
+
 func newPushCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "push [OPTIONS] NAME[:TAG]",
@@ -449,6 +478,30 @@ func newPushCmd() *cobra.Command {
 			if q, _ := cmd.Flags().GetBool("quiet"); q {
 				cargs = append(cargs, "--progress", "none")
 			}
+			if all, _ := cmd.Flags().GetBool("all-tags"); all {
+				// docker rejects an explicit tag/digest with -a (repo only). A
+				// colon in the last path segment is a tag; earlier colons are
+				// registry ports.
+				if i := strings.LastIndex(args[0], ":"); strings.Contains(args[0], "@") ||
+					(i >= 0 && !strings.Contains(args[0][i:], "/")) {
+					return fmt.Errorf("tag can't be used with --all-tags/-a")
+				}
+				imgs, err := getImages()
+				if err != nil {
+					return err
+				}
+				refs := repoTagRefs(imgs, args[0])
+				if len(refs) == 0 {
+					return fmt.Errorf("An image does not exist locally with the tag: %s", args[0])
+				}
+				var firstErr error
+				for _, ref := range refs {
+					if err := runtime.Run(append(append([]string{}, cargs...), ref)...); err != nil && firstErr == nil {
+						firstErr = err
+					}
+				}
+				return firstErr
+			}
 			cargs = append(cargs, args[0])
 			return runtime.Run(cargs...)
 		},
@@ -458,8 +511,7 @@ func newPushCmd() *cobra.Command {
 	cmd.Flags().String("os", "", "Push a platform-specific manifest by OS")
 	cmd.Flags().String("scheme", "", "Registry scheme: http, https, or auto")
 	cmd.Flags().BoolP("quiet", "q", false, "Suppress verbose output")
-	cmd.Flags().BoolP("all-tags", "a", false, "")
-	_ = cmd.Flags().MarkHidden("all-tags")
+	cmd.Flags().BoolP("all-tags", "a", false, "Push all tags of an image to the repository")
 	cmd.Flags().Bool("disable-content-trust", true, "Skip image signing (no-op; backend has no content trust)")
 	return cmd
 }
@@ -486,7 +538,18 @@ func newRmiCmd() *cobra.Command {
 			} else {
 				cargs = append(cargs, args...)
 			}
-			return runtime.Run(cargs...)
+			if err := runtime.Run(cargs...); err != nil {
+				return err
+			}
+			// Deleted refs must not keep serving warm VMs booted from them.
+			if all {
+				pool.InvalidateImage("")
+			} else {
+				for _, ref := range args {
+					pool.InvalidateImage(ref)
+				}
+			}
+			return nil
 		},
 	}
 	cmd.Flags().BoolP("force", "f", false, "Force removal of the image")
@@ -501,7 +564,13 @@ func newTagCmd() *cobra.Command {
 		Short: "Create a tag TARGET_IMAGE that refers to SOURCE_IMAGE",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runtime.Run("image", "tag", args[0], args[1])
+			if err := runtime.Run("image", "tag", args[0], args[1]); err != nil {
+				return err
+			}
+			// TARGET now points at SOURCE's image: warm members booted from the
+			// old TARGET are stale.
+			pool.InvalidateImage(args[1])
+			return nil
 		},
 	}
 }
@@ -602,6 +671,11 @@ func newImageGroupCmd() *cobra.Command {
 	rm.Use = "rm [OPTIONS] IMAGE [IMAGE...]"
 	rm.Aliases = []string{"remove", "delete"}
 	group.AddCommand(ls, rm, newPullCmd(), newPushCmd(), newTagCmd(),
-		newImageInspectCmd(), newImageLoadCmd(), newImageSaveCmd(), newImagePruneCmd(), newHistoryCmd())
+		newImageInspectCmd(), newImageLoadCmd(), newImageSaveCmd(), newImagePruneCmd(), newHistoryCmd(),
+		// Mirrors the top-level `import` stub so `docker image import` probes get
+		// the same specific message instead of cobra's "unknown command".
+		stub("import [OPTIONS] file|URL|- [REPOSITORY[:TAG]]",
+			"Import the contents from a tarball to create a filesystem image",
+			"import is not supported: the backend loads OCI archives, not raw filesystem tarballs — use `dcon load` for an OCI archive, or build from a Dockerfile"))
 	return group
 }

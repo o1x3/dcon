@@ -19,16 +19,7 @@ type networkView struct {
 	Subnet string
 }
 
-func driverForMode(mode string) string {
-	switch mode {
-	case "nat":
-		return "bridge"
-	case "hostOnly":
-		return "host"
-	default:
-		return mode
-	}
-}
+func driverForMode(mode string) string { return dockerfmt.NetworkDriver(mode) }
 
 // matchNetworkFilters implements docker network ls --filter (name/id/driver/scope/label).
 // Repeated values of the same key are OR-combined and distinct keys AND-combined,
@@ -243,7 +234,9 @@ func newNetworkGroupCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return renderInspect(raw, format)
+			// Templates execute against docker-shaped views ({{.Name}}, {{.Id}},
+			// {{.Driver}}, {{.IPAM.Config}}, …), like `docker network inspect -f`.
+			return renderInspectTyped("network", raw, format)
 		},
 	}
 	inspect.Flags().StringP("format", "f", "", "Format output using a Go template or 'json'")

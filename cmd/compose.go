@@ -894,7 +894,10 @@ func composeLogs() *cobra.Command {
 			}
 			follow, _ := cmd.Flags().GetBool("follow")
 			noPrefix, _ := cmd.Flags().GetBool("no-log-prefix")
-			tail := composeLogsTail(cmd)
+			tail, err := composeLogsTail(cmd)
+			if err != nil {
+				return err
+			}
 			// Flags Docker honors but the container backend cannot: warn once,
 			// like the top-level `dcon logs`, rather than ignoring them silently.
 			for _, flag := range []string{"since", "until", "timestamps"} {
@@ -951,16 +954,11 @@ func composeLogs() *cobra.Command {
 }
 
 // composeLogsTail returns the validated --tail value to pass to `container
-// logs -n`, or "" for the Docker default ("all" = everything).
-func composeLogsTail(cmd *cobra.Command) string {
+// logs -n`, or "" for the Docker default ("all" = everything). A non-numeric
+// value errors like docker instead of silently dumping the whole log.
+func composeLogsTail(cmd *cobra.Command) (string, error) {
 	t, _ := cmd.Flags().GetString("tail")
-	if t == "" || t == "all" {
-		return ""
-	}
-	if _, err := strconv.Atoi(t); err != nil {
-		return ""
-	}
-	return t
+	return validateTail(t)
 }
 
 // formatLogLine renders one aggregated log line with the Docker-style

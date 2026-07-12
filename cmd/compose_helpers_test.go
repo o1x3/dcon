@@ -179,14 +179,23 @@ func TestComposeLogsTail(t *testing.T) {
 		"":    "",
 		"50":  "50",
 		"1":   "1",
-		"abc": "", // non-numeric -> ignored
 	}
 	for in, want := range cases {
 		cmd := composeLogs()
 		_ = cmd.ParseFlags([]string{"--tail", in})
-		if got := composeLogsTail(cmd); got != want {
+		got, err := composeLogsTail(cmd)
+		if err != nil {
+			t.Errorf("composeLogsTail(--tail %q) unexpected error: %v", in, err)
+		}
+		if got != want {
 			t.Errorf("composeLogsTail(--tail %q) = %q, want %q", in, got, want)
 		}
+	}
+	// Non-numeric now errors like docker (was: silently dumped the whole log).
+	cmd := composeLogs()
+	_ = cmd.ParseFlags([]string{"--tail", "abc"})
+	if _, err := composeLogsTail(cmd); err == nil {
+		t.Error("composeLogsTail(--tail abc) should error")
 	}
 }
 

@@ -656,6 +656,48 @@ func Replenish(image string) {
 	}
 }
 
+// InvalidateImage retires every AVAILABLE pool member booted from image, so a
+// run after `pull`/`tag`/`rmi`/`build -t` can never be served by a VM booted
+// from the image the ref used to point at. An empty image invalidates the
+// whole pool (e.g. `rmi --all`). The members are popped from the state file
+// atomically under the lock (so a concurrent Claim can never race us into
+// double-owning one) and the VM teardowns happen in detached background
+// processes, keeping the caller off the hot path. Members claimed by an
+// in-flight run are, by design, not in the state file and keep running — they
+// were booted before the image changed, exactly like a docker container that
+// outlives its image tag.
+func InvalidateImage(image string) {
+	norm := ""
+	if image != "" {
+		norm = NormalizeRef(image)
+	}
+	var invalidated []Member
+	if err := withLock(func(s *state) error {
+		kept := s.Members[:0]
+		for _, m := range s.Members {
+			if norm == "" || m.Image == norm {
+				invalidated = append(invalidated, m)
+			} else {
+				kept = append(kept, m)
+			}
+		}
+		s.Members = kept
+		// The image changed, so a previous "unwarmable" verdict may no longer
+		// hold (and vice versa) — drop the stale negative-cache entry too.
+		if norm == "" {
+			s.Unwarmable = nil
+		} else {
+			delete(s.Unwarmable, norm)
+		}
+		return nil
+	}); err != nil {
+		return // state not persisted: leave members claimable rather than leak owners
+	}
+	for _, m := range invalidated {
+		DestroyAsync(m.ID)
+	}
+}
+
 // Destroy force-removes a member VM (best effort, synchronous).
 func Destroy(id string) error {
 	// `rm --force` stops if running, then deletes, in one backend call.

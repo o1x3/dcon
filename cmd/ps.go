@@ -97,19 +97,9 @@ func portsString(c dockerfmt.Container) string {
 // dockerState maps the backend's state vocabulary onto docker's .State enum
 // (created|running|paused|restarting|removing|exited|dead) so templates like
 // `--format '{{.State}}'` see docker's words, not the backend's. It is the
-// inverse of matchStatusFilter's mapping.
-func dockerState(state string) string {
-	switch state {
-	case "stopped":
-		return "exited"
-	case "stopping":
-		return "removing"
-	case "", "unknown":
-		return "created"
-	default:
-		return state
-	}
-}
+// inverse of matchStatusFilter's mapping and shares its implementation with
+// the inspect view (dockerfmt.DockerState) so the two can never drift.
+func dockerState(state string) string { return dockerfmt.DockerState(state) }
 
 func statusString(c dockerfmt.Container) string {
 	switch c.Status.State {

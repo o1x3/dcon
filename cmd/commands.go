@@ -99,22 +99,3 @@ func init() {
 	load.Use = "load [OPTIONS]"
 	rootCmd.AddCommand(save, load)
 }
-
-func newBuildxCmd() *cobra.Command {
-	group := &cobra.Command{
-		Use:   "buildx",
-		Short: "Docker Buildx (mapped to the backend builder)",
-	}
-	b := newBuildCmd()
-	b.Use = "build [OPTIONS] PATH | URL | -"
-	group.AddCommand(b)
-	group.AddCommand(&cobra.Command{
-		Use:   "version",
-		Short: "Show buildx version information",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("dcon buildx (Apple container builder backend)")
-			return nil
-		},
-	})
-	return group
-}

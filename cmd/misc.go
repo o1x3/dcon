@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"text/template"
@@ -28,10 +29,13 @@ func newLogsCmd() *cobra.Command {
 			if v, _ := f.GetBool("boot"); v {
 				cargs = append(cargs, "--boot")
 			}
-			if tail, _ := f.GetString("tail"); tail != "" && tail != "all" {
-				if _, err := strconv.Atoi(tail); err == nil {
-					cargs = append(cargs, "-n", tail)
-				}
+			tail, _ := f.GetString("tail")
+			tailArg, err := validateTail(tail)
+			if err != nil {
+				return err
+			}
+			if tailArg != "" {
+				cargs = append(cargs, "-n", tailArg)
 			}
 			for _, flag := range []string{"since", "until", "timestamps"} {
 				if f.Changed(flag) {
@@ -54,6 +58,25 @@ func newLogsCmd() *cobra.Command {
 	return cmd
 }
 
+// validateTail maps a docker --tail value onto the backend's -n argument:
+// ""/"all" means everything (no -n), a number passes through, and anything
+// else errors like docker (previously it was silently ignored, so a typo like
+// `--tail latest` dumped the entire log). Shared with compose logs.
+func validateTail(tail string) (string, error) {
+	if tail == "" || tail == "all" {
+		return "", nil
+	}
+	if _, err := strconv.Atoi(tail); err != nil {
+		return "", fmt.Errorf("invalid --tail value %q: must be \"all\" or a number", tail)
+	}
+	return tail, nil
+}
+
+// validInspectTypes is the --type vocabulary `dcon inspect` accepts.
+var validInspectTypes = map[string]bool{
+	"": true, "container": true, "image": true, "network": true, "volume": true,
+}
+
 func newInspectCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "inspect [OPTIONS] NAME|ID [NAME|ID...]",
@@ -62,8 +85,11 @@ func newInspectCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			typ, _ := cmd.Flags().GetString("type")
 			format, _ := cmd.Flags().GetString("format")
+			if !validInspectTypes[typ] {
+				return fmt.Errorf("%q is not a valid value for --type (use container, image, network, or volume)", typ)
+			}
 
-			raw, missing, err := inspectRaw(typ, args)
+			kind, raw, missing, err := resolveInspect(typ, args)
 			if err != nil {
 				return err
 			}
@@ -71,7 +97,7 @@ func newInspectCmd() *cobra.Command {
 			// non-zero if any requested id was missing, so CI guards that check the
 			// exit code still fire.
 			if raw != "" {
-				if rerr := renderInspect(raw, format); rerr != nil {
+				if rerr := renderInspectTyped(kind, raw, format); rerr != nil {
 					return rerr
 				}
 			}
@@ -81,8 +107,8 @@ func newInspectCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringP("format", "f", "", "Format output using a Go template (backend JSON schema)")
-	cmd.Flags().String("type", "", "Return JSON for specified type: container|image")
+	cmd.Flags().StringP("format", "f", "", "Format output using a Go template (docker inspect schema; raw backend JSON without --format)")
+	cmd.Flags().String("type", "", "Return JSON for specified type: container|image|network|volume")
 	cmd.Flags().BoolP("size", "s", false, "Display total file sizes (no-op)")
 	return cmd
 }
@@ -114,48 +140,145 @@ func renderInspect(raw, format string) error {
 	return nil
 }
 
-// inspectRaw returns the pretty JSON array for the given ids, auto-detecting
-// container vs image when type is unset. The returned missing slice lists ids
-// that resolved to no object (only populated on the auto-detect path); the
-// caller renders the found JSON and then exits non-zero, matching docker.
+// inspectRaw returns the pretty JSON array for the given ids (see
+// resolveInspect); kept as a thin wrapper for callers that don't need the
+// resolved kind (e.g. `image inspect`).
 func inspectRaw(typ string, ids []string) (raw string, missing []string, err error) {
+	_, raw, missing, err = resolveInspect(typ, ids)
+	return raw, missing, err
+}
+
+// inspectProbes is the auto-detect order for a bare `dcon inspect ID`:
+// containers first (docker's precedence), then images, networks, volumes.
+var inspectProbes = []struct {
+	kind string
+	args []string
+}{
+	{"container", []string{"inspect"}},
+	{"image", []string{"image", "inspect"}},
+	{"network", []string{"network", "inspect"}},
+	{"volume", []string{"volume", "inspect"}},
+}
+
+// probeOK reports whether an inspect attempt genuinely resolved objects: some
+// backend inspects exit 0 with an empty array for unknown names, which must
+// count as a miss or auto-detect would stop at the wrong namespace.
+func probeOK(out string, err error) bool {
+	trimmed := strings.TrimSpace(out)
+	return err == nil && trimmed != "" && trimmed != "[]"
+}
+
+// resolveInspect returns the object kind ("container", "image", "network",
+// "volume", or "mixed") and the pretty JSON array for the given ids,
+// auto-detecting across all four namespaces when typ is unset. The returned
+// missing slice lists ids that resolved to no object (only populated on the
+// auto-detect path); the caller renders the found JSON and then exits
+// non-zero, matching docker.
+func resolveInspect(typ string, ids []string) (kind, raw string, missing []string, err error) {
 	switch typ {
 	case "image":
 		out, err := runtime.CaptureSilent(append([]string{"image", "inspect"}, ids...)...)
-		return out, nil, err
+		return typ, out, nil, err
 	case "container":
 		out, err := runtime.CaptureSilent(append([]string{"inspect"}, ids...)...)
-		return out, nil, err
+		return typ, out, nil, err
+	case "network":
+		out, err := runtime.CaptureSilent(append([]string{"network", "inspect"}, ids...)...)
+		return typ, out, nil, err
+	case "volume":
+		out, err := runtime.CaptureSilent(append([]string{"volume", "inspect"}, ids...)...)
+		return typ, out, nil, err
 	default:
-		// Fast path: all ids resolve as containers, or all as images — a single
-		// batch call preserves the backend's native formatting.
-		if out, err := runtime.CaptureSilent(append([]string{"inspect"}, ids...)...); err == nil {
-			return out, nil, nil
+		// Fast path: all ids resolve in one namespace — a single batch call
+		// preserves the backend's native formatting.
+		for _, p := range inspectProbes {
+			if out, err := runtime.CaptureSilent(append(append([]string{}, p.args...), ids...)...); probeOK(out, err) {
+				return p.kind, out, nil, nil
+			}
 		}
-		if out, err := runtime.CaptureSilent(append([]string{"image", "inspect"}, ids...)...); err == nil {
-			return out, nil, nil
-		}
-		// Mixed (some containers, some images) or partly missing: resolve each id
-		// independently and merge, so `inspect <container> <image>` works like
-		// docker instead of failing because no single namespace holds them all.
+		// Mixed namespaces or partly missing: resolve each id independently and
+		// merge, so `inspect <container> <image>` works like docker instead of
+		// failing because no single namespace holds them all.
 		var results []string
 		for _, id := range ids {
-			out, err := runtime.CaptureSilent("inspect", id)
-			if err != nil {
-				out, err = runtime.CaptureSilent("image", "inspect", id)
+			found := false
+			for _, p := range inspectProbes {
+				if out, err := runtime.CaptureSilent(append(append([]string{}, p.args...), id)...); probeOK(out, err) {
+					results = append(results, out)
+					found = true
+					break
+				}
 			}
-			if err != nil {
+			if !found {
 				missing = append(missing, id)
-				continue
 			}
-			results = append(results, out)
 		}
 		merged, err := mergeInspectArrays(results)
 		if err != nil {
-			return "", nil, err
+			return "", "", nil, err
 		}
-		return merged, missing, nil
+		return "mixed", merged, missing, nil
 	}
+}
+
+// renderInspectTyped prints inspect JSON honoring --format. Without a format
+// (or with "json") the raw backend JSON passes through — dcon's documented
+// no-format behavior. A Go template executes against docker-shaped views for
+// containers, networks, and volumes (`docker inspect -f` semantics: CI idioms
+// like {{.State.Running}} work); images and mixed sets keep templating over
+// the raw backend JSON.
+func renderInspectTyped(kind, raw, format string) error {
+	if format == "" || format == "json" {
+		return renderInspect(raw, format)
+	}
+	switch kind {
+	case "container":
+		var list []dockerfmt.Container
+		if err := json.Unmarshal([]byte(raw), &list); err != nil {
+			return renderInspect(raw, format) // unexpected shape: raw fallback
+		}
+		views := make([]any, 0, len(list))
+		for _, c := range list {
+			views = append(views, dockerfmt.NewContainerInspectView(c))
+		}
+		return renderInspectViews(format, views)
+	case "network":
+		var list []dockerfmt.Network
+		if err := json.Unmarshal([]byte(raw), &list); err != nil {
+			return renderInspect(raw, format)
+		}
+		views := make([]any, 0, len(list))
+		for _, n := range list {
+			views = append(views, dockerfmt.NewNetworkInspectView(n))
+		}
+		return renderInspectViews(format, views)
+	case "volume":
+		var list []dockerfmt.Volume
+		if err := json.Unmarshal([]byte(raw), &list); err != nil {
+			return renderInspect(raw, format)
+		}
+		views := make([]any, 0, len(list))
+		for _, v := range list {
+			views = append(views, dockerfmt.NewVolumeInspectView(v))
+		}
+		return renderInspectViews(format, views)
+	default: // image, mixed: backend JSON schema (documented dcon behavior)
+		return renderInspect(raw, format)
+	}
+}
+
+// renderInspectViews executes a docker-style inspect template once per view.
+func renderInspectViews(format string, views []any) error {
+	tmpl, err := template.New("inspect").Funcs(dockerfmt.TemplateFuncs()).Parse(format + "\n")
+	if err != nil {
+		return err
+	}
+	for _, v := range views {
+		if err := tmpl.Execute(os.Stdout, v); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // mergeInspectArrays concatenates several `inspect` JSON-array outputs into a
@@ -198,6 +321,32 @@ func cpIsContainerRef(p string) bool {
 	return strings.IndexByte(p, ':') > 0
 }
 
+// cpHostPath absolutizes a `cp` host-side path so backend versions < 1.1.0,
+// which mis-resolve relative host paths (apple/container#1738), still copy
+// to/from the right place. Docker's copy-contents suffixes ("/." and a
+// trailing "/") are semantic and filepath.Abs would clean them away, so they
+// are preserved explicitly.
+func cpHostPath(p string) string {
+	suffix := ""
+	switch {
+	case strings.HasSuffix(p, "/.") && p != "/.":
+		suffix = "/."
+	case strings.HasSuffix(p, "/") && p != "/":
+		suffix = "/"
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return p // fall back to the original; the backend will report it
+	}
+	if suffix != "" && !strings.HasSuffix(abs, suffix) {
+		if abs == "/" { // avoid "//" / "//."
+			suffix = strings.TrimPrefix(suffix, "/")
+		}
+		abs += suffix
+	}
+	return abs
+}
+
 func newCpCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cp [OPTIONS] SRC_PATH|CONTAINER:SRC_PATH DEST_PATH|CONTAINER:DEST_PATH",
@@ -210,6 +359,14 @@ func newCpCmd() *cobra.Command {
 			}
 			if !cpIsContainerRef(src) && !cpIsContainerRef(dst) {
 				return fmt.Errorf("copying between two local paths is not supported; one of SRC or DEST must be CONTAINER:PATH")
+			}
+			// Absolutize the host side: backend < 1.1.0 breaks on relative
+			// host paths (apple/container#1738).
+			if !cpIsContainerRef(src) {
+				src = cpHostPath(src)
+			}
+			if !cpIsContainerRef(dst) {
+				dst = cpHostPath(dst)
 			}
 			for _, flag := range []string{"archive", "follow-link"} {
 				if cmd.Flags().Changed(flag) {

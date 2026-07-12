@@ -7,6 +7,7 @@ import (
 	"os"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -15,6 +16,7 @@ import (
 	"dcon/internal/ui"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/sys/unix"
 )
 
 // pruneStep is one backend prune invocation with its progress message.
@@ -124,22 +126,47 @@ func newVersionCmd() *cobra.Command {
 // infoData mirrors the subset of `docker info` JSON keys that scripts commonly
 // read (e.g. `docker info -f '{{.ServerVersion}}'`), so --format works.
 type infoData struct {
-	ID                string
-	Containers        int
-	ContainersRunning int
-	ContainersPaused  int
-	ContainersStopped int
-	Images            int
-	Driver            string
-	ServerVersion     string
-	OperatingSystem   string
-	OSType            string
-	Architecture      string
-	NCPU              int
-	Name              string
-	DockerRootDir     string
-	Isolation         string
-	ServerState       string
+	ID                 string
+	Containers         int
+	ContainersRunning  int
+	ContainersPaused   int
+	ContainersStopped  int
+	Images             int
+	Driver             string
+	ServerVersion      string
+	OperatingSystem    string
+	OSType             string
+	Architecture       string
+	KernelVersion      string
+	NCPU               int
+	MemTotal           int64
+	IndexServerAddress string
+	Name               string
+	DockerRootDir      string
+	Isolation          string
+	ServerState        string
+}
+
+// hostMemTotal returns the host's physical memory in bytes (docker info's
+// MemTotal), best effort: 0 when the sysctl fails.
+func hostMemTotal() int64 {
+	n, err := unix.SysctlUint64("hw.memsize")
+	if err != nil {
+		return 0
+	}
+	return int64(n)
+}
+
+// hostKernelVersion reports the host (Darwin) kernel release, best effort.
+// The Linux guest kernel is per-VM and not cheaply queryable from the backend,
+// so the host value — prefixed to make its origin unambiguous — stands in for
+// docker's KernelVersion.
+func hostKernelVersion() string {
+	rel, err := unix.Sysctl("kern.osrelease")
+	if err != nil {
+		return ""
+	}
+	return "Darwin " + rel
 }
 
 // infoExit mirrors `docker info`, which prints the client/server sections AND
@@ -182,20 +209,23 @@ func newInfoCmd() *cobra.Command {
 
 			if format, _ := cmd.Flags().GetString("format"); format != "" {
 				data := infoData{
-					ID:                "apple-container",
-					Containers:        len(all),
-					ContainersRunning: running,
-					ContainersStopped: stopped,
-					Images:            len(imgs),
-					Driver:            "virtualization.framework",
-					ServerVersion:     ver.Version,
-					OperatingSystem:   "macOS",
-					OSType:            "linux",
-					Architecture:      runtime.GOARCH,
-					NCPU:              runtime.NumCPU(),
-					Name:              hostnameOrUnknown(),
-					Isolation:         "vm",
-					ServerState:       serverState,
+					ID:                 "apple-container",
+					Containers:         len(all),
+					ContainersRunning:  running,
+					ContainersStopped:  stopped,
+					Images:             len(imgs),
+					Driver:             "virtualization.framework",
+					ServerVersion:      ver.Version,
+					OperatingSystem:    "macOS",
+					OSType:             "linux",
+					Architecture:       runtime.GOARCH,
+					KernelVersion:      hostKernelVersion(),
+					NCPU:               runtime.NumCPU(),
+					MemTotal:           hostMemTotal(),
+					IndexServerAddress: "https://index.docker.io/v1/",
+					Name:               hostnameOrUnknown(),
+					Isolation:          "vm",
+					ServerState:        serverState,
 				}
 				if format == "json" {
 					b, err := json.Marshal(data)
@@ -231,6 +261,14 @@ func newInfoCmd() *cobra.Command {
 			fmt.Printf(" Operating System: macOS\n")
 			fmt.Printf(" OSType: linux (guest)\n")
 			fmt.Printf(" Architecture: %s\n", runtime.GOARCH)
+			if kv := hostKernelVersion(); kv != "" {
+				fmt.Printf(" Kernel Version: %s (host)\n", kv)
+			}
+			fmt.Printf(" CPUs: %d\n", runtime.NumCPU())
+			if mt := hostMemTotal(); mt > 0 {
+				fmt.Printf(" Total Memory: %s\n", dockerfmt.HumanSizeBinaryBytes(uint64(mt)))
+			}
+			fmt.Printf(" Index Server Address: https://index.docker.io/v1/\n")
 			fmt.Printf(" Name: %s\n", hostnameOrUnknown())
 			return infoExit(serverState)
 		},
@@ -245,6 +283,56 @@ func hostnameOrUnknown() string {
 		return "unknown"
 	}
 	return h
+}
+
+// dfUsage is one bucket of `container system df --format json` output.
+type dfUsage struct {
+	Active      int   `json:"active"`
+	Reclaimable int64 `json:"reclaimable"`
+	SizeInBytes int64 `json:"sizeInBytes"`
+	Total       int   `json:"total"`
+}
+
+// backendDF mirrors the backend's `system df` JSON document.
+type backendDF struct {
+	Containers dfUsage `json:"containers"`
+	Images     dfUsage `json:"images"`
+	Volumes    dfUsage `json:"volumes"`
+}
+
+// dfView exposes docker's `system df` template fields (.Type, .TotalCount,
+// .Active, .Size, .Reclaimable).
+type dfView struct {
+	Type        string
+	TotalCount  string
+	Active      string
+	Size        string
+	Reclaimable string
+}
+
+// dfViews renders the backend usage document into docker's four rows (Build
+// Cache is always zero: the backend does not track it separately). Pure for
+// testability.
+func dfViews(d backendDF) []any {
+	mk := func(typ string, u dfUsage) dfView {
+		reclaim := dockerfmt.HumanSize(float64(u.Reclaimable))
+		if u.SizeInBytes > 0 {
+			reclaim += fmt.Sprintf(" (%d%%)", int(float64(u.Reclaimable)/float64(u.SizeInBytes)*100))
+		}
+		return dfView{
+			Type:        typ,
+			TotalCount:  strconv.Itoa(u.Total),
+			Active:      strconv.Itoa(u.Active),
+			Size:        dockerfmt.HumanSize(float64(u.SizeInBytes)),
+			Reclaimable: reclaim,
+		}
+	}
+	return []any{
+		mk("Images", d.Images),
+		mk("Containers", d.Containers),
+		mk("Local Volumes", d.Volumes),
+		mk("Build Cache", dfUsage{}),
+	}
 }
 
 // newSystemGroupCmd builds `dcon system ...`: Docker-shaped df/prune/info plus
@@ -264,15 +352,32 @@ func newSystemGroupCmd() *cobra.Command {
 			if cmd.Flags().Changed("verbose") {
 				fmt.Fprintln(os.Stderr, "dcon: warning: --verbose is not supported by the backend and was ignored")
 			}
-			cargs := []string{"system", "df"}
-			if f, _ := cmd.Flags().GetString("format"); f != "" {
-				cargs = append(cargs, "--format", f)
+			format, _ := cmd.Flags().GetString("format")
+			if format == "" {
+				// Backend-native table (current documented behavior).
+				return rt.Run("system", "df")
 			}
-			return rt.Run(cargs...)
+			// --format: the backend only accepts json|table|yaml|toml, so a Go
+			// template (docker's convention) hard-failed. Parse the backend JSON
+			// and render docker-style client-side, like ps/images.
+			var usage backendDF
+			if err := rt.CaptureJSON(&usage, "system", "df", "--format", "json"); err != nil {
+				return err
+			}
+			def := dockerfmt.TableDef{
+				Headers: []string{"TYPE", "TOTAL", "ACTIVE", "SIZE", "RECLAIMABLE"},
+				Row: func(v any) []string {
+					d := v.(dfView)
+					return []string{d.Type, d.TotalCount, d.Active, d.Size, d.Reclaimable}
+				},
+				ID:           func(v any) string { return v.(dfView).Type },
+				FieldHeaders: map[string]string{".TotalCount": "TOTAL"},
+			}
+			return dockerfmt.Render(format, false, dfViews(usage), def)
 		},
 	}
 	df.Flags().BoolP("verbose", "v", false, "Show detailed information on space usage")
-	df.Flags().String("format", "", "Format output using a Go template")
+	df.Flags().String("format", "", "Format output using a Go template or 'json'")
 
 	prune := &cobra.Command{
 		Use:   "prune [OPTIONS]",

@@ -212,7 +212,9 @@ func newVolumeGroupCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return renderInspect(raw, format)
+			// Templates execute against docker-shaped views ({{.Name}},
+			// {{.Driver}}, {{.Mountpoint}}), like `docker volume inspect -f`.
+			return renderInspectTyped("volume", raw, format)
 		},
 	}
 	inspect.Flags().StringP("format", "f", "", "Format output using a Go template or 'json'")

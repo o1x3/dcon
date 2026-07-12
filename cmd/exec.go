@@ -60,7 +60,9 @@ func buildExecArgs(cmd *cobra.Command, args []string) []string {
 	if u, _ := f.GetString("uid"); u != "" {
 		cargs = append(cargs, "--uid", u)
 	}
-	for _, e := range mustStringArray(f, "env") {
+	// docker resolves a bare `-e KEY` from the client environment (omitting it
+	// when unset); see expandEnvSpecs in run.go.
+	for _, e := range expandEnvSpecs(mustStringArray(f, "env"), os.LookupEnv) {
 		cargs = append(cargs, "--env", e)
 	}
 	for _, e := range mustStringArray(f, "env-file") {

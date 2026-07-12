@@ -4,11 +4,15 @@ import (
 	"bufio"
 	"fmt"
 	"math"
+	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
+	"dcon/internal/dockerfmt"
 	"dcon/internal/machine"
+	"dcon/internal/pool"
 	"dcon/internal/runtime"
 
 	"github.com/spf13/cobra"
@@ -85,10 +89,10 @@ func addRunFlags(cmd *cobra.Command) {
 	f.String("scheme", "", "Registry scheme: http|https|auto")
 
 	// --- Accepted-but-unsupported Docker flags (warned once when used) ---
-	f.BoolP("publish-all", "P", false, "Publish all exposed ports (unsupported by backend)")
+	f.BoolP("publish-all", "P", false, "Publish all exposed ports to random host ports")
 	f.StringP("hostname", "h", "", "Container host name (unsupported by backend)")
 	f.String("restart", "", "Restart policy (unsupported by backend)")
-	f.String("pull", "", "Pull image before running: always|missing|never (backend pulls on demand)")
+	f.String("pull", "", `Pull image before running ("always", "missing", "never")`)
 	f.String("stop-signal", "", "Signal to stop the container (unsupported by backend)")
 	f.StringSlice("add-host", nil, "Add a custom host-to-IP mapping (unsupported by backend)")
 	f.StringSlice("device", nil, "Add a host device (unsupported by backend)")
@@ -211,6 +215,128 @@ func reservedMachineLabelErr(l string) error {
 	return nil
 }
 
+// expandEnvSpecs applies docker's client-side env resolution to -e/--env
+// values: a bare `KEY` (no '=') is resolved from the client environment via
+// lookup — emitted as KEY=value when set, dropped entirely when unset. Specs
+// carrying '=' (including `KEY=`, an explicit empty value) pass through
+// verbatim. lookup is injected (os.LookupEnv in production) for testability.
+func expandEnvSpecs(vals []string, lookup func(string) (string, bool)) []string {
+	var out []string
+	for _, e := range vals {
+		if strings.Contains(e, "=") {
+			out = append(out, e)
+			continue
+		}
+		if v, ok := lookup(e); ok {
+			out = append(out, e+"="+v)
+		}
+		// unset bare KEY: omitted, matching docker
+	}
+	return out
+}
+
+// validPullPolicies is docker's --pull vocabulary for run/create.
+var validPullPolicies = map[string]bool{"always": true, "missing": true, "never": true}
+
+// validatePullPolicy rejects values outside docker's --pull enum. Empty means
+// unset (missing semantics).
+func validatePullPolicy(policy string) error {
+	if policy != "" && !validPullPolicies[policy] {
+		return fmt.Errorf("invalid pull option: %q: must be one of \"always\", \"missing\" or \"never\"", policy)
+	}
+	return nil
+}
+
+// applyPullPolicy enforces --pull before a run/create: "always" pulls the
+// image up front (and invalidates any warm members booted from the previous
+// image the ref pointed at); "never" hard-errors when the image is not in the
+// local store, matching docker; "missing" (or unset) keeps the backend's
+// pull-on-demand default.
+func applyPullPolicy(policy, image string) error {
+	if err := validatePullPolicy(policy); err != nil {
+		return err
+	}
+	switch policy {
+	case "always":
+		if err := runtime.Run("image", "pull", image); err != nil {
+			return err
+		}
+		pool.InvalidateImage(image)
+	case "never":
+		if _, err := runtime.CaptureSilent("image", "inspect", image); err != nil {
+			return fmt.Errorf("no such image: %s: image is not present locally and --pull=never prevents pulling it", image)
+		}
+	}
+	return nil
+}
+
+// exposedPorts returns the image's OCI ExposedPorts specs (e.g. "80/tcp",
+// sorted) for the preferred (linux/GOARCH-first) variant, read from the
+// backend image inspect.
+func exposedPorts(image string) ([]string, error) {
+	var imgs []struct {
+		Variants []struct {
+			Platform dockerfmt.Platform `json:"platform"`
+			Config   struct {
+				Config struct {
+					ExposedPorts map[string]struct{} `json:"ExposedPorts"`
+				} `json:"config"`
+			} `json:"config"`
+		} `json:"variants"`
+	}
+	if err := runtime.CaptureJSON(&imgs, "image", "inspect", image); err != nil {
+		return nil, err
+	}
+	if len(imgs) == 0 || len(imgs[0].Variants) == 0 {
+		return nil, nil
+	}
+	plats := make([]dockerfmt.Platform, len(imgs[0].Variants))
+	for i, v := range imgs[0].Variants {
+		plats[i] = v.Platform
+	}
+	vi := preferredVariantIdx(plats)
+	if vi < 0 {
+		vi = 0
+	}
+	var out []string
+	for p := range imgs[0].Variants[vi].Config.Config.ExposedPorts {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// publishAllSpecs converts OCI exposed-port specs into docker -p publish specs
+// ("hostPort:containerPort/proto"), using alloc to pick a free host port for
+// each. Pure (alloc injected) so the -P translation is unit-testable.
+func publishAllSpecs(exposed []string, alloc func() (int, error)) ([]string, error) {
+	var out []string
+	for _, e := range exposed {
+		port, proto := e, "tcp"
+		if i := strings.Index(e, "/"); i >= 0 {
+			port, proto = e[:i], e[i+1:]
+		}
+		hp, err := alloc()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, fmt.Sprintf("%d:%s/%s", hp, port, proto))
+	}
+	return out, nil
+}
+
+// freeHostPort asks the kernel for an unused TCP port (the standard :0 probe).
+// Inherently racy between probe and container start, like docker's own
+// ephemeral allocation; acceptable for -P.
+func freeHostPort() (int, error) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port, nil
+}
+
 // buildContainerArgs translates the parsed Docker flags on cmd into a
 // `container <subcmd> ...` argument list. subcmd is "run" or "create".
 func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]string, error) {
@@ -308,9 +434,15 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 		out = append(out, "--mount", normalizeMount(m, &warnings))
 	}
 
+	// --env: docker resolves a bare `-e KEY` from the client environment (and
+	// omits it when unset) instead of forwarding it verbatim.
+	for _, e := range expandEnvSpecs(mustStringArray(f, "env"), os.LookupEnv) {
+		out = append(out, "--env", e)
+	}
+
 	// repeatable string flags -> repeated container flags
 	sliceMap := []struct{ name, flag string }{
-		{"env", "--env"}, {"env-file", "--env-file"},
+		{"env-file", "--env-file"},
 		{"publish", "--publish"}, {"label", "--label"},
 		{"cap-add", "--cap-add"}, {"cap-drop", "--cap-drop"},
 		{"dns", "--dns"}, {"dns-search", "--dns-search"},
@@ -360,9 +492,27 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 		warnings = append(warnings, "--privileged approximated as --cap-add ALL (device passthrough not supported)")
 	}
 
+	// -P/--publish-all: resolve the image's ExposedPorts and publish each onto
+	// a free ephemeral host port, like docker. Inspect failures degrade to the
+	// old warn-and-continue shim (e.g. image not yet pulled locally).
+	if v, _ := f.GetBool("publish-all"); v && len(posArgs) > 0 {
+		exposed, err := exposedPorts(posArgs[0])
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("-P/--publish-all: cannot inspect image %s (%v); no ports published", posArgs[0], err))
+		} else {
+			specs, perr := publishAllSpecs(exposed, freeHostPort)
+			if perr != nil {
+				return nil, perr
+			}
+			for _, s := range specs {
+				out = append(out, "--publish", s)
+			}
+		}
+	}
+
 	// Collect unsupported flags actually set, warn once.
 	unsupported := map[string]string{
-		"publish-all": "-P/--publish-all", "hostname": "--hostname", "restart": "--restart",
+		"hostname": "--hostname", "restart": "--restart",
 		"stop-signal": "--stop-signal", "add-host": "--add-host", "device": "--device",
 		"group-add": "--group-add", "sysctl": "--sysctl", "gpus": "--gpus",
 		"memory-swap": "--memory-swap", "cpu-shares": "--cpu-shares",
@@ -538,6 +688,14 @@ func newRunCmd() *cobra.Command {
 		Args:                  cobra.MinimumNArgs(1),
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// --pull runs first: "always" refreshes the image (and empties the
+			// warm pool for it), "never" hard-errors on a missing image. A run
+			// with any --pull set is warm-ineligible (see warmAllowed), so the
+			// fast path below can never serve a possibly-stale member.
+			policy, _ := cmd.Flags().GetString("pull")
+			if err := applyPullPolicy(policy, args[0]); err != nil {
+				return err
+			}
 			// Fast path: serve simple --rm runs from the warm pool (exec into a
 			// pre-booted single-use VM) when one is available. Falls through to a
 			// normal cold boot otherwise — transparently and with no behavior change.
@@ -562,6 +720,10 @@ func newCreateCmd() *cobra.Command {
 		Args:                  cobra.MinimumNArgs(1),
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			policy, _ := cmd.Flags().GetString("pull")
+			if err := applyPullPolicy(policy, args[0]); err != nil {
+				return err
+			}
 			cArgs, err := buildContainerArgs(cmd, args, "create")
 			if err != nil {
 				return err

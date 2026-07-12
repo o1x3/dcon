@@ -33,8 +33,11 @@ var warmAllowed = map[string]bool{
 	// exec` cannot apply it to an already-booted member. A run carrying --ulimit
 	// must stay warm-ineligible and take the cold path, where `container run
 	// --ulimit` honors it natively.
-	// no-ops on the warm path (image already resident / cosmetic)
-	"pull": true, "detach-keys": true,
+	// no-ops on the warm path (cosmetic). NOTE: --pull is deliberately NOT
+	// here: a member was booted from whatever the ref pointed at boot time, so
+	// --pull=always (or any explicit pull policy) must take the cold path and
+	// never be served by a possibly-stale pre-booted VM.
+	"detach-keys": true,
 	// global persistent flags with no effect on execution
 	"debug": true, "host": true, "context": true, "log-level": true, "config": true,
 	// TLS compat flags (accepted and ignored by root, see cmd/root.go): they
@@ -89,7 +92,9 @@ func warmExecArgs(cmd *cobra.Command, id string, command []string) []string {
 	if v, _ := f.GetString("gid"); v != "" {
 		out = append(out, "--gid", v)
 	}
-	for _, e := range mustStringArray(f, "env") {
+	// Same client-side bare-KEY resolution as buildContainerArgs, so the warm
+	// fast path and the cold path see identical environments.
+	for _, e := range expandEnvSpecs(mustStringArray(f, "env"), os.LookupEnv) {
 		out = append(out, "--env", e)
 	}
 	for _, e := range mustStringArray(f, "env-file") {
