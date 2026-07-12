@@ -59,12 +59,13 @@ func TestHumanSize(t *testing.T) {
 }
 
 func TestTruncCommandRuneSafe(t *testing.T) {
-	// 25 multibyte runes; must cut at 20 runes without splitting a rune.
+	// 25 wide (2-column) runes; docker's Ellipsis counts display columns, so
+	// the cut keeps 9 runes (18 cols) + "…" = 19 columns, never splitting a rune.
 	long := []string{"日本語日本語日本語日本語日本語日本語日本語日本語日"}
 	out := TruncCommand(long, false)
 	inner := out[1 : len(out)-1] // strip quotes
-	if n := len([]rune(inner)); n != 20 {
-		t.Errorf("expected 20 runes, got %d (%q)", n, inner)
+	if inner != "日本語日本語日本語…" {
+		t.Errorf("CJK ellipsis wrong: %q", inner)
 	}
 }
 
@@ -72,7 +73,8 @@ func TestTruncCommand(t *testing.T) {
 	if got := TruncCommand([]string{"sleep", "300"}, false); got != `"sleep 300"` {
 		t.Errorf("TruncCommand = %q", got)
 	}
-	// docker truncates to 20 runes: 19 source runes + a U+2026 ellipsis, quoted.
+	// docker truncates to 20 display columns: 19 ASCII chars + a U+2026
+	// ellipsis, quoted.
 	if got, want := TruncCommand([]string{"this-is-a-very-long-command-indeed"}, false), `"this-is-a-very-long…"`; got != want {
 		t.Errorf("TruncCommand truncation = %q, want %q", got, want)
 	}

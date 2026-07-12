@@ -10,15 +10,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// formatCreatedBy renders a layer's created_by for the CREATED BY column:
-// strip docker's shell wrapper prefixes, then truncate to 45 columns. The
-// truncation is by runes (not bytes) so a multibyte UTF-8 character landing on
-// the cut boundary is never split into an invalid byte sequence.
+// formatCreatedBy renders a layer's created_by for the CREATED BY column
+// exactly like docker: tabs become spaces (a raw tab would corrupt the
+// tabwriter row), then the value is ellipsis-truncated to 45 display columns
+// (44 + "…") unless noTrunc. Docker does NOT strip the /bin/sh -c wrappers.
 func formatCreatedBy(raw string, noTrunc bool) string {
-	cb := strings.TrimPrefix(raw, "/bin/sh -c #(nop) ")
-	cb = strings.TrimSpace(strings.TrimPrefix(cb, "/bin/sh -c"))
-	if r := []rune(cb); !noTrunc && len(r) > 45 {
-		cb = string(r[:42]) + "..."
+	cb := strings.ReplaceAll(raw, "\t", " ")
+	if !noTrunc {
+		cb = dockerfmt.Ellipsis(cb, 45)
 	}
 	return cb
 }
@@ -33,11 +32,35 @@ type ociHistory struct {
 }
 
 type inspectImageRaw struct {
+	ID            string `json:"id"`
+	Configuration struct {
+		Descriptor dockerfmt.Descriptor `json:"descriptor"`
+	} `json:"configuration"`
 	Variants []struct {
-		Config struct {
+		Platform dockerfmt.Platform `json:"platform"`
+		Config   struct {
 			History []ociHistory `json:"history"`
 		} `json:"config"`
 	} `json:"variants"`
+}
+
+// history returns the layer history of the preferred variant — the same
+// linux/GOARCH-first selection imageSizeBytes uses — instead of blindly
+// reading Variants[0], which on a multi-platform image could describe a
+// foreign architecture.
+func (img inspectImageRaw) history() []ociHistory {
+	if len(img.Variants) == 0 {
+		return nil
+	}
+	plats := make([]dockerfmt.Platform, len(img.Variants))
+	for i, v := range img.Variants {
+		plats[i] = v.Platform
+	}
+	vi := preferredVariantIdx(plats)
+	if vi < 0 {
+		vi = 0
+	}
+	return img.Variants[vi].Config.History
 }
 
 type historyView struct {
@@ -46,6 +69,35 @@ type historyView struct {
 	CreatedBy    string
 	Size         string
 	Comment      string
+}
+
+// buildHistoryViews renders the layer list newest-first, the way docker does:
+// the newest row carries the image's ID (12 chars, or full with --no-trunc)
+// and every other layer shows <missing> — which also makes `history -q`
+// return a usable image id.
+func buildHistoryViews(imageID string, hist []ociHistory, noTrunc bool) []any {
+	views := make([]any, 0, len(hist))
+	for i := len(hist) - 1; i >= 0; i-- {
+		h := hist[i]
+		id := "<missing>"
+		if i == len(hist)-1 && imageID != "" {
+			if noTrunc {
+				id = imageID
+			} else {
+				id = dockerfmt.ShortID(imageID)
+			}
+		}
+		views = append(views, historyView{
+			ID:           id,
+			CreatedSince: dockerfmt.RelativeAgo(h.Created),
+			CreatedBy:    formatCreatedBy(h.CreatedBy, noTrunc),
+			// Per-layer size is not present in the OCI config and is
+			// unrecoverable from the backend; use a non-numeric sentinel.
+			Size:    "unknown",
+			Comment: h.Comment,
+		})
+	}
+	return views
 }
 
 func newHistoryCmd() *cobra.Command {
@@ -67,24 +119,16 @@ func newHistoryCmd() *cobra.Command {
 				return err
 			}
 			var hist []ociHistory
-			if len(imgs) > 0 && len(imgs[0].Variants) > 0 {
-				hist = imgs[0].Variants[0].Config.History
+			imageID := ""
+			if len(imgs) > 0 {
+				imageID = imgs[0].ID
+				if imageID == "" { // older inspect payloads: fall back to the config digest
+					imageID = imgs[0].Configuration.Descriptor.Digest
+				}
+				hist = imgs[0].history()
 			}
 
-			views := make([]any, 0, len(hist))
-			// Docker lists newest layer first.
-			for i := len(hist) - 1; i >= 0; i-- {
-				h := hist[i]
-				views = append(views, historyView{
-					ID:           "<missing>",
-					CreatedSince: dockerfmt.RelativeAgo(h.Created),
-					CreatedBy:    formatCreatedBy(h.CreatedBy, noTrunc),
-					// Per-layer size is not present in the OCI config and is
-					// unrecoverable from the backend; use a non-numeric sentinel.
-					Size:    "unknown",
-					Comment: h.Comment,
-				})
-			}
+			views := buildHistoryViews(imageID, hist, noTrunc)
 			def := dockerfmt.TableDef{
 				Headers: []string{"IMAGE", "CREATED", "CREATED BY", "SIZE", "COMMENT"},
 				Row: func(v any) []string {

@@ -54,9 +54,9 @@ func TestApplyFiltersCommaLabelValue(t *testing.T) {
 		return c
 	}
 	list := []dockerfmt.Container{mk("hit", "a,b"), mk("miss", "a")}
-	out := applyFilters(list, []string{"label=team=a,b"})
-	if len(out) != 1 || out[0].ID != "hit" {
-		t.Errorf("applyFilters by comma label value = %v, want [hit]", out)
+	out, err := applyFilters(list, []string{"label=team=a,b"})
+	if err != nil || len(out) != 1 || out[0].ID != "hit" {
+		t.Errorf("applyFilters by comma label value = %v (%v), want [hit]", out, err)
 	}
 }
 

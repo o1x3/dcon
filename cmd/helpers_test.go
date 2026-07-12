@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"dcon/internal/dockerfmt"
 )
@@ -112,17 +113,17 @@ func TestApplyFilters(t *testing.T) {
 		mk("web1", "running", "nginx"),
 		mk("db1", "stopped", "postgres"),
 	}
-	got := applyFilters(list, []string{"status=running"})
-	if len(got) != 1 || got[0].ID != "web1" {
-		t.Errorf("status filter wrong: %+v", got)
+	got, err := applyFilters(list, []string{"status=running"})
+	if err != nil || len(got) != 1 || got[0].ID != "web1" {
+		t.Errorf("status filter wrong: %+v (%v)", got, err)
 	}
-	got = applyFilters(list, []string{"ancestor=postgres"})
-	if len(got) != 1 || got[0].ID != "db1" {
-		t.Errorf("ancestor filter wrong: %+v", got)
+	got, err = applyFilters(list, []string{"ancestor=postgres"})
+	if err != nil || len(got) != 1 || got[0].ID != "db1" {
+		t.Errorf("ancestor filter wrong: %+v (%v)", got, err)
 	}
-	got = applyFilters(list, []string{"name=web"})
-	if len(got) != 1 || got[0].ID != "web1" {
-		t.Errorf("name filter wrong: %+v", got)
+	got, err = applyFilters(list, []string{"name=web"})
+	if err != nil || len(got) != 1 || got[0].ID != "web1" {
+		t.Errorf("name filter wrong: %+v (%v)", got, err)
 	}
 }
 
@@ -217,14 +218,15 @@ func TestTmpfsArgs(t *testing.T) {
 }
 
 func TestMatchImageFilters(t *testing.T) {
+	var none time.Time
 	v := imageView{Repository: "myorg/api", Tag: "1.4"}
-	if !matchImageFilters(v, []string{"reference=myorg/*"}) {
+	if !matchImageFilters(v, []string{"reference=myorg/*"}, none, none) {
 		t.Error("glob should match")
 	}
-	if matchImageFilters(v, []string{"reference=other/*"}) {
+	if matchImageFilters(v, []string{"reference=other/*"}, none, none) {
 		t.Error("non-matching glob should fail")
 	}
-	if matchImageFilters(v, []string{"dangling=true"}) {
+	if matchImageFilters(v, []string{"dangling=true"}, none, none) {
 		t.Error("dangling=true matches no tagged image")
 	}
 }

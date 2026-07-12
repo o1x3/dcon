@@ -31,24 +31,26 @@ func TestTopPassesDashedPsOptions(t *testing.T) {
 	}
 }
 
-// TestFormatCreatedByRuneSafe reproduces the byte-truncation bug: slicing
-// created_by at byte 42 could split a multibyte UTF-8 rune, emitting invalid
-// UTF-8. Truncation must be rune-safe.
+// TestFormatCreatedByRuneSafe guards the docker-exact CREATED BY rendering:
+// truncation counts display columns via Ellipsis (never splitting a rune) and
+// docker's /bin/sh -c wrappers are preserved, not stripped.
 func TestFormatCreatedByRuneSafe(t *testing.T) {
-	// Leading ASCII + 3-byte runes so byte 42 lands mid-rune.
+	// Leading ASCII + wide (2-column) runes: 45 columns = "x" + 21 runes (43
+	// cols = 44 total) + "…"; a byte- or rune-count cut would differ.
 	in := "x" + strings.Repeat("あ", 50)
 	out := formatCreatedBy(in, false)
 	if !utf8.ValidString(out) {
-		t.Errorf("rune-unsafe truncation produced invalid UTF-8: %q", out)
+		t.Errorf("truncation produced invalid UTF-8: %q", out)
 	}
-	if r := []rune(out); len(r) != 45 || string(r[len(r)-3:]) != "..." {
-		t.Errorf("want 42 runes + '...'; got %d runes (%q)", len(r), out)
+	if want := "x" + strings.Repeat("あ", 21) + "…"; out != want {
+		t.Errorf("Ellipsis(45) wrong: got %q want %q", out, want)
 	}
-	if got := formatCreatedBy("/bin/sh -c #(nop) CMD [\"x\"]", false); got != `CMD ["x"]` {
-		t.Errorf("prefix strip wrong: %q", got)
+	// Docker does NOT strip the shell wrapper prefixes.
+	if got := formatCreatedBy("/bin/sh -c #(nop) CMD [\"x\"]", false); got != `/bin/sh -c #(nop) CMD ["x"]` {
+		t.Errorf("docker keeps the #(nop) wrapper: %q", got)
 	}
-	if got := formatCreatedBy("/bin/sh -c apk add curl", false); got != "apk add curl" {
-		t.Errorf("shell prefix strip wrong: %q", got)
+	if got := formatCreatedBy("/bin/sh -c apk add curl", false); got != "/bin/sh -c apk add curl" {
+		t.Errorf("docker keeps the shell wrapper: %q", got)
 	}
 }
 

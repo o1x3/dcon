@@ -3,11 +3,13 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	goruntime "runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"dcon/internal/dockerfmt"
 	"dcon/internal/runtime"
@@ -24,29 +26,55 @@ type imageView struct {
 	CreatedAt    string
 	Size         string
 	Platform     string
+
+	// created keeps the parsed creation time (unexported: invisible to
+	// templates and json) for before=/since= filtering.
+	created time.Time
+}
+
+// preferredVariantIdx picks the image variant closest to docker's notion of
+// "the" image on this host: the linux/GOARCH variant, else the first linux
+// variant, else -1. Shared by images (SIZE) and history (layer list) so both
+// read the same variant.
+func preferredVariantIdx(platforms []dockerfmt.Platform) int {
+	fallback := -1
+	for i, p := range platforms {
+		if p.OS != "linux" {
+			continue
+		}
+		if p.Architecture == goruntime.GOARCH {
+			return i
+		}
+		if fallback < 0 {
+			fallback = i
+		}
+	}
+	return fallback
 }
 
 func imageSizeBytes(img dockerfmt.Image) int64 {
 	// Prefer the host-platform linux variant (closest to `docker images` SIZE),
 	// else the first linux variant. Reflects summed compressed blob sizes — the
 	// only size the backend exposes — so it won't exactly equal docker's value.
-	var fallback int64
-	for _, v := range img.Variants {
-		if v.Platform.OS != "linux" {
-			continue
-		}
-		if v.Platform.Architecture == goruntime.GOARCH {
-			return v.Size
-		}
-		if fallback == 0 {
-			fallback = v.Size
-		}
+	plats := make([]dockerfmt.Platform, len(img.Variants))
+	for i, v := range img.Variants {
+		plats[i] = v.Platform
 	}
-	return fallback
+	if i := preferredVariantIdx(plats); i >= 0 {
+		return img.Variants[i].Size
+	}
+	return 0
 }
 
 func buildImageView(img dockerfmt.Image, noTrunc bool) imageView {
-	repo, tag := dockerfmt.SplitRepoTag(dockerfmt.ShortImage(img.Configuration.Name))
+	name := dockerfmt.ShortImage(img.Configuration.Name)
+	repo, tag := dockerfmt.SplitRepoTag(name)
+	// A digest-pinned reference (repo@sha256:…) has no tag; docker prints
+	// <none>, not the raw digest, in the TAG column. SplitRepoTag keeps
+	// returning the digest for ancestor matching.
+	if strings.Contains(name, "@") {
+		tag = "<none>"
+	}
 	id := img.ID
 	// DIGEST shows the full sha256:<hex> like `docker images --digests`.
 	digest := img.Configuration.Descriptor.Digest
@@ -61,17 +89,26 @@ func buildImageView(img dockerfmt.Image, noTrunc bool) imageView {
 			plat += "/" + p.Variant
 		}
 	}
+	// Docker's .CreatedAt is a formatted local time, not raw RFC3339 (same
+	// rendering ps uses); the parsed value is kept for time-based filters.
+	createdAt := img.Configuration.CreationDate
+	var created time.Time
+	if t, ok := dockerfmt.ParseTime(createdAt); ok {
+		created = t
+		createdAt = t.Format("2006-01-02 15:04:05 -0700 MST")
+	}
 	return imageView{
 		Repository:   repo,
 		Tag:          tag,
 		ID:           id,
 		Digest:       digest,
 		CreatedSince: dockerfmt.RelativeAgo(img.Configuration.CreationDate),
-		CreatedAt:    img.Configuration.CreationDate,
+		CreatedAt:    createdAt,
 		// docker images SIZE uses 3 significant figures (HumanSizeWithPrecision),
 		// not the default 4 — e.g. "13.3kB", not "13.26kB".
 		Size:     dockerfmt.HumanSizeWithPrecision(float64(imageSizeBytes(img)), 3),
 		Platform: plat,
+		created:  created,
 	}
 }
 
@@ -130,19 +167,24 @@ func runImages(cmd *cobra.Command, args []string) error {
 		repoFilter, tagFilter, digestFilter = imageRefFilter(args[0])
 	}
 
+	beforeT, sinceT, err := resolveImageTimeFilters(list, filters)
+	if err != nil {
+		return err
+	}
+
 	views := make([]any, 0, len(list))
 	for _, img := range list {
 		v := buildImageView(img, noTrunc)
-		if repoFilter != "" && v.Repository != repoFilter && !strings.HasSuffix(v.Repository, "/"+repoFilter) {
+		if repoFilter != "" && !refPatternMatch(repoFilter, v.Repository) {
 			continue
 		}
-		if tagFilter != "" && v.Tag != tagFilter {
+		if tagFilter != "" && !refPatternMatch(tagFilter, v.Tag) {
 			continue
 		}
 		if digestFilter != "" && !strings.HasPrefix(v.Digest, digestFilter) {
 			continue
 		}
-		if !matchImageFilters(v, filters) {
+		if !matchImageFilters(v, filters, beforeT, sinceT) {
 			continue
 		}
 		views = append(views, v)
@@ -150,9 +192,7 @@ func runImages(cmd *cobra.Command, args []string) error {
 	// Sort newest first, matching `docker images` (daemon returns created-time
 	// descending; the CLI does no alphabetical re-sort). Mirrors `dcon ps`.
 	sort.SliceStable(views, func(i, j int) bool {
-		ti, _ := dockerfmt.ParseTime(views[i].(imageView).CreatedAt)
-		tj, _ := dockerfmt.ParseTime(views[j].(imageView).CreatedAt)
-		return ti.After(tj)
+		return views[i].(imageView).created.After(views[j].(imageView).created)
 	})
 
 	headers := []string{"REPOSITORY", "TAG", "IMAGE ID", "CREATED", "SIZE"}
@@ -212,7 +252,65 @@ func validateImageFilters(filters []string) error {
 	return nil
 }
 
-func matchImageFilters(v imageView, filters []string) bool {
+// refPatternMatch implements docker's positional `images REPO[:TAG]`
+// semantics: an exact familiar-name match, or — when the pattern carries
+// wildcards — a path.Match, whose `*` never crosses `/`, keeping the match
+// path-component aware (so `alpine` or `alpine*` cannot match
+// ghcr.io/foo/alpine the way the old HasSuffix clause did).
+func refPatternMatch(pattern, s string) bool {
+	if strings.ContainsAny(pattern, "*?[") {
+		ok, err := path.Match(pattern, s)
+		return err == nil && ok
+	}
+	return s == pattern
+}
+
+// resolveImageTimeFilters resolves --filter before=/since= references to the
+// named image's creation time (zero when the filter is absent). Docker errors
+// when the reference image does not exist; so do we. With repeated values the
+// last one wins, matching the daemon's WalkValues behavior.
+func resolveImageTimeFilters(list []dockerfmt.Image, filters []string) (before, since time.Time, err error) {
+	for _, fl := range filters {
+		kv := strings.SplitN(fl, "=", 2)
+		if len(kv) != 2 || (kv[0] != "before" && kv[0] != "since") {
+			continue
+		}
+		img, ok := findImage(list, kv[1])
+		if !ok {
+			return before, since, fmt.Errorf("no such image: %s", kv[1])
+		}
+		t, ok := dockerfmt.ParseTime(img.Configuration.CreationDate)
+		if !ok {
+			return before, since, fmt.Errorf("invalid filter '%s=%s': image has no creation time", kv[0], kv[1])
+		}
+		if kv[0] == "before" {
+			before = t
+		} else {
+			since = t
+		}
+	}
+	return before, since, nil
+}
+
+// findImage locates an image by familiar name (repo or repo:tag) or by ID
+// (full, or any unambiguous sha prefix).
+func findImage(list []dockerfmt.Image, ref string) (dockerfmt.Image, bool) {
+	want := dockerfmt.ShortImage(ref)
+	for _, img := range list {
+		name := dockerfmt.ShortImage(img.Configuration.Name)
+		repo, _ := dockerfmt.SplitRepoTag(name)
+		if want == name || want == repo {
+			return img, true
+		}
+		id := strings.TrimPrefix(img.ID, "sha256:")
+		if ref == img.ID || (ref != "" && strings.HasPrefix(id, strings.TrimPrefix(ref, "sha256:"))) {
+			return img, true
+		}
+	}
+	return dockerfmt.Image{}, false
+}
+
+func matchImageFilters(v imageView, filters []string, beforeT, sinceT time.Time) bool {
 	var refs []string
 	for _, fl := range filters {
 		kv := strings.SplitN(fl, "=", 2)
@@ -225,6 +323,14 @@ func matchImageFilters(v imageView, filters []string) bool {
 		case "dangling":
 			// All listed images are tagged here, so dangling=true matches none.
 			if kv[1] == "true" {
+				return false
+			}
+		case "before":
+			if v.created.IsZero() || !v.created.Before(beforeT) {
+				return false
+			}
+		case "since":
+			if v.created.IsZero() || !v.created.After(sinceT) {
 				return false
 			}
 		default:

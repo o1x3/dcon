@@ -147,12 +147,14 @@ func TestRenderTableFormatUnescapesTabs(t *testing.T) {
 // TestRenderPlainPathByteIdentical locks the drop-in contract: with styling
 // forced OFF, the default table is byte-for-byte the tabwriter output and
 // carries no ANSI/box-drawing characters — exactly what pipes and CI parse.
+// Column widths follow docker's tabwriter settings (minwidth 10, padding 3),
+// so a short column is still 10 columns wide, matching real docker output.
 func TestRenderPlainPathByteIdentical(t *testing.T) {
 	defer ui.SetEnabled(false)()
 	views, def := sampleDef()
 	out := captureStdout(t, func() { Render("", false, views, def) })
 
-	const want = "ID    NAME\nid1   alpha\nid2   beta\n"
+	const want = "ID        NAME\nid1       alpha\nid2       beta\n"
 	if out != want {
 		t.Errorf("plain table mismatch:\n got %q\nwant %q", out, want)
 	}

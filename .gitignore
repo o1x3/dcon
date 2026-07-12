@@ -12,3 +12,4 @@ coverage.txt
 .DS_Store
 .idea/
 .vscode/
+.claude/

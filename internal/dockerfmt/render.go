@@ -25,9 +25,11 @@ type TableDef struct {
 	FieldHeaders map[string]string
 }
 
-// NewTabWriter returns a tabwriter configured like Docker's (3-space padding).
+// NewTabWriter returns a tabwriter configured exactly like Docker's formatter
+// (minwidth 10, tabwidth 1, 3-space padding) so column widths are
+// byte-identical to docker's tables.
 func NewTabWriter() *tabwriter.Writer {
-	return tabwriter.NewWriter(os.Stdout, 0, 1, 3, ' ', 0)
+	return tabwriter.NewWriter(os.Stdout, 10, 1, 3, ' ', 0)
 }
 
 // fieldHeader maps template field tokens to the column headers Docker prints
@@ -90,6 +92,10 @@ func unescapeFormat(s string) string { return formatUnescaper.Replace(s) }
 // default-table conventions.
 func Render(format string, quiet bool, views []any, def TableDef) error {
 	if quiet {
+		// Docker (>= 25) warns when both are set; quiet wins.
+		if format != "" {
+			fmt.Fprintln(os.Stderr, "WARNING: Ignoring custom format, because both --format and --quiet are set.")
+		}
 		for _, v := range views {
 			fmt.Println(def.ID(v))
 		}
@@ -200,6 +206,14 @@ var tmplFuncs = template.FuncMap{
 			return s[:n]
 		}
 		return s
+	},
+	// pad surrounds a non-empty string with prefix/suffix spaces, like docker's
+	// padWithSpace; an empty string passes through unchanged.
+	"pad": func(s string, prefix, suffix int) string {
+		if s == "" {
+			return s
+		}
+		return strings.Repeat(" ", max(prefix, 0)) + s + strings.Repeat(" ", max(suffix, 0))
 	},
 }
 

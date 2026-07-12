@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mattn/go-runewidth"
 )
 
 // HumanSize renders a byte count the way Docker (go-units) does: decimal SI
@@ -81,9 +83,11 @@ func ParseTime(s string) (time.Time, bool) {
 }
 
 // RelativeAgo renders "5 minutes ago", matching docker's units.go output.
+// A zero timestamp (e.g. 0001-01-01T00:00:00Z from a backend that never set
+// the field) is meaningless, not "2025 years ago".
 func RelativeAgo(s string) string {
 	t, ok := ParseTime(s)
-	if !ok {
+	if !ok || t.IsZero() {
 		return "N/A"
 	}
 	return HumanDuration(time.Since(t)) + " ago"
@@ -163,29 +167,47 @@ func SplitRepoTag(ref string) (repo, tag string) {
 	return repo, tag
 }
 
+// Ellipsis truncates s to fit within maxDisplayWidth display columns (wide
+// CJK runes count as 2) and appends "…", exactly like docker's
+// formatter.Ellipsis. For maxDisplayWidth of 1 and lower, no ellipsis is
+// appended. Counting display columns — not runes or bytes — is what keeps
+// docker's tables aligned when a command or created_by contains wide runes.
+func Ellipsis(s string, maxDisplayWidth int) string {
+	if maxDisplayWidth <= 0 {
+		return ""
+	}
+	rs := []rune(s)
+	if maxDisplayWidth == 1 && len(rs) > 0 {
+		return string(rs[0])
+	}
+	if runewidth.StringWidth(s) <= maxDisplayWidth {
+		return s
+	}
+	var (
+		out []rune
+		w   int
+	)
+	for _, r := range rs {
+		rw := runewidth.RuneWidth(r)
+		if w+rw > maxDisplayWidth-1 { // reserve 1 column for the ellipsis
+			break
+		}
+		out = append(out, r)
+		w += rw
+	}
+	return string(out) + "…"
+}
+
 // TruncCommand renders a container command list the way `docker ps` does:
-// space-joined, truncated to 20 chars (19 runes + a U+2026 ellipsis) unless
-// noTrunc, then strconv.Quote'd — which both wraps it in double quotes and
-// escapes embedded quotes/backslashes/control chars exactly as the Docker CLI's
-// strconv.Quote(Ellipsis(command, 20)) does.
+// space-joined, truncated to 20 display columns (wide CJK runes count as 2)
+// unless noTrunc, then strconv.Quote'd — which both wraps it in double quotes
+// and escapes embedded quotes/backslashes/control chars exactly as the Docker
+// CLI's strconv.Quote(Ellipsis(command, 20)) does. Quote escaping is also what
+// keeps embedded newlines/tabs from breaking the tabwriter row.
 func TruncCommand(parts []string, noTrunc bool) string {
 	cmd := strings.Join(parts, " ")
 	if !noTrunc {
-		cmd = ellipsis(cmd, 20)
+		cmd = Ellipsis(cmd, 20)
 	}
 	return strconv.Quote(cmd)
-}
-
-// ellipsis truncates s to maxLen runes the way docker/go-units Ellipsis does:
-// when s is longer than maxLen, it keeps maxLen-1 runes and appends … (U+2026)
-// so the result is exactly maxLen runes wide.
-func ellipsis(s string, maxLen int) string {
-	r := []rune(s)
-	if len(r) <= maxLen {
-		return s
-	}
-	if maxLen <= 1 {
-		return string(r[:maxLen])
-	}
-	return string(r[:maxLen-1]) + "…"
 }

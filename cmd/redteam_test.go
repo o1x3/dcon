@@ -6,6 +6,7 @@ import (
 	goruntime "runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"dcon/internal/dockerfmt"
 )
@@ -44,10 +45,10 @@ func TestLogsTailShorthand(t *testing.T) {
 func TestMatchImageFiltersReferenceOR(t *testing.T) {
 	mk := func(repo, tag string) imageView { return imageView{Repository: repo, Tag: tag} }
 	or := []string{"reference=alpine:3.*", "reference=nginx:latest"}
-	if !matchImageFilters(mk("alpine", "3.20"), or) || !matchImageFilters(mk("nginx", "latest"), or) {
+	if !matchImageFilters(mk("alpine", "3.20"), or, time.Time{}, time.Time{}) || !matchImageFilters(mk("nginx", "latest"), or, time.Time{}, time.Time{}) {
 		t.Error("alpine:3.20 and nginx:latest should each match the reference OR set")
 	}
-	if matchImageFilters(mk("redis", "7"), or) {
+	if matchImageFilters(mk("redis", "7"), or, time.Time{}, time.Time{}) {
 		t.Error("redis:7 should NOT match either reference pattern")
 	}
 }
@@ -78,7 +79,10 @@ func TestApplyFiltersSameKeyOR(t *testing.T) {
 	}
 	// matchStatusFilter maps "exited" -> backend state "stopped".
 	list := []dockerfmt.Container{mk("run", "running"), mk("ex", "stopped"), mk("mid", "stopping")}
-	out := applyFilters(list, []string{"status=running", "status=exited"})
+	out, err := applyFilters(list, []string{"status=running", "status=exited"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	ids := map[string]bool{}
 	for _, c := range out {
 		ids[c.ID] = true
@@ -98,7 +102,10 @@ func TestApplyFiltersDistinctKeysAND(t *testing.T) {
 		return c
 	}
 	list := []dockerfmt.Container{mk("web1", "running"), mk("db1", "running"), mk("web2", "stopped")}
-	out := applyFilters(list, []string{"name=web", "status=running"})
+	out, err := applyFilters(list, []string{"name=web", "status=running"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(out) != 1 || out[0].ID != "web1" {
 		t.Errorf("distinct-key AND = %v, want [web1]", out)
 	}
@@ -113,7 +120,10 @@ func TestApplyFiltersDistinctKeysAND(t *testing.T) {
 		mkL("both", map[string]string{"a": "1", "b": "2"}),
 		mkL("one", map[string]string{"a": "1"}),
 	}
-	got := applyFilters(ll, []string{"label=a=1", "label=b=2"})
+	got, err := applyFilters(ll, []string{"label=a=1", "label=b=2"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 1 || got[0].ID != "both" {
 		t.Errorf("label AND = %v, want [both]", got)
 	}
