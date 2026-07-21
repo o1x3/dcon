@@ -6,6 +6,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `install.sh` now auto-installs **Dcon.app** from the latest `app-v*` release
+  (DMG → `/Applications`) and strips quarantine xattrs on both the CLI binary
+  and the app bundle so Gatekeeper does not block first launch. Skip with
+  `DCON_SKIP_APP=1`; pin with `DCON_APP_VERSION=app-vX`.
+
 ### Fixed
 - `dcon system kernel set` is now idempotent. Apple's `container system kernel
   set` re-downloads and copies the kernel with no overwrite path, so re-running

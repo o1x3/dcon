@@ -7,7 +7,8 @@
 # It installs the prerequisites too: if Apple's `container` runtime is missing,
 # the latest signed release is downloaded and installed (this needs admin
 # rights, so you'll be prompted for your password), then dcon itself is placed
-# on your PATH and the backend is brought up ready to run containers.
+# on your PATH, Dcon.app is installed to /Applications (quarantine cleared so
+# Gatekeeper won't block it), and the backend is brought up ready to run containers.
 #
 # Options (env vars):
 #   DCON_VERSION=v1.2.3       install a specific dcon tag (default: latest release)
@@ -17,6 +18,9 @@
 #   DCON_SKIP_PREREQS=1       do not install Apple `container` even if missing
 #   DCON_CONTAINER_VERSION=X  install a specific Apple container version
 #   DCON_SKIP_SETUP=1         do not start the backend / install a guest kernel
+#   DCON_SKIP_APP=1           do not install Dcon.app
+#   DCON_APP_VERSION=app-vX   install a specific app tag (default: latest app-v* release)
+#   DCON_APP_DIR=/Applications  install Dcon.app here (default: /Applications)
 #   DCON_YES=1                assume "yes" to prompts (non-interactive)
 #   NO_COLOR=1                disable colored output
 #
@@ -25,8 +29,10 @@ set -euo pipefail
 REPO="o1x3/dcon"
 CONTAINER_REPO="apple/container"
 BINARY="dcon"
+APP_NAME="Dcon.app"
 PREFIX="${DCON_PREFIX:-/usr/local}"
 BIN_DIR="${PREFIX}/bin"
+APP_DIR="${DCON_APP_DIR:-/Applications}"
 
 # --- styling ----------------------------------------------------------------
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -123,15 +129,21 @@ else
   warn "skipped — install it later from https://github.com/${CONTAINER_REPO}/releases"
 fi
 
+# --- quarantine / gatekeeper ------------------------------------------------
+clear_xattrs() { # clear_xattrs <path> : strip quarantine/provenance xattrs
+  # Release artifacts are unsigned/ad-hoc signed, so macOS may attach quarantine
+  # xattrs on download — Gatekeeper then blocks the first run with a "cannot
+  # verify the developer" prompt. Best effort, elevating if root-owned.
+  local target="$1" flags="-c"
+  [ -d "$target" ] && flags="-cr"
+  xattr $flags "$target" 2>/dev/null || { [ -n "$SUDO" ] && $SUDO xattr $flags "$target" 2>/dev/null; } || true
+}
+
 # --- install dcon -----------------------------------------------------------
 write_bin() { # write_bin <src> : install <src> to BIN_DIR, elevating if needed
   if [ ! -d "$BIN_DIR" ]; then as_root mkdir -p "$BIN_DIR"; fi
   if [ -w "$BIN_DIR" ]; then install -m 0755 "$1" "$BIN_DIR/$BINARY"; else as_root install -m 0755 "$1" "$BIN_DIR/$BINARY"; fi
-  # dcon's release binary is unsigned, so strip the quarantine/provenance xattrs
-  # macOS may attach — otherwise Gatekeeper blocks the first run with a
-  # "cannot verify the developer" prompt. Best effort, elevating if the file is
-  # root-owned.
-  xattr -c "$BIN_DIR/$BINARY" 2>/dev/null || { [ -n "$SUDO" ] && $SUDO xattr -c "$BIN_DIR/$BINARY" 2>/dev/null; } || true
+  clear_xattrs "$BIN_DIR/$BINARY"
 }
 
 install_from_source() {
@@ -176,6 +188,49 @@ if [ "${DCON_LINK_DOCKER:-0}" = "1" ]; then
   ok "linked ${BIN_DIR}/docker -> ${BINARY}"
 fi
 
+# --- install Dcon.app --------------------------------------------------------
+install_app() {
+  step "Installing ${APP_NAME}"
+  local tag version asset url mount dest
+  if [ -n "${DCON_APP_VERSION:-}" ]; then tag="$DCON_APP_VERSION"; else
+    info "resolving the latest app release…"
+    tag="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases" \
+      | grep '"tag_name": "app-v' | head -1 | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+    [ -n "$tag" ] || { warn "no app release found — skipping ${APP_NAME} install"; return 0; }
+  fi
+  version="${tag#app-v}"
+  asset="Dcon_${version}.dmg"
+  url="https://github.com/${REPO}/releases/download/${tag}/${asset}"
+  dest="$APP_DIR/$APP_NAME"
+  mount="$TMP/mnt"
+
+  info "downloading ${asset} (${tag})…"
+  curl -fL --progress-bar "$url" -o "$TMP/$asset" || die "app download failed: $url"
+  if curl -fsSL "https://github.com/${REPO}/releases/download/${tag}/checksums.txt" -o "$TMP/app-checksums.txt" 2>/dev/null; then
+    ( cd "$TMP" && grep " ${asset}\$" app-checksums.txt | shasum -a 256 -c - >/dev/null 2>&1 ) \
+      && ok "checksum verified" || warn "checksum verification skipped"
+  fi
+
+  info "mounting disk image…"
+  hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$TMP/$asset" >/dev/null \
+    || die "could not mount ${asset}"
+
+  info "installing to ${dest}…"
+  as_root mkdir -p "$APP_DIR"
+  if [ -d "$dest" ]; then as_root rm -rf "$dest"; fi
+  as_root cp -R "$mount/$APP_NAME" "$dest"
+  hdiutil detach "$mount" >/dev/null 2>&1 || hdiutil detach -force "$mount" >/dev/null 2>&1 || true
+
+  clear_xattrs "$dest"
+  ok "${APP_NAME} installed: ${dest}"
+}
+
+if [ "${DCON_SKIP_APP:-0}" != "1" ]; then
+  install_app
+else
+  info "skipping ${APP_NAME} install (DCON_SKIP_APP=1)"
+fi
+
 # --- bring the backend up ----------------------------------------------------
 if [ "${DCON_SKIP_SETUP:-0}" != "1" ] && command -v container >/dev/null 2>&1 && [ "$GOARCH" = "arm64" ]; then
   step "Bringing the backend up"
@@ -197,6 +252,9 @@ ${B}Run your first container:${X}
 
 ${B}Make it a true drop-in:${X}
   alias docker=dcon          ${D}# add to ~/.zshrc, or re-run with DCON_LINK_DOCKER=1${X}
+
+${B}GUI:${X}
+  open -a Dcon               ${D}# menubar app installed to ${APP_DIR}/${APP_NAME}${X}
 
 Docs: https://github.com/${REPO}  ·  Wiki: https://github.com/${REPO}/wiki
 EOF
