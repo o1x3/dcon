@@ -59,6 +59,7 @@ type Service struct {
 	StdinOpen     bool        `yaml:"stdin_open"`
 	Init          *bool       `yaml:"init"`
 	ShmSize       string      `yaml:"shm_size"`
+	MacAddress    string      `yaml:"mac_address"`
 	Tmpfs         StringList  `yaml:"tmpfs"`
 	ReadOnly      bool        `yaml:"read_only"`
 	Hostname      string      `yaml:"hostname"`

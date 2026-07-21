@@ -18,6 +18,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `--network <name>,mac=…` form (documented in apple/container ≥ 1.0). Alone it
   attaches to `default,mac=…`; combined with `--network`/`--net` it appends
   `,mac=…`. Conflicts with an existing `mac=` on `--network` error out.
+  Compose `mac_address` uses the same translation on the primary network.
 - **`dcon machine create --virtualization` / `--kernel`** forward nested
   virtualization and a custom guest kernel onto the backing `container run`
   (the same capabilities Apple's native `container machine` exposed in 1.1.0).
@@ -26,7 +27,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 - `dcon system property` help text notes that Apple container 1.0 removed
   `property get`/`set` in favour of `~/.config/container/config.toml` (`property
-  list` still works).
+  list` still works). `get`/`set` now return a clear dcon error pointing at the
+  TOML file instead of an opaque backend failure.
 
 ### Fixed
 - `dcon system kernel set` is now idempotent. Apple's `container system kernel

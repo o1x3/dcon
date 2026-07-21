@@ -3,6 +3,7 @@ package compose
 import (
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -504,6 +505,36 @@ func TestRunArgsDefaultNetworkFallback(t *testing.T) {
 	svc := &Service{Image: "img"}
 	args := p.RunArgs("web", svc, 1, "proj_default", nil)
 	mustContainPair(t, args, "--network", "proj_default")
+}
+
+func TestRunArgsMacAddress(t *testing.T) {
+	p := &Project{Name: "proj", Dir: "/tmp", Nets: map[string]string{"front": "proj_front", "back": "proj_back"}}
+
+	// Primary network gets mac=; secondary stays bare.
+	svc := &Service{Image: "img", MacAddress: "02:42:ac:11:00:02", Networks: StringKeys{"front", "back"}}
+	args := p.RunArgs("web", svc, 1, "", nil)
+	mustContainPair(t, args, "--network", "proj_front,mac=02:42:ac:11:00:02")
+	mustContainPair(t, args, "--network", "proj_back")
+
+	// Default network fallback with mac_address and no declared networks.
+	svc2 := &Service{Image: "img", MacAddress: "02-42-ac-11-00-02"}
+	args2 := p.RunArgs("web", svc2, 1, "proj_default", nil)
+	mustContainPair(t, args2, "--network", "proj_default,mac=02-42-ac-11-00-02")
+
+	// No network name at all → emit default,mac=.
+	svc3 := &Service{Image: "img", MacAddress: "02:42:ac:11:00:02"}
+	args3 := p.RunArgs("web", svc3, 1, "", nil)
+	mustContainPair(t, args3, "--network", "default,mac=02:42:ac:11:00:02")
+
+	// Invalid mac_address is ignored (warned) and networks still attach cleanly.
+	svc4 := &Service{Image: "img", MacAddress: "not-a-mac"}
+	args4 := p.RunArgs("web", svc4, 1, "proj_default", nil)
+	mustContainPair(t, args4, "--network", "proj_default")
+	for i := 0; i+1 < len(args4); i++ {
+		if args4[i] == "--network" && strings.Contains(args4[i+1], "mac=") {
+			t.Errorf("invalid mac_address must not reach --network; got %v", args4)
+		}
+	}
 }
 
 func TestRunArgsUlimitsAndDeploy(t *testing.T) {

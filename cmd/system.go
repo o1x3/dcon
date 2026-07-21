@@ -395,13 +395,48 @@ func newSystemGroupCmd() *cobra.Command {
 	group.AddCommand(
 		newPassthrough("dns [SUBCOMMAND]", "Manage local DNS domains (backend)", []string{"system", "dns"}),
 		newKernelCmd(),
-		newPassthrough("property [SUBCOMMAND]", "Show merged system config (backend; get/set removed in container 1.0 — edit ~/.config/container/config.toml)", []string{"system", "property"}),
+		newSystemPropertyCmd(),
 		newPassthrough("logs", "Fetch backend service logs", []string{"system", "logs"}),
 		newPassthrough("start", "Start backend container services", []string{"system", "start"}),
 		newPassthrough("stop", "Stop backend container services", []string{"system", "stop"}),
 		newPassthrough("status", "Show backend service status", []string{"system", "status"}),
 	)
 	return group
+}
+
+// newSystemPropertyCmd forwards `dcon system property …` to the backend, but
+// intercepts the get/set subcommands removed in Apple container 1.0 (settings
+// now live in ~/.config/container/config.toml). `list`/`ls` and other verbs
+// still pass through.
+func newSystemPropertyCmd() *cobra.Command {
+	prefix := []string{"system", "property"}
+	return &cobra.Command{
+		Use:                "property [SUBCOMMAND]",
+		Short:              "Show merged system config (backend; get/set removed in container 1.0 — edit ~/.config/container/config.toml)",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if msg := propertyRemovedHelp(args); msg != "" {
+				return fmt.Errorf("%s", msg)
+			}
+			if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
+				return rt.Run(append(prefix, "--help")...)
+			}
+			return rt.Run(append(append([]string{}, prefix...), args...)...)
+		},
+	}
+}
+
+// propertyRemovedHelp returns a user-facing error for Apple container 1.0's
+// removed property get/set verbs, or "" when args should pass through.
+func propertyRemovedHelp(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	switch args[0] {
+	case "get", "set":
+		return fmt.Sprintf("container system property %s was removed in Apple container 1.0; edit ~/.config/container/config.toml then `dcon system stop && dcon system start` (view with `dcon system property list`)", args[0])
+	}
+	return ""
 }
 
 // newKernelCmd forwards `dcon system kernel …` to the backend, but makes
