@@ -77,6 +77,25 @@ ensure_root() {
 }
 as_root() { if [ -n "$SUDO" ] || [ "$(id -u)" = "0" ]; then ${SUDO:+$SUDO} "$@"; else ensure_root; ${SUDO:+$SUDO} "$@"; fi; }
 
+# --- release resolution (no GitHub API — avoids unauthenticated rate limits) -
+# Follow /releases/latest when the repo's "latest" tag is unambiguous; otherwise
+# scan releases.atom and return the first tag matching an ERE (e.g. '^v[0-9]').
+github_release_tag() {
+  local repo="$1" pattern="${2:-}" tag url
+  if [ -z "$pattern" ]; then
+    url="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/${repo}/releases/latest" 2>/dev/null || true)"
+    tag="${url##*/tag/}"
+    tag="${tag%%$'\r'*}"
+    [ -n "$tag" ] && [ "$tag" != "$url" ] && printf '%s' "$tag" && return 0
+    pattern='.'
+  fi
+  tag="$(curl -fsSL "https://github.com/${repo}/releases.atom" 2>/dev/null \
+    | sed -n 's|.*releases/tag/\([^"]*\)".*|\1|p' \
+    | grep -E "$pattern" \
+    | head -1)"
+  [ -n "$tag" ] && printf '%s' "$tag"
+}
+
 # --- platform detection -----------------------------------------------------
 header
 step "Checking your system"
@@ -102,16 +121,24 @@ install_container() {
   local tag url pkg
   if [ -n "${DCON_CONTAINER_VERSION:-}" ]; then tag="$DCON_CONTAINER_VERSION"; else
     info "resolving the latest container release…"
-    tag="$(curl -fsSL "https://api.github.com/repos/${CONTAINER_REPO}/releases/latest" \
-      | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+    tag="$(github_release_tag "$CONTAINER_REPO")"
     [ -n "$tag" ] || die "could not resolve the latest Apple container release."
   fi
   url="https://github.com/${CONTAINER_REPO}/releases/download/${tag}/container-${tag}-installer-signed.pkg"
   pkg="$TMP/container-${tag}.pkg"
   info "downloading container ${tag} (~85 MB)…"
-  curl -fL --progress-bar "$url" -o "$pkg" || die "download failed: $url"
-  info "installing the signed package (Apple-notarized)…"
-  as_root installer -pkg "$pkg" -target / >/dev/null || die "package install failed."
+  if ! curl -fL --progress-bar "$url" -o "$pkg"; then
+    if command -v brew >/dev/null 2>&1; then
+      warn "download failed — trying Homebrew instead"
+      info "installing via brew install --cask container…"
+      brew install --cask container || die "container install failed (download and Homebrew)."
+    else
+      die "download failed: $url (install Homebrew or download manually from https://github.com/${CONTAINER_REPO}/releases)"
+    fi
+  else
+    info "installing the signed package (Apple-notarized)…"
+    as_root installer -pkg "$pkg" -target / >/dev/null || die "package install failed."
+  fi
   command -v container >/dev/null 2>&1 || export PATH="/usr/local/bin:$PATH"
   ok "Apple container installed: $(container --version 2>/dev/null | head -1)"
 }
@@ -158,8 +185,7 @@ install_from_release() {
   local tag asset url
   if [ -n "${DCON_VERSION:-}" ]; then tag="$DCON_VERSION"; else
     info "resolving the latest dcon release…"
-    tag="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-      | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+    tag="$(github_release_tag "$REPO" '^v[0-9]')"
     [ -n "$tag" ] || return 1
   fi
   asset="${BINARY}_${tag#v}_darwin_${GOARCH}.tar.gz"
@@ -194,8 +220,7 @@ install_app() {
   local tag version asset url mount dest
   if [ -n "${DCON_APP_VERSION:-}" ]; then tag="$DCON_APP_VERSION"; else
     info "resolving the latest app release…"
-    tag="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases" \
-      | grep '"tag_name": "app-v' | head -1 | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+    tag="$(github_release_tag "$REPO" '^app-v')"
     [ -n "$tag" ] || { warn "no app release found — skipping ${APP_NAME} install"; return 0; }
   fi
   version="${tag#app-v}"
