@@ -15,5 +15,5 @@ coverage.txt
 .claude/
 
 # Swift app
-app/.build/
+app/.build*/
 app/dist/
