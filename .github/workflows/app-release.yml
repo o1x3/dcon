@@ -46,7 +46,7 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         if: steps.existing.outputs.exists != 'true'
         with:
           go-version-file: go.mod
