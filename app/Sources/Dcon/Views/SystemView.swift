@@ -283,7 +283,7 @@ struct SystemView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 160, alignment: .center)
             } else {
-                TextPane(text: eventLines.joined(separator: "\n"))
+                LogPane(lines: eventLines)
                     .frame(minHeight: 160)
             }
         }

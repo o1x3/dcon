@@ -102,10 +102,7 @@ struct ContainerLogsPane: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 1) {
                         ForEach(Array(filteredLines.enumerated()), id: \.offset) { idx, line in
-                            Text(line)
-                                .font(.system(.caption, design: .monospaced))
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                            LogLineView(line: line)
                                 .id(idx)
                         }
                     }

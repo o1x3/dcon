@@ -56,25 +56,40 @@ struct MainWindow: View {
         }
     }
 
-    /// Sidebar row with a live item-count badge (running/total for containers).
-    @ViewBuilder
+    /// Sidebar row with a live item count (running/total for containers).
+    /// The count is a plain trailing Text rather than `.badge`, which breaks
+    /// row hit-testing in selectable sidebar lists.
     private func sidebarRow(_ s: SidebarSection) -> some View {
-        let label = Label(s.rawValue, systemImage: s.symbol)
+        HStack {
+            Label(s.rawValue, systemImage: s.symbol)
+            Spacer()
+            if let count = countText(for: s) {
+                Text(count)
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .contentShape(Rectangle())
+        .tag(s)
+    }
+
+    private func countText(for s: SidebarSection) -> String? {
         switch s {
         case .containers where !state.containers.isEmpty:
-            label.tag(s).badge(Text("\(state.runningContainers.count)/\(state.containers.count)"))
+            return "\(state.runningContainers.count)/\(state.containers.count)"
         case .images where !state.images.isEmpty:
-            label.tag(s).badge(state.images.count)
+            return "\(state.images.count)"
         case .volumes where !state.volumes.isEmpty:
-            label.tag(s).badge(state.volumes.count)
+            return "\(state.volumes.count)"
         case .networks where !state.networks.isEmpty:
-            label.tag(s).badge(state.networks.count)
+            return "\(state.networks.count)"
         case .machines where !state.machines.isEmpty:
-            label.tag(s).badge(state.machines.count)
+            return "\(state.machines.count)"
         case .warmPool where !state.warmMembers.isEmpty:
-            label.tag(s).badge(state.warmMembers.count)
+            return "\(state.warmMembers.count)"
         default:
-            label.tag(s)
+            return nil
         }
     }
 

@@ -307,7 +307,7 @@ private struct ComposeProjectPane: View {
             .padding(8)
             .chromeStyle()
             Divider()
-            TextPane(text: streamLines.joined(separator: "\n"))
+            LogPane(lines: streamLines)
         }
         .frame(maxHeight: .infinity)
     }
