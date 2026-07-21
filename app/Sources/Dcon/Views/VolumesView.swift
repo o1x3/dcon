@@ -64,10 +64,13 @@ struct VolumesView: View {
     private var table: some View {
         Table(sorted, selection: $selection, sortOrder: $sortOrder) {
             TableColumn("Name", value: \.Name) { row in
-                Text(row.Name)
-                    .fontWeight(.semibold)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                HStack(spacing: 8) {
+                    IconAvatar(seed: row.Name, symbol: "externaldrive.fill", size: 24)
+                    Text(row.Name)
+                        .fontWeight(.semibold)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
             .width(min: 140, ideal: 220)
             TableColumn("Driver", value: \.Driver) { row in

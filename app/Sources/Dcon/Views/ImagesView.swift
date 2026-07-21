@@ -81,6 +81,7 @@ struct ImagesView: View {
         Table(sorted, selection: $selection, sortOrder: $sortOrder) {
             TableColumn("Repository", value: \.Repository) { row in
                 HStack(spacing: 6) {
+                    IconAvatar(seed: row.Repository, symbol: "opticaldiscdrive.fill", size: 24)
                     Text(row.Repository).fontWeight(.semibold)
                         .lineLimit(1)
                         .truncationMode(.middle)

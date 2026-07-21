@@ -54,7 +54,13 @@ struct ContainerDetailPane: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
+            HStack(spacing: 10) {
+                IconAvatar(
+                    seed: container.Names.isEmpty ? container.ID : container.Names,
+                    symbol: "shippingbox.fill",
+                    size: 34,
+                    active: container.isRunning
+                )
                 Text(container.Names.isEmpty ? container.shortID : container.Names)
                     .font(.title2)
                     .bold()

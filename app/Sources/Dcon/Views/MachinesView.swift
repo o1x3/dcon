@@ -42,10 +42,14 @@ struct MachinesView: View {
                     }
                     .width(min: 20, ideal: 20, max: 20)
                     TableColumn("Name", value: \.Name) { row in
-                        Text(row.Name)
-                            .font(.system(.body, design: .monospaced))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+                        HStack(spacing: 8) {
+                            IconAvatar(seed: row.Distro, symbol: "desktopcomputer", size: 24, active: row.isRunning)
+                            Text(row.Name)
+                                .font(.system(.body, design: .monospaced))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        .padding(.vertical, 2)
                     }
                     .width(min: 100, ideal: 160)
                     TableColumn("Distro", value: \.Distro)

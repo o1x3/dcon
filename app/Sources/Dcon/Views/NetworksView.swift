@@ -63,10 +63,13 @@ struct NetworksView: View {
     private var table: some View {
         Table(sorted, selection: $selection, sortOrder: $sortOrder) {
             TableColumn("Name", value: \.Name) { row in
-                Text(row.Name)
-                    .fontWeight(.semibold)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                HStack(spacing: 8) {
+                    IconAvatar(seed: row.Name, symbol: "network", size: 24)
+                    Text(row.Name)
+                        .fontWeight(.semibold)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
             .width(min: 120, ideal: 200)
             TableColumn("Network ID", value: \.ID) { row in

@@ -24,21 +24,70 @@ struct MenuBarView: View {
             Divider()
 
             if state.systemStatus.isRunning {
+                Text("Containers")
                 if state.runningContainers.isEmpty {
                     Text("No running containers")
                 } else {
                     ForEach(state.runningContainers.prefix(10)) { c in
-                        Menu(menuTitle(for: c)) {
+                        Menu {
                             Text(c.Image)
                             Divider()
-                            Button("Open Shell") { TerminalLauncher.run(dconArgs: ["exec", "-it", c.ID, "/bin/sh"]) }
-                            Button("Stop") { state.performDetached(["stop", c.ID]) }
-                            Button("Restart") { state.performDetached(["restart", c.ID]) }
-                            Button("View in Dcon") { open(section: .containers) }
+                            Button {
+                                TerminalLauncher.run(dconArgs: ["exec", "-it", c.ID, "/bin/sh"])
+                            } label: {
+                                Label("Open Shell", systemImage: "terminal")
+                            }
+                            Button {
+                                state.performDetached(["stop", c.ID])
+                            } label: {
+                                Label("Stop", systemImage: "stop.fill")
+                            }
+                            Button {
+                                state.performDetached(["restart", c.ID])
+                            } label: {
+                                Label("Restart", systemImage: "arrow.clockwise")
+                            }
+                            Divider()
+                            Button {
+                                open(section: .containers)
+                            } label: {
+                                Label("View in Dcon", systemImage: "macwindow")
+                            }
+                        } label: {
+                            Label(menuTitle(for: c), systemImage: "circle.fill")
                         }
                     }
                     if state.runningContainers.count > 10 {
                         Button("\(state.runningContainers.count - 10) more…") { open(section: .containers) }
+                    }
+                }
+
+                if !state.machines.isEmpty {
+                    Divider()
+                    Text("Machines")
+                    ForEach(state.machines.prefix(6)) { m in
+                        Menu {
+                            Button {
+                                TerminalLauncher.run(dconArgs: ["machine", "shell", m.Name])
+                            } label: {
+                                Label("Open Shell", systemImage: "terminal")
+                            }
+                            if m.isRunning {
+                                Button {
+                                    state.performDetached(["machine", "stop", m.Name])
+                                } label: {
+                                    Label("Stop", systemImage: "stop.fill")
+                                }
+                            } else {
+                                Button {
+                                    state.performDetached(["machine", "start", m.Name])
+                                } label: {
+                                    Label("Start", systemImage: "play.fill")
+                                }
+                            }
+                        } label: {
+                            Label(m.Name, systemImage: m.isRunning ? "circle.fill" : "circle")
+                        }
                     }
                 }
                 Divider()

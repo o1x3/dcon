@@ -1,5 +1,37 @@
 import SwiftUI
 
+/// Circular colored icon avatar for list rows (OrbStack-style): a stable
+/// per-item color derived from the seed string, with a white SF Symbol glyph.
+struct IconAvatar: View {
+    let seed: String
+    let symbol: String
+    var size: CGFloat = 28
+    /// Dim the avatar for stopped/inactive items.
+    var active: Bool = true
+
+    private static let palette: [Color] = [
+        .blue, .green, .orange, .purple, .pink, .teal, .indigo, .red, .cyan, .mint,
+    ]
+
+    private var color: Color {
+        // Stable non-cryptographic hash (hashValue is seeded per-launch).
+        var h: UInt64 = 5381
+        for b in seed.utf8 { h = (h &* 33) &+ UInt64(b) }
+        return Self.palette[Int(h % UInt64(Self.palette.count))]
+    }
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(active ? color.gradient : Color.gray.opacity(0.45).gradient)
+            Image(systemName: symbol)
+                .font(.system(size: size * 0.5, weight: .medium))
+                .foregroundStyle(.white)
+        }
+        .frame(width: size, height: size)
+    }
+}
+
 /// Colored capsule for lifecycle states ("running", "exited", "ready", …).
 struct StatusPill: View {
     let text: String

@@ -129,19 +129,27 @@ struct ContainersView: View {
     private var table: some View {
         Table(sortedRows, selection: $selection, sortOrder: $sortOrder) {
             TableColumn("Name", sortUsing: KeyPathComparator(\.Names)) { row in
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(row.Names.isEmpty ? row.shortID : row.Names)
-                        .fontWeight(.semibold)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Text(row.Image)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                HStack(spacing: 10) {
+                    IconAvatar(
+                        seed: row.Names.isEmpty ? row.ID : row.Names,
+                        symbol: "shippingbox.fill",
+                        active: row.isRunning
+                    )
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(row.Names.isEmpty ? row.shortID : row.Names)
+                            .fontWeight(.semibold)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text(row.Image)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
+                .padding(.vertical, 3)
             }
-            .width(min: 160, ideal: 240)
+            .width(min: 180, ideal: 260)
             TableColumn("Status", sortUsing: KeyPathComparator(\.Status)) { row in
                 StatusPill(text: row.State)
             }
