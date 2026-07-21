@@ -126,7 +126,7 @@ func addRunFlags(cmd *cobra.Command) {
 	// Networking extras
 	f.String("ip", "", "IPv4 address (unsupported by backend)")
 	f.String("ip6", "", "IPv6 address (unsupported by backend)")
-	f.String("mac-address", "", "Container MAC address (unsupported by backend)")
+	f.String("mac-address", "", "Container MAC address (translated to --network name,mac=…)")
 	f.StringSlice("link", nil, "Add link to another container (unsupported by backend)")
 	f.StringSlice("link-local-ip", nil, "Container IPv4/IPv6 link-local addresses (unsupported by backend)")
 	f.StringSlice("network-alias", nil, "Add network-scoped alias for the container (unsupported by backend)")
@@ -411,7 +411,9 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 		out = append(out, "--cpus", strconv.Itoa(n))
 	}
 
-	// --network / --net (alias)
+	// --network / --net (alias), plus Docker --mac-address → Apple's
+	// `--network <name>,mac=XX:XX:XX:XX:XX:XX` (documented since container 1.0;
+	// see apple/container docs/how-to.md).
 	net, _ := f.GetString("network")
 	if net == "" {
 		net, _ = f.GetString("net")
@@ -419,8 +421,13 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 	if net == "host" || strings.HasPrefix(net, "container:") {
 		return nil, fmt.Errorf("--network %s is not supported by the container backend (no host/container-namespace networking on macOS VMs)", net)
 	}
-	if net != "" && net != "default" && net != "bridge" {
-		out = append(out, "--network", net)
+	mac, _ := f.GetString("mac-address")
+	netSpec, err := networkWithMAC(net, mac)
+	if err != nil {
+		return nil, err
+	}
+	if netSpec != "" {
+		out = append(out, "--network", netSpec)
 	}
 
 	// --volume: strip macOS-irrelevant Docker mount options (SELinux :z/:Z,
@@ -524,8 +531,8 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 		// Namespaces / cgroups
 		"pid": "--pid", "ipc": "--ipc", "uts": "--uts", "userns": "--userns",
 		"cgroupns": "--cgroupns", "cgroup-parent": "--cgroup-parent", "isolation": "--isolation",
-		// Networking extras
-		"ip": "--ip", "ip6": "--ip6", "mac-address": "--mac-address",
+		// Networking extras (--mac-address is translated above, not ignored)
+		"ip": "--ip", "ip6": "--ip6",
 		"link": "--link", "link-local-ip": "--link-local-ip", "network-alias": "--network-alias",
 		// Logging
 		"log-driver": "--log-driver", "log-opt": "--log-opt",
@@ -564,6 +571,81 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 
 // macOS-irrelevant bind-mount options that the container backend rejects.
 var droppedVolumeOpts = map[string]bool{"z": true, "Z": true, "cached": true, "delegated": true, "consistent": true}
+
+// networkWithMAC merges Docker's --network/--net and --mac-address into the
+// backend's `--network <name>[,mac=XX:XX:XX:XX:XX:XX][,mtu=…]` form.
+//
+// Empty / "default" / "bridge" networks are omitted unless a MAC is set (Apple
+// attaches to `default` automatically); with a MAC we emit `default,mac=…`.
+// A network spec that already carries `mac=` conflicts with --mac-address.
+func networkWithMAC(net, mac string) (string, error) {
+	mac = strings.TrimSpace(mac)
+	if mac != "" {
+		if err := validateMACAddress(mac); err != nil {
+			return "", err
+		}
+	}
+	if netHasMAC(net) {
+		if mac != "" {
+			return "", fmt.Errorf("--mac-address conflicts with mac= already set on --network %q", net)
+		}
+		return net, nil
+	}
+	if mac == "" {
+		if net == "" || net == "default" || net == "bridge" {
+			return "", nil
+		}
+		return net, nil
+	}
+	// MAC set: Docker's default/bridge and an unset network all map to Apple's
+	// default network once we need an explicit --network carrier for mac=.
+	if net == "" || net == "bridge" {
+		net = "default"
+	}
+	return net + ",mac=" + mac, nil
+}
+
+func netHasMAC(net string) bool {
+	for _, part := range strings.Split(net, ",") {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(part)), "mac=") {
+			return true
+		}
+	}
+	return false
+}
+
+// validateMACAddress accepts XX:XX:XX:XX:XX:XX or XX-XX-XX-XX-XX-XX (Apple's
+// documented forms). Hex digits only; length/shape checked, not LAA/unicast bits.
+func validateMACAddress(mac string) error {
+	sep := byte(0)
+	for i := 0; i < len(mac); i++ {
+		c := mac[i]
+		if c == ':' || c == '-' {
+			if sep == 0 {
+				sep = c
+			} else if c != sep {
+				return fmt.Errorf("invalid --mac-address %q: mix of ':' and '-' separators", mac)
+			}
+			continue
+		}
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return fmt.Errorf("invalid --mac-address %q: expected hex octets separated by ':' or '-'", mac)
+		}
+	}
+	if sep == 0 {
+		return fmt.Errorf("invalid --mac-address %q: expected XX:XX:XX:XX:XX:XX", mac)
+	}
+	parts := strings.Split(mac, string(sep))
+	if len(parts) != 6 {
+		return fmt.Errorf("invalid --mac-address %q: expected 6 octets", mac)
+	}
+	for _, p := range parts {
+		if len(p) != 2 {
+			return fmt.Errorf("invalid --mac-address %q: each octet must be two hex digits", mac)
+		}
+	}
+	return nil
+}
 
 // normalizeVolume strips SELinux/consistency options from a Docker -v spec's
 // third (options) field, preserving ro/rw and other tokens.

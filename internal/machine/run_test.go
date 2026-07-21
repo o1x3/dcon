@@ -30,12 +30,17 @@ func TestBuildRunArgsResources(t *testing.T) {
 		Name: "u", Distro: "ubuntu", Image: "ubuntu:latest",
 		CPUs: 2, Memory: "4G", Arch: "arm64",
 		MountHome: true, HomePath: "/Users/x",
+		Virtualization: true, Kernel: "/path/to/vmlinux",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(got, " ")
-	for _, want := range []string{"--cpus 2", "--memory 4G", "--arch arm64", "--volume /Users/x:/mnt/mac"} {
+	for _, want := range []string{
+		"--cpus 2", "--memory 4G", "--arch arm64",
+		"--virtualization", "--kernel /path/to/vmlinux",
+		"--volume /Users/x:/mnt/mac",
+	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("BuildRunArgs missing %q in %q", want, joined)
 		}

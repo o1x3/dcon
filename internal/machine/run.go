@@ -65,14 +65,16 @@ func ValidateName(name string) error {
 // already resolved (see ResolveImage / DistroID); CPUs/Memory/Arch are empty
 // (0/"") when unset.
 type CreateOpts struct {
-	Name      string
-	Distro    string
-	Image     string
-	CPUs      int
-	Memory    string
-	Arch      string
-	MountHome bool
-	HomePath  string // absolute host home dir, mounted at /mnt/mac when MountHome
+	Name           string
+	Distro         string
+	Image          string
+	CPUs           int
+	Memory         string
+	Arch           string
+	MountHome      bool
+	HomePath       string // absolute host home dir, mounted at /mnt/mac when MountHome
+	Virtualization bool   // expose nested virt (/dev/kvm); needs M3+ and a KVM-enabled kernel
+	Kernel         string // custom guest kernel path (e.g. for nested virt)
 }
 
 // BuildRunArgs builds the `container run` argument list that boots a machine. It
@@ -103,6 +105,12 @@ func BuildRunArgs(o CreateOpts) ([]string, error) {
 	}
 	if o.Arch != "" {
 		out = append(out, "--arch", o.Arch)
+	}
+	if o.Virtualization {
+		out = append(out, "--virtualization")
+	}
+	if o.Kernel != "" {
+		out = append(out, "--kernel", o.Kernel)
 	}
 	if o.MountHome {
 		if o.HomePath == "" {

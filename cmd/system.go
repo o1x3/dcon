@@ -395,7 +395,7 @@ func newSystemGroupCmd() *cobra.Command {
 	group.AddCommand(
 		newPassthrough("dns [SUBCOMMAND]", "Manage local DNS domains (backend)", []string{"system", "dns"}),
 		newKernelCmd(),
-		newPassthrough("property [SUBCOMMAND]", "Manage system property values (backend)", []string{"system", "property"}),
+		newPassthrough("property [SUBCOMMAND]", "Show merged system config (backend; get/set removed in container 1.0 — edit ~/.config/container/config.toml)", []string{"system", "property"}),
 		newPassthrough("logs", "Fetch backend service logs", []string{"system", "logs"}),
 		newPassthrough("start", "Start backend container services", []string{"system", "start"}),
 		newPassthrough("stop", "Stop backend container services", []string{"system", "stop"}),

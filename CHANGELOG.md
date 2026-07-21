@@ -14,6 +14,19 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (DMG → `/Applications`) and strips quarantine xattrs on both the CLI binary
   and the app bundle so Gatekeeper does not block first launch. Skip with
   `DCON_SKIP_APP=1`; pin with `DCON_APP_VERSION=app-vX`.
+- **`--mac-address` on `run`/`create`** now maps to Apple container's
+  `--network <name>,mac=…` form (documented in apple/container ≥ 1.0). Alone it
+  attaches to `default,mac=…`; combined with `--network`/`--net` it appends
+  `,mac=…`. Conflicts with an existing `mac=` on `--network` error out.
+- **`dcon machine create --virtualization` / `--kernel`** forward nested
+  virtualization and a custom guest kernel onto the backing `container run`
+  (the same capabilities Apple's native `container machine` exposed in 1.1.0).
+  Escape hatch `dcon machine native …` still reaches the backend machine group.
+
+### Changed
+- `dcon system property` help text notes that Apple container 1.0 removed
+  `property get`/`set` in favour of `~/.config/container/config.toml` (`property
+  list` still works).
 
 ### Fixed
 - `dcon system kernel set` is now idempotent. Apple's `container system kernel

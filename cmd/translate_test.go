@@ -76,6 +76,78 @@ func TestRunNetAliasAndDNSOpt(t *testing.T) {
 	}
 }
 
+func TestRunMacAddressTranslatesToNetwork(t *testing.T) {
+	// Docker --mac-address alone → Apple default network with mac=.
+	c := parse(t, newRunCmd(), []string{"--mac-address", "02:42:ac:11:00:02", "alpine"})
+	got, err := buildContainerArgs(c, c.Flags().Args(), "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsPair(got, "--network", "default,mac=02:42:ac:11:00:02") {
+		t.Errorf("--mac-address alone should emit default,mac=…; got %v", got)
+	}
+	if contains(got, "--mac-address") {
+		t.Errorf("--mac-address must not leak to the backend; got %v", got)
+	}
+
+	// Combined with a named network.
+	c2 := parse(t, newRunCmd(), []string{"--network", "mynet", "--mac-address", "02-42-ac-11-00-02", "alpine"})
+	got2, err := buildContainerArgs(c2, c2.Flags().Args(), "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsPair(got2, "--network", "mynet,mac=02-42-ac-11-00-02") {
+		t.Errorf("named network + mac-address; got %v", got2)
+	}
+
+	// Conflict when network already carries mac=.
+	c3 := parse(t, newRunCmd(), []string{"--network", "default,mac=aa:bb:cc:dd:ee:ff", "--mac-address", "02:42:ac:11:00:02", "alpine"})
+	if _, err := buildContainerArgs(c3, c3.Flags().Args(), "run"); err == nil {
+		t.Error("conflicting mac= on --network and --mac-address must error")
+	}
+
+	// Invalid shape.
+	c4 := parse(t, newRunCmd(), []string{"--mac-address", "not-a-mac", "alpine"})
+	if _, err := buildContainerArgs(c4, c4.Flags().Args(), "run"); err == nil {
+		t.Error("invalid --mac-address must error")
+	}
+}
+
+func TestNetworkWithMAC(t *testing.T) {
+	cases := []struct {
+		net, mac, want string
+		err            bool
+	}{
+		{"", "", "", false},
+		{"default", "", "", false},
+		{"bridge", "", "", false},
+		{"mynet", "", "mynet", false},
+		{"", "02:42:ac:11:00:02", "default,mac=02:42:ac:11:00:02", false},
+		{"bridge", "02:42:ac:11:00:02", "default,mac=02:42:ac:11:00:02", false},
+		{"mynet", "02:42:ac:11:00:02", "mynet,mac=02:42:ac:11:00:02", false},
+		{"default,mtu=1500", "02:42:ac:11:00:02", "default,mtu=1500,mac=02:42:ac:11:00:02", false},
+		{"default,mac=aa:bb:cc:dd:ee:ff", "", "default,mac=aa:bb:cc:dd:ee:ff", false},
+		{"default,mac=aa:bb:cc:dd:ee:ff", "02:42:ac:11:00:02", "", true},
+		{"", "zz:zz:zz:zz:zz:zz", "", true},
+	}
+	for _, tc := range cases {
+		got, err := networkWithMAC(tc.net, tc.mac)
+		if tc.err {
+			if err == nil {
+				t.Errorf("networkWithMAC(%q,%q) expected error", tc.net, tc.mac)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("networkWithMAC(%q,%q): %v", tc.net, tc.mac, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("networkWithMAC(%q,%q)=%q, want %q", tc.net, tc.mac, got, tc.want)
+		}
+	}
+}
+
 func TestRunUnsupportedFlagsDropped(t *testing.T) {
 	c := parse(t, newRunCmd(), []string{"--restart", "always", "--gpus", "all", "alpine"})
 	got, _ := buildContainerArgs(c, c.Flags().Args(), "run")

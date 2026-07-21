@@ -27,7 +27,6 @@ func TestRunExtendedFlagsAcceptedNotLeaked(t *testing.T) {
 		"--memory-swappiness", "60",
 		"--cgroup-parent", "/x",
 		"--isolation", "default",
-		"--mac-address", "02:42:ac:11:00:02",
 		"--ip", "10.0.0.5",
 		"--storage-opt", "size=10G",
 		"--stop-timeout", "5",
