@@ -13,8 +13,10 @@ struct ComposeView: View {
         HSplitView {
             recentsList
                 .frame(minWidth: 220, idealWidth: 260, maxWidth: 360)
+                .paneStyle()
             detailArea
                 .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
+                .paneStyle()
         }
         .navigationTitle("Compose")
         .toolbar {
@@ -180,8 +182,12 @@ private struct ComposeProjectPane: View {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
             }
+            .padding(8)
+            .chromeStyle()
+            Divider()
             TextPane(text: psOutput)
         }
+        .frame(maxHeight: .infinity)
     }
 
     private var logPane: some View {
@@ -197,8 +203,12 @@ private struct ComposeProjectPane: View {
                     }
                 }
             }
+            .padding(8)
+            .chromeStyle()
+            Divider()
             TextPane(text: streamLines.joined(separator: "\n"))
         }
+        .frame(maxHeight: .infinity)
     }
 
     // MARK: - Streaming (operations + follow logs share one slot)

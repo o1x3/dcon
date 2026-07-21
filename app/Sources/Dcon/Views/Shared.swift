@@ -12,7 +12,8 @@ struct TextPane: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(8)
         }
-        .background(Color(nsColor: .textBackgroundColor))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentSurface()
     }
 }
 
@@ -36,9 +37,11 @@ struct CommandOutputSheet: View {
                 Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
             }
             .padding(12)
+            .chromeStyle()
             Divider()
             TextPane(text: output)
         }
+        .paneStyle()
         .frame(minWidth: 640, minHeight: 440)
         .task {
             do {

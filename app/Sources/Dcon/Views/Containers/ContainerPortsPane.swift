@@ -22,15 +22,27 @@ struct ContainerPortsPane: View {
                 Button("Port…") { showPortLookup = true }
             }
             .padding(12)
+            .chromeStyle()
             Divider()
             if mappings.isEmpty {
                 EmptyListView(title: "No Published Ports", symbol: "network", description: "This container has no published ports.")
             } else {
-                List(mappings, id: \.self) { mapping in
-                    Text(mapping).font(.system(.body, design: .monospaced))
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(mappings, id: \.self) { mapping in
+                            Text(mapping)
+                                .font(.system(.body, design: .monospaced))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                            Divider()
+                        }
+                    }
                 }
+                .contentSurface()
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .sheet(isPresented: $showPortLookup) {
             CommandOutputSheet(title: "dcon port \(container.shortID)", args: ["port", container.id])
         }

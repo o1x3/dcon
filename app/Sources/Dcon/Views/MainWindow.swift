@@ -27,7 +27,9 @@ struct MainWindow: View {
             }
         } detail: {
             detailView
+                .paneStyle()
         }
+        .navigationSplitViewStyle(.balanced)
         .alert("dcon", isPresented: Binding(
             get: { state.lastError != nil },
             set: { if !$0 { state.lastError = nil } }
@@ -82,7 +84,7 @@ struct BackendStatusFooter: View {
             }
         }
         .padding(10)
-        .background(.bar)
+        .chromeStyle()
     }
 
     private var statusColor: Color {
