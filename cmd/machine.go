@@ -18,8 +18,10 @@ import (
 // newMachineCmd builds `dcon machine ...`: OrbStack-style persistent Linux
 // machines backed by long-lived Apple-container microVMs. This group shadows
 // the backend's OWN `container machine` group (Apple container 1.0+ ships one,
-// with nested-virtualization machines as of 1.1.0); `dcon machine native ...`
-// is the escape hatch that passes through to the backend's implementation.
+// with nested-virtualization machines as of 1.1.0). `dcon machine create
+// --virtualization/--kernel` forwards those capabilities onto the sleep-based
+// machine VM; `dcon machine native ...` is the escape hatch that passes through
+// to the backend's full implementation (home-mount, set-default, etc.).
 func newMachineCmd() *cobra.Command {
 	group := &cobra.Command{
 		Use:     "machine",
@@ -36,6 +38,12 @@ machine's filesystem persists across stop/start; ` + "`dcon machine rm`" + ` del
   dcon machine ls                      # list machines
   dcon machine stop ubuntu             # stop (filesystem is preserved)
   dcon machine rm ubuntu               # delete it
+
+Nested virtualization (Apple container 1.1+, M3+ host, KVM-enabled kernel):
+
+  dcon machine create ubuntu --virtualization --kernel /path/to/vmlinux-kvm
+
+Apple's native machine group remains reachable via ` + "`dcon machine native …`" + `.
 
 Supported distros: ` + strings.Join(machine.Distros(), ", "),
 	}
@@ -208,6 +216,8 @@ func machineCreateCmd() *cobra.Command {
 				opts.MountHome = true
 				opts.HomePath = home
 			}
+			opts.Virtualization, _ = cmd.Flags().GetBool("virtualization")
+			opts.Kernel, _ = cmd.Flags().GetString("kernel")
 			for _, f := range []string{"set-password", "disk", "user"} {
 				if cmd.Flags().Changed(f) {
 					fmt.Fprintf(os.Stderr, "dcon: warning: --%s is not supported by the container backend and was ignored\n", f)
@@ -241,6 +251,8 @@ func machineCreateCmd() *cobra.Command {
 	f.StringP("memory", "m", "", "Memory limit (e.g. 4G)")
 	f.StringP("arch", "a", "", "Target architecture for the distro image (e.g. arm64, amd64)")
 	f.Bool("mount-home", false, "Bind-mount your macOS home directory at /mnt/mac inside the machine")
+	f.Bool("virtualization", false, "Expose nested virtualization (/dev/kvm; requires M3+, macOS 15+, and a KVM-enabled kernel)")
+	f.String("kernel", "", "Path to a custom guest kernel (e.g. a vmlinux built with CONFIG_KVM=y)")
 	// Accepted-but-unsupported OrbStack flags (warned, not errored, for parity).
 	f.Bool("set-password", false, "Set a password for the default user (unsupported by backend)")
 	f.String("disk", "", "Disk size, e.g. 64G (unsupported; the backend sizes storage automatically)")

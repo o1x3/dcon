@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -73,6 +74,108 @@ func TestRunNetAliasAndDNSOpt(t *testing.T) {
 	}
 	if !containsPair(got, "--dns-option", "ndots:2") {
 		t.Errorf("--dns-opt should map to --dns-option; got %v", got)
+	}
+}
+
+func TestRunMacAddressTranslatesToNetwork(t *testing.T) {
+	// Docker --mac-address alone → Apple default network with mac=.
+	c := parse(t, newRunCmd(), []string{"--mac-address", "02:42:ac:11:00:02", "alpine"})
+	got, err := buildContainerArgs(c, c.Flags().Args(), "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsPair(got, "--network", "default,mac=02:42:ac:11:00:02") {
+		t.Errorf("--mac-address alone should emit default,mac=…; got %v", got)
+	}
+	if contains(got, "--mac-address") {
+		t.Errorf("--mac-address must not leak to the backend; got %v", got)
+	}
+
+	// Combined with a named network.
+	c2 := parse(t, newRunCmd(), []string{"--network", "mynet", "--mac-address", "02-42-ac-11-00-02", "alpine"})
+	got2, err := buildContainerArgs(c2, c2.Flags().Args(), "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsPair(got2, "--network", "mynet,mac=02-42-ac-11-00-02") {
+		t.Errorf("named network + mac-address; got %v", got2)
+	}
+
+	// --net alias + mac-address.
+	cNet := parse(t, newRunCmd(), []string{"--net", "bridge", "--mac-address", "02:42:ac:11:00:02", "alpine"})
+	gotNet, err := buildContainerArgs(cNet, cNet.Flags().Args(), "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsPair(gotNet, "--network", "default,mac=02:42:ac:11:00:02") {
+		t.Errorf("--net bridge + mac should become default,mac=…; got %v", gotNet)
+	}
+
+	// create shares the translation.
+	cCreate := parse(t, newCreateCmd(), []string{"--mac-address", "02:42:ac:11:00:02", "alpine"})
+	gotCreate, err := buildContainerArgs(cCreate, cCreate.Flags().Args(), "create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotCreate[0] != "create" || !containsPair(gotCreate, "--network", "default,mac=02:42:ac:11:00:02") {
+		t.Errorf("create --mac-address; got %v", gotCreate)
+	}
+
+	// Conflict when network already carries mac=.
+	c3 := parse(t, newRunCmd(), []string{"--network", "default,mac=aa:bb:cc:dd:ee:ff", "--mac-address", "02:42:ac:11:00:02", "alpine"})
+	if _, err := buildContainerArgs(c3, c3.Flags().Args(), "run"); err == nil {
+		t.Error("conflicting mac= on --network and --mac-address must error")
+	}
+
+	// Invalid shape.
+	c4 := parse(t, newRunCmd(), []string{"--mac-address", "not-a-mac", "alpine"})
+	if _, err := buildContainerArgs(c4, c4.Flags().Args(), "run"); err == nil {
+		t.Error("invalid --mac-address must error")
+	}
+
+	// host networking still hard-errors before MAC merge.
+	c5 := parse(t, newRunCmd(), []string{"--network", "host", "--mac-address", "02:42:ac:11:00:02", "alpine"})
+	if _, err := buildContainerArgs(c5, c5.Flags().Args(), "run"); err == nil {
+		t.Error("--network host must still error even with --mac-address")
+	}
+}
+
+func TestRunMacAddressNoUnsupportedWarning(t *testing.T) {
+	// --mac-address used to live in the unsupported map; ensure it no longer
+	// emits the "not supported … ignored" warning now that it is translated.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	c := parse(t, newRunCmd(), []string{"--mac-address", "02:42:ac:11:00:02", "alpine"})
+	_, berr := buildContainerArgs(c, c.Flags().Args(), "run")
+	_ = w.Close()
+	os.Stderr = old
+	if berr != nil {
+		t.Fatal(berr)
+	}
+	buf := make([]byte, 4096)
+	n, _ := r.Read(buf)
+	_ = r.Close()
+	errOut := string(buf[:n])
+	if strings.Contains(errOut, "--mac-address") {
+		t.Errorf("mac-address must not warn as unsupported; stderr=%q", errOut)
+	}
+}
+
+func TestWarmIneligibleWithMacAddress(t *testing.T) {
+	// Network MAC is boot-time state; a run carrying --mac-address must not
+	// take the warm exec fast path.
+	c := parse(t, newRunCmd(), []string{"--rm", "--mac-address", "02:42:ac:11:00:02", "alpine", "echo", "hi"})
+	if warmEligible(c, c.Flags().Args()) {
+		t.Error("--mac-address run must be warm-ineligible")
+	}
+	// Control: plain --rm stays eligible.
+	c2 := parse(t, newRunCmd(), []string{"--rm", "alpine", "echo", "hi"})
+	if !warmEligible(c2, c2.Flags().Args()) {
+		t.Error("plain --rm run should remain warm-eligible")
 	}
 }
 

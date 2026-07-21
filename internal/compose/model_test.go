@@ -69,6 +69,33 @@ func TestLoadParsesServices(t *testing.T) {
 	}
 }
 
+func TestLoadMacAddress(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yaml")
+	body := `
+services:
+  web:
+    image: nginx
+    mac_address: "02:42:ac:11:00:02"
+  api:
+    image: redis
+    mac_address: 02-42-ac-11-00-03
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(path, "")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := p.Services["web"].MacAddress; got != "02:42:ac:11:00:02" {
+		t.Errorf("web mac_address = %q", got)
+	}
+	if got := p.Services["api"].MacAddress; got != "02-42-ac-11-00-03" {
+		t.Errorf("api mac_address = %q", got)
+	}
+}
+
 func TestLoadBuildMapForm(t *testing.T) {
 	p := loadSample(t)
 	api := p.Services["api"]

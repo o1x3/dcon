@@ -3,6 +3,7 @@ package cmd
 import (
 	"io"
 	"reflect"
+	"strings"
 	"testing"
 
 	"dcon/internal/dockerfmt"
@@ -116,6 +117,40 @@ func TestMachineRmForceDefault(t *testing.T) {
 	}
 	if got := machineDeleteArgs(true); !reflect.DeepEqual(got, []string{"delete", "--force"}) {
 		t.Errorf("machineDeleteArgs(true) = %v, want [delete --force]", got)
+	}
+}
+
+func TestMachineCreateVirtFlagsRegistered(t *testing.T) {
+	c := machineCreateCmd()
+	if f := c.Flags().Lookup("virtualization"); f == nil {
+		t.Error("machine create missing --virtualization")
+	}
+	if f := c.Flags().Lookup("kernel"); f == nil {
+		t.Error("machine create missing --kernel")
+	}
+	if f := c.Flags().Lookup("mount-home"); f == nil {
+		t.Error("machine create missing --mount-home")
+	}
+}
+
+func TestPropertyRemovedHelp(t *testing.T) {
+	if msg := propertyRemovedHelp(nil); msg != "" {
+		t.Errorf("nil args: got %q", msg)
+	}
+	if msg := propertyRemovedHelp([]string{"list"}); msg != "" {
+		t.Errorf("list should pass through, got %q", msg)
+	}
+	if msg := propertyRemovedHelp([]string{"ls", "--format", "json"}); msg != "" {
+		t.Errorf("ls should pass through, got %q", msg)
+	}
+	for _, verb := range []string{"get", "set"} {
+		msg := propertyRemovedHelp([]string{verb, "dns.domain"})
+		if msg == "" {
+			t.Errorf("%s should be intercepted", verb)
+		}
+		if !strings.Contains(msg, "config.toml") || !strings.Contains(msg, verb) {
+			t.Errorf("%s help = %q; want config.toml mention", verb, msg)
+		}
 	}
 }
 

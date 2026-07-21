@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"dcon/internal/netflag"
 )
 
 // sortedKeys returns the keys of m in lexical order so generated arg lists are
@@ -210,17 +212,40 @@ func (p *Project) runArgs(service string, svc *Service, index int, netName strin
 	}
 
 	// Attach to the service's declared networks (resolved to backend names via
-	// p.Nets) when present; otherwise attach to the default network.
+	// p.Nets) when present; otherwise attach to the default network. Compose
+	// `mac_address` maps onto Apple's `--network name,mac=…` on the first
+	// attachment (Docker applies the service MAC to the primary interface).
+	macLeft := strings.TrimSpace(svc.MacAddress)
+	if macLeft != "" {
+		if err := netflag.ValidateMAC(macLeft); err != nil {
+			warnOnce("mac-"+service, "mac_address %q ignored: %v", macLeft, err)
+			macLeft = ""
+		}
+	}
+	attachNet := func(n string) {
+		if macLeft != "" {
+			// Network names from the project have no mac= yet; AttachMAC only
+			// fails on ValidateMAC (already checked) or an existing mac=.
+			if spec, err := netflag.AttachMAC(n, macLeft); err == nil {
+				n = spec
+				macLeft = ""
+			}
+		}
+		args = append(args, "--network", n)
+	}
 	if len(svc.Networks) > 0 && p.Nets != nil {
 		for _, key := range svc.Networks {
 			n := p.Nets[key]
 			if n == "" {
 				n = key
 			}
-			args = append(args, "--network", n)
+			attachNet(n)
 		}
 	} else if netName != "" {
-		args = append(args, "--network", netName)
+		attachNet(netName)
+	} else if macLeft != "" {
+		// No explicit network: still emit default,mac=… so the MAC is honored.
+		attachNet("default")
 	}
 	if svc.WorkingDir != "" {
 		args = append(args, "--workdir", svc.WorkingDir)

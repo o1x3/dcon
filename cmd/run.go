@@ -12,6 +12,7 @@ import (
 
 	"dcon/internal/dockerfmt"
 	"dcon/internal/machine"
+	"dcon/internal/netflag"
 	"dcon/internal/pool"
 	"dcon/internal/runtime"
 
@@ -126,7 +127,7 @@ func addRunFlags(cmd *cobra.Command) {
 	// Networking extras
 	f.String("ip", "", "IPv4 address (unsupported by backend)")
 	f.String("ip6", "", "IPv6 address (unsupported by backend)")
-	f.String("mac-address", "", "Container MAC address (unsupported by backend)")
+	f.String("mac-address", "", "Container MAC address (translated to --network name,mac=…)")
 	f.StringSlice("link", nil, "Add link to another container (unsupported by backend)")
 	f.StringSlice("link-local-ip", nil, "Container IPv4/IPv6 link-local addresses (unsupported by backend)")
 	f.StringSlice("network-alias", nil, "Add network-scoped alias for the container (unsupported by backend)")
@@ -411,7 +412,9 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 		out = append(out, "--cpus", strconv.Itoa(n))
 	}
 
-	// --network / --net (alias)
+	// --network / --net (alias), plus Docker --mac-address → Apple's
+	// `--network <name>,mac=XX:XX:XX:XX:XX:XX` (documented since container 1.0;
+	// see apple/container docs/how-to.md).
 	net, _ := f.GetString("network")
 	if net == "" {
 		net, _ = f.GetString("net")
@@ -419,8 +422,13 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 	if net == "host" || strings.HasPrefix(net, "container:") {
 		return nil, fmt.Errorf("--network %s is not supported by the container backend (no host/container-namespace networking on macOS VMs)", net)
 	}
-	if net != "" && net != "default" && net != "bridge" {
-		out = append(out, "--network", net)
+	mac, _ := f.GetString("mac-address")
+	netSpec, err := netflag.WithMAC(net, mac)
+	if err != nil {
+		return nil, err
+	}
+	if netSpec != "" {
+		out = append(out, "--network", netSpec)
 	}
 
 	// --volume: strip macOS-irrelevant Docker mount options (SELinux :z/:Z,
@@ -524,8 +532,8 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 		// Namespaces / cgroups
 		"pid": "--pid", "ipc": "--ipc", "uts": "--uts", "userns": "--userns",
 		"cgroupns": "--cgroupns", "cgroup-parent": "--cgroup-parent", "isolation": "--isolation",
-		// Networking extras
-		"ip": "--ip", "ip6": "--ip6", "mac-address": "--mac-address",
+		// Networking extras (--mac-address is translated above, not ignored)
+		"ip": "--ip", "ip6": "--ip6",
 		"link": "--link", "link-local-ip": "--link-local-ip", "network-alias": "--network-alias",
 		// Logging
 		"log-driver": "--log-driver", "log-opt": "--log-opt",

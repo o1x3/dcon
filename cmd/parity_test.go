@@ -27,7 +27,6 @@ func TestRunExtendedFlagsAcceptedNotLeaked(t *testing.T) {
 		"--memory-swappiness", "60",
 		"--cgroup-parent", "/x",
 		"--isolation", "default",
-		"--mac-address", "02:42:ac:11:00:02",
 		"--ip", "10.0.0.5",
 		"--storage-opt", "size=10G",
 		"--stop-timeout", "5",
@@ -59,6 +58,28 @@ func TestRunExtendedFlagsAcceptedNotLeaked(t *testing.T) {
 	}
 	if !contains(got, "alpine") || !contains(got, "true") {
 		t.Errorf("image/command must survive translation; got %v", got)
+	}
+}
+
+// TestRunMacAddressInExtendedSurfaceAccepted positively asserts that
+// --mac-address is accepted alongside other Docker flags and reaches the
+// backend as --network …,mac=… (not dropped, not leaked as --mac-address).
+func TestRunMacAddressInExtendedSurfaceAccepted(t *testing.T) {
+	c := parse(t, newRunCmd(), []string{
+		"--mac-address", "02:42:ac:11:00:02",
+		"--security-opt", "seccomp=unconfined",
+		"--pids-limit", "100",
+		"alpine",
+	})
+	got, err := buildContainerArgs(c, c.Flags().Args(), "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsPair(got, "--network", "default,mac=02:42:ac:11:00:02") {
+		t.Errorf("mac-address should translate; got %v", got)
+	}
+	if contains(got, "--mac-address") || contains(got, "--security-opt") || contains(got, "--pids-limit") {
+		t.Errorf("docker-only flags leaked: %v", got)
 	}
 }
 
