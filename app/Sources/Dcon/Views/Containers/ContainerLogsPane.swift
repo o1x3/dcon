@@ -24,6 +24,7 @@ struct ContainerLogsPane: View {
                     .foregroundStyle(.secondary)
             }
             .padding(8)
+            .chromeStyle()
             Divider()
             ScrollViewReader { proxy in
                 ScrollView {
@@ -38,13 +39,15 @@ struct ContainerLogsPane: View {
                     }
                     .padding(8)
                 }
-                .background(Color(nsColor: .textBackgroundColor))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentSurface()
                 .onChange(of: lines.count) { _, newCount in
                     guard newCount > 0 else { return }
                     proxy.scrollTo(newCount - 1, anchor: .bottom)
                 }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { startFollowing() }
         .onDisappear { stopFollowing() }
     }

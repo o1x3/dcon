@@ -18,9 +18,11 @@ struct ContainerProcessesPane: View {
                 }
             }
             .padding(8)
+            .chromeStyle()
             Divider()
             TextPane(text: loading ? "Loading…" : output)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task { await load() }
     }
 

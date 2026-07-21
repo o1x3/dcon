@@ -34,7 +34,9 @@ struct ContainersView: View {
                 .navigationSplitViewColumnWidth(min: 380, ideal: 480)
         } detail: {
             detailPane
+                .paneStyle()
         }
+        .navigationSplitViewStyle(.balanced)
         .toolbar {
             ToolbarItemGroup {
                 Button {
@@ -97,6 +99,7 @@ struct ContainersView: View {
             }
         }
         .searchable(text: $searchText, prompt: "Filter by name, image, or id")
+        .paneStyle()
     }
 
     private var table: some View {

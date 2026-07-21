@@ -31,7 +31,9 @@ struct ContainerDetailPane: View {
             .padding(8)
             Divider()
             content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .paneStyle()
         .toolbar {
             ToolbarItem {
                 Menu {

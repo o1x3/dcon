@@ -41,6 +41,7 @@ struct ContainerStatsPane: View {
                 )
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { startPolling() }
         .onDisappear { stopPolling() }
     }
@@ -76,7 +77,6 @@ private struct StatTile: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .cardSurface()
     }
 }
