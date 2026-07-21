@@ -75,6 +75,13 @@ struct StreamOutputSheet: View {
             handle?.terminate()
             finish()
         }
+        .onExitCommand {
+            // ⎋ only closes the sheet once the stream has finished; while a
+            // pull/build is still running, escape must not silently kill it
+            // the way clicking "Stop" would — the user has to use the
+            // explicit button for that.
+            if finished { dismiss() }
+        }
     }
 
     /// Idempotent: the stream can end (onEnd), be stopped, and be dismissed

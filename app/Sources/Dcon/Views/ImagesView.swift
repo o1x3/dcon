@@ -40,6 +40,8 @@ struct ImagesView: View {
                     EmptyStateView(title: "No Images", symbol: "opticaldiscdrive",
                                    description: "Pull or build an image to get started.",
                                    actionTitle: "Pull an Image…") { showPullSheet = true }
+                } else if filtered.isEmpty {
+                    ContentUnavailableView.search(text: searchText)
                 } else {
                     table
                 }
@@ -63,7 +65,7 @@ struct ImagesView: View {
             Task { await state.perform(args) }
         }
         .confirmationDialog("Remove unused images?", isPresented: $showPruneConfirm, titleVisibility: .visible) {
-            Button("Remove Dangling Images") {
+            Button("Remove Dangling Images", role: .destructive) {
                 Task { await state.perform(["image", "prune"]) }
             }
             Button("Remove All Unused Images", role: .destructive) {
@@ -80,6 +82,8 @@ struct ImagesView: View {
             TableColumn("Repository", value: \.Repository) { row in
                 HStack(spacing: 6) {
                     Text(row.Repository).fontWeight(.semibold)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                     if !row.Tag.isEmpty, row.Tag != "<none>" {
                         Text(row.Tag)
                             .font(.caption.weight(.medium))
@@ -87,23 +91,31 @@ struct ImagesView: View {
                             .padding(.vertical, 1)
                             .background(Color.accentColor.opacity(0.15), in: Capsule())
                             .foregroundStyle(Color.accentColor)
+                            .lineLimit(1)
                     }
                 }
             }
+            .width(min: 160, ideal: 260)
             TableColumn("Image ID", value: \.ID) { row in
                 Text(String(row.ID.prefix(12)))
                     .font(.system(.body, design: .monospaced))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
+            .width(min: 100, ideal: 120)
             TableColumn("Created", value: \.CreatedAt) { row in
                 Text(row.CreatedSince)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
+            .width(min: 90, ideal: 130)
             TableColumn("Size", value: \.sizeBytes) { row in
                 Text(row.Size)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
             }
+            .width(min: 70, ideal: 90)
         }
         .contextMenu(forSelectionType: ImageRow.ID.self) { ids in
             contextMenuItems(for: ids)
@@ -112,6 +124,7 @@ struct ImagesView: View {
                 inspectRequest = OutputRequest(title: "Inspect \(row.reference)", args: ["image", "inspect", row.reference])
             }
         }
+        .animation(.default, value: sorted)
     }
 
     @ViewBuilder
@@ -149,14 +162,16 @@ struct ImagesView: View {
         ToolbarItemGroup {
             Button { showPullSheet = true } label: { Label("Pull…", systemImage: "arrow.down.circle") }
                 .controlSize(.regular)
+                .help("Pull an image from a registry")
             Button { showBuildSheet = true } label: { Label("Build…", systemImage: "hammer") }
                 .controlSize(.regular)
+                .help("Build an image from a Dockerfile")
             Button { loadImage() } label: { Label("Load…", systemImage: "tray.and.arrow.down") }
                 .controlSize(.regular)
+                .help("Load an image from a tar archive")
             Button { showPruneConfirm = true } label: { Label("Prune", systemImage: "trash") }
                 .controlSize(.regular)
-            RefreshButton()
-                .controlSize(.regular)
+                .help("Remove unused images")
         }
     }
 
@@ -173,13 +188,15 @@ struct ImagesView: View {
     }
 
     private var footerText: String {
+        let total = state.images.count
         let count = filtered.count
-        let noun = count == 1 ? "image" : "images"
+        let noun = total == 1 ? "image" : "images"
+        let countPart = (searchText.isEmpty || count == total) ? "\(total) \(noun)" : "\(count) of \(total) \(noun)"
         let totalBytes = filtered.compactMap { parseSizeToBytes($0.Size) }.reduce(0, +)
-        guard totalBytes > 0 else { return "\(count) \(noun)" }
+        guard totalBytes > 0 else { return countPart }
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
-        return "\(count) \(noun) · \(formatter.string(fromByteCount: Int64(totalBytes)))"
+        return "\(countPart) · \(formatter.string(fromByteCount: Int64(totalBytes)))"
     }
 
     private func loadImage() {
@@ -236,6 +253,7 @@ private struct PullImageSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var reference = ""
     @State private var pulling = false
+    @FocusState private var referenceFocused: Bool
 
     var body: some View {
         if pulling {
@@ -248,23 +266,41 @@ private struct PullImageSheet: View {
     }
 
     private var form: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Pull Image").font(.headline)
-            TextField("Reference (e.g. nginx:latest)", text: $reference)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(startPull)
+        VStack(spacing: 0) {
+            Text("Pull Image")
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .chromeStyle()
+            Divider()
+            VStack(alignment: .leading, spacing: 12) {
+                TextField("Reference (e.g. nginx:latest)", text: $reference)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($referenceFocused)
+                    .onSubmit(startPull)
+            }
+            .padding(16)
+            Divider()
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button("Pull") { startPull() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(reference.trimmingCharacters(in: .whitespaces).isEmpty)
             }
+            .padding(12)
+            .chromeStyle()
         }
-        .padding(20)
         .frame(width: 420)
+        .onAppear { referenceFocused = true }
     }
 
+    /// Once pulling starts, the form (and its reference field) is replaced
+    /// entirely by `StreamOutputSheet` — the reference can't be edited while
+    /// the pull is in flight. On success the sheet is left open (showing the
+    /// full pull log) rather than auto-closing, so failures and successes
+    /// both stay visible until the user dismisses it.
     private func startPull() {
         guard !reference.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         pulling = true
@@ -280,6 +316,7 @@ private struct BuildImageSheet: View {
     @State private var dockerfile: URL?
     @State private var tag = ""
     @State private var building = false
+    @FocusState private var tagFocused: Bool
 
     var body: some View {
         if building, let dir = contextDir {
@@ -293,36 +330,49 @@ private struct BuildImageSheet: View {
     }
 
     private var form: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Build Image").font(.headline)
-            HStack {
-                Text(contextDir?.path ?? "No context directory chosen")
-                    .foregroundStyle(contextDir == nil ? .secondary : .primary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer()
-                Button("Choose…") { chooseContextDir() }
+        VStack(spacing: 0) {
+            Text("Build Image")
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .chromeStyle()
+            Divider()
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text(contextDir?.path ?? "No context directory chosen")
+                        .foregroundStyle(contextDir == nil ? .secondary : .primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    Button("Choose…") { chooseContextDir() }
+                }
+                TextField("Tag (e.g. myapp:latest)", text: $tag)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($tagFocused)
+                HStack {
+                    Text(dockerfile?.path ?? "Dockerfile: PATH/Dockerfile (default)")
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    Button("Choose Dockerfile…") { chooseDockerfile() }
+                }
             }
-            TextField("Tag (e.g. myapp:latest)", text: $tag)
-                .textFieldStyle(.roundedBorder)
-            HStack {
-                Text(dockerfile?.path ?? "Dockerfile: PATH/Dockerfile (default)")
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer()
-                Button("Choose Dockerfile…") { chooseDockerfile() }
-            }
+            .padding(16)
+            Divider()
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button("Build") { building = true }
                     .keyboardShortcut(.defaultAction)
                     .disabled(contextDir == nil || tag.trimmingCharacters(in: .whitespaces).isEmpty)
             }
+            .padding(12)
+            .chromeStyle()
         }
-        .padding(20)
         .frame(width: 460)
+        .onAppear { tagFocused = true }
     }
 
     private func buildArgs(dir: URL) -> [String] {
@@ -359,23 +409,39 @@ private struct TagImageSheet: View {
     @EnvironmentObject var state: AppState
     @Environment(\.dismiss) private var dismiss
     @State private var newRef = ""
+    @FocusState private var newRefFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Tag \(source.reference)").font(.headline)
-            TextField("New tag (e.g. myrepo/myimage:v2)", text: $newRef)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(submit)
+        VStack(spacing: 0) {
+            Text("Tag \(source.reference)")
+                .font(.headline)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .chromeStyle()
+            Divider()
+            VStack(alignment: .leading, spacing: 12) {
+                TextField("New tag (e.g. myrepo/myimage:v2)", text: $newRef)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($newRefFocused)
+                    .onSubmit(submit)
+            }
+            .padding(16)
+            Divider()
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button("Tag") { submit() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(newRef.trimmingCharacters(in: .whitespaces).isEmpty)
             }
+            .padding(12)
+            .chromeStyle()
         }
-        .padding(20)
         .frame(width: 420)
+        .onAppear { newRefFocused = true }
     }
 
     private func submit() {

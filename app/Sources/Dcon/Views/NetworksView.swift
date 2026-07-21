@@ -36,6 +36,8 @@ struct NetworksView: View {
                     EmptyStateView(title: "No Networks", symbol: "network",
                                    description: "Create a network to connect containers.",
                                    actionTitle: "Create Network…") { showCreateSheet = true }
+                } else if filtered.isEmpty {
+                    ContentUnavailableView.search(text: searchText)
                 } else {
                     table
                 }
@@ -61,20 +63,36 @@ struct NetworksView: View {
     private var table: some View {
         Table(sorted, selection: $selection, sortOrder: $sortOrder) {
             TableColumn("Name", value: \.Name) { row in
-                Text(row.Name).fontWeight(.semibold)
+                Text(row.Name)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
+            .width(min: 120, ideal: 200)
             TableColumn("Network ID", value: \.ID) { row in
                 Text(String(row.ID.prefix(12)))
                     .font(.system(.body, design: .monospaced))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
-            TableColumn("Driver", value: \.Driver)
-            TableColumn("Scope", value: \.Scope)
+            .width(min: 100, ideal: 120)
+            TableColumn("Driver", value: \.Driver) { row in
+                Text(row.Driver).lineLimit(1)
+            }
+            .width(min: 70, ideal: 90)
+            TableColumn("Scope", value: \.Scope) { row in
+                Text(row.Scope).lineLimit(1)
+            }
+            .width(min: 60, ideal: 80)
             TableColumn("Subnet", value: \.Subnet) { row in
                 Text(row.Subnet)
                     .font(.system(.body, design: .monospaced))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
+            .width(min: 120, ideal: 170)
         }
         .contextMenu(forSelectionType: NetworkRow.ID.self) { ids in
             contextMenuItems(for: ids)
@@ -83,6 +101,7 @@ struct NetworksView: View {
                 inspectRequest = OutputRequest(title: "Inspect \(row.Name)", args: ["network", "inspect", row.Name])
             }
         }
+        .animation(.default, value: sorted)
     }
 
     @ViewBuilder
@@ -109,17 +128,16 @@ struct NetworksView: View {
         ToolbarItemGroup {
             Button { showCreateSheet = true } label: { Label("Create…", systemImage: "plus") }
                 .controlSize(.regular)
+                .help("Create a new network")
             Button { showPruneConfirm = true } label: { Label("Prune", systemImage: "trash") }
                 .controlSize(.regular)
-            RefreshButton()
-                .controlSize(.regular)
+                .help("Remove all unused networks")
         }
     }
 
     private var footer: some View {
         HStack {
-            let count = filtered.count
-            Text("\(count) \(count == 1 ? "network" : "networks")")
+            Text(footerText)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
@@ -128,6 +146,13 @@ struct NetworksView: View {
         .padding(.vertical, 6)
         .chromeStyle()
     }
+
+    private var footerText: String {
+        let total = state.networks.count
+        let count = filtered.count
+        let noun = total == 1 ? "network" : "networks"
+        return (searchText.isEmpty || count == total) ? "\(total) \(noun)" : "\(count) of \(total) \(noun)"
+    }
 }
 
 /// Sheet to create a network by name.
@@ -135,23 +160,37 @@ private struct CreateNetworkSheet: View {
     @EnvironmentObject var state: AppState
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
+    @FocusState private var nameFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Create Network").font(.headline)
-            TextField("Name", text: $name)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(submit)
+        VStack(spacing: 0) {
+            Text("Create Network")
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .chromeStyle()
+            Divider()
+            VStack(alignment: .leading, spacing: 12) {
+                TextField("Name", text: $name)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($nameFocused)
+                    .onSubmit(submit)
+            }
+            .padding(16)
+            Divider()
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button("Create") { submit() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
             }
+            .padding(12)
+            .chromeStyle()
         }
-        .padding(20)
         .frame(width: 420)
+        .onAppear { nameFocused = true }
     }
 
     private func submit() {
@@ -180,28 +219,41 @@ private struct ConnectContainerSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(title).font(.headline)
-            if state.containers.isEmpty {
-                Text("No containers available.").foregroundStyle(.secondary)
-            } else {
-                Picker("Container", selection: $containerID) {
-                    Text("Choose…").tag(String?.none)
-                    ForEach(state.containers) { c in
-                        Text("\(c.Names) (\(c.shortID))").tag(Optional(c.ID))
+        VStack(spacing: 0) {
+            Text(title)
+                .font(.headline)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .chromeStyle()
+            Divider()
+            VStack(alignment: .leading, spacing: 12) {
+                if state.containers.isEmpty {
+                    Text("No containers available.").foregroundStyle(.secondary)
+                } else {
+                    Picker("Container", selection: $containerID) {
+                        Text("Choose…").tag(String?.none)
+                        ForEach(state.containers) { c in
+                            Text("\(c.Names) (\(c.shortID))").tag(Optional(c.ID))
+                        }
                     }
+                    .labelsHidden()
                 }
-                .labelsHidden()
             }
+            .padding(16)
+            Divider()
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button(mode == .connect ? "Connect" : "Disconnect") { submit() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(containerID == nil)
             }
+            .padding(12)
+            .chromeStyle()
         }
-        .padding(20)
         .frame(width: 420)
     }
 

@@ -35,6 +35,8 @@ struct VolumesView: View {
                     EmptyStateView(title: "No Volumes", symbol: "externaldrive",
                                    description: "Create a volume to persist container data.",
                                    actionTitle: "Create Volume…") { showCreateSheet = true }
+                } else if filtered.isEmpty {
+                    ContentUnavailableView.search(text: searchText)
                 } else {
                     table
                 }
@@ -62,15 +64,28 @@ struct VolumesView: View {
     private var table: some View {
         Table(sorted, selection: $selection, sortOrder: $sortOrder) {
             TableColumn("Name", value: \.Name) { row in
-                Text(row.Name).fontWeight(.semibold)
+                Text(row.Name)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
-            TableColumn("Driver", value: \.Driver)
-            TableColumn("Scope", value: \.Scope)
+            .width(min: 140, ideal: 220)
+            TableColumn("Driver", value: \.Driver) { row in
+                Text(row.Driver).lineLimit(1)
+            }
+            .width(min: 70, ideal: 90)
+            TableColumn("Scope", value: \.Scope) { row in
+                Text(row.Scope).lineLimit(1)
+            }
+            .width(min: 60, ideal: 80)
             TableColumn("Mountpoint", value: \.Mountpoint) { row in
                 Text(row.Mountpoint)
                     .font(.system(.body, design: .monospaced))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
+            .width(min: 200, ideal: 340)
         }
         .contextMenu(forSelectionType: VolumeRow.ID.self) { ids in
             contextMenuItems(for: ids)
@@ -79,6 +94,7 @@ struct VolumesView: View {
                 inspectRequest = OutputRequest(title: "Inspect \(row.Name)", args: ["volume", "inspect", row.Name])
             }
         }
+        .animation(.default, value: sorted)
     }
 
     @ViewBuilder
@@ -113,17 +129,16 @@ struct VolumesView: View {
         ToolbarItemGroup {
             Button { showCreateSheet = true } label: { Label("Create…", systemImage: "plus") }
                 .controlSize(.regular)
+                .help("Create a new volume")
             Button { showPruneConfirm = true } label: { Label("Prune", systemImage: "trash") }
                 .controlSize(.regular)
-            RefreshButton()
-                .controlSize(.regular)
+                .help("Remove all unused volumes")
         }
     }
 
     private var footer: some View {
         HStack {
-            let count = filtered.count
-            Text("\(count) \(count == 1 ? "volume" : "volumes")")
+            Text(footerText)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
@@ -131,6 +146,13 @@ struct VolumesView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .chromeStyle()
+    }
+
+    private var footerText: String {
+        let total = state.volumes.count
+        let count = filtered.count
+        let noun = total == 1 ? "volume" : "volumes"
+        return (searchText.isEmpty || count == total) ? "\(total) \(noun)" : "\(count) of \(total) \(noun)"
     }
 }
 
@@ -140,21 +162,36 @@ private struct CreateVolumeSheet: View {
     @EnvironmentObject var state: AppState
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
+    @FocusState private var nameFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Create Volume").font(.headline)
-            TextField("Name (optional — random if left blank)", text: $name)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(submit)
+        VStack(spacing: 0) {
+            Text("Create Volume")
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .chromeStyle()
+            Divider()
+            VStack(alignment: .leading, spacing: 12) {
+                TextField("Name (optional — random if left blank)", text: $name)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($nameFocused)
+                    .onSubmit(submit)
+            }
+            .padding(16)
+            Divider()
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
-                Button("Create") { submit() }.keyboardShortcut(.defaultAction)
+                    .keyboardShortcut(.cancelAction)
+                Button("Create") { submit() }
+                    .keyboardShortcut(.defaultAction)
             }
+            .padding(12)
+            .chromeStyle()
         }
-        .padding(20)
         .frame(width: 420)
+        .onAppear { nameFocused = true }
     }
 
     private func submit() {
