@@ -47,6 +47,7 @@ struct ContainerDetailPane: View {
                 } label: {
                     Label("Actions", systemImage: "ellipsis.circle")
                 }
+                .help("Actions")
             }
         }
     }
@@ -117,7 +118,6 @@ struct ContainerDetailPane: View {
             Button(role: .destructive, action: onRemove) {
                 Label("Remove", systemImage: "trash")
             }
-            .tint(.red)
             .disabled(container.isRunning || container.isPaused)
         }
         .buttonStyle(.bordered)

@@ -11,12 +11,14 @@ struct ContainerInspectPane: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
+                Text("Inspect").font(.headline)
                 Spacer()
                 Button {
                     Task { await load() }
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
+                .help("Refresh inspect output")
             }
             .padding(8)
             .chromeStyle()

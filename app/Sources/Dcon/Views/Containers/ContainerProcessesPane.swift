@@ -10,12 +10,14 @@ struct ContainerProcessesPane: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
+                Text("Processes").font(.headline)
                 Spacer()
                 Button {
                     Task { await load() }
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
+                .help("Refresh process list")
             }
             .padding(8)
             .chromeStyle()

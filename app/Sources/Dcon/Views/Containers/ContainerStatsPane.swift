@@ -21,25 +21,39 @@ struct ContainerStatsPane: View {
     }
 
     var body: some View {
-        Group {
-            if let stats {
-                ScrollView {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 12)], spacing: 12) {
-                        StatTile(label: "CPU", value: stats.CPUPerc)
-                        StatTile(label: "Memory", value: "\(stats.MemUsage)  (\(stats.MemPerc))")
-                        StatTile(label: "Net I/O", value: stats.NetIO)
-                        StatTile(label: "Block I/O", value: stats.BlockIO)
-                        StatTile(label: "PIDs", value: stats.PIDs)
-                    }
-                    .padding(12)
-                }
-            } else {
-                EmptyListView(
-                    title: "No Stats",
-                    symbol: "chart.bar",
-                    description: container.isRunning ? "Waiting for stats…" : "Container is not running."
-                )
+        VStack(spacing: 0) {
+            HStack {
+                Text("Resource Usage").font(.headline)
+                Spacer()
+                Text("Live · updates every 2s")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
+            .padding(8)
+            .chromeStyle()
+            Divider()
+            Group {
+                if let stats {
+                    ScrollView {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 12)], spacing: 12) {
+                            StatTile(label: "CPU", value: stats.CPUPerc)
+                            StatTile(label: "Memory", value: "\(stats.MemUsage)  (\(stats.MemPerc))")
+                            StatTile(label: "Net I/O", value: stats.NetIO)
+                            StatTile(label: "Block I/O", value: stats.BlockIO)
+                            StatTile(label: "PIDs", value: stats.PIDs)
+                        }
+                        .padding(12)
+                        .animation(.default, value: stats)
+                    }
+                } else {
+                    EmptyListView(
+                        title: "No Stats",
+                        symbol: "chart.bar",
+                        description: container.isRunning ? "Waiting for stats…" : "Container is not running."
+                    )
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { startPolling() }

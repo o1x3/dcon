@@ -20,8 +20,9 @@ struct ContainerPortsPane: View {
                 Text("Port Mappings").font(.headline)
                 Spacer()
                 Button("Port…") { showPortLookup = true }
+                    .help("Look up published ports (dcon port)")
             }
-            .padding(12)
+            .padding(8)
             .chromeStyle()
             Divider()
             if mappings.isEmpty {
@@ -32,12 +33,15 @@ struct ContainerPortsPane: View {
                         ForEach(mappings, id: \.self) { mapping in
                             Text(mapping)
                                 .font(.system(.body, design: .monospaced))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 6)
                             Divider()
                         }
                     }
+                    .animation(.default, value: mappings)
                 }
                 .contentSurface()
             }

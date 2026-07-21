@@ -18,6 +18,7 @@ struct ContainerRunSheet: View {
     @State private var detach = true
     @State private var removeOnExit = false
     @State private var interactiveTTY = false
+    @FocusState private var imageFieldFocused: Bool
 
     /// Image references from `state.images` that match the current text,
     /// deduped and capped so the popover list stays short.
@@ -42,12 +43,14 @@ struct ContainerRunSheet: View {
             Form {
                 Section("Image") {
                     TextField("nginx:latest", text: $image)
+                        .focused($imageFieldFocused)
                     ForEach(imageSuggestions, id: \.self) { suggestion in
                         Button(suggestion) { image = suggestion }
                             .buttonStyle(.plain)
                             .foregroundStyle(.secondary)
                             .font(.callout)
                     }
+                    .animation(.default, value: imageSuggestions)
                 }
                 Section("Identity") {
                     TextField("Name (optional)", text: $name)
@@ -84,6 +87,7 @@ struct ContainerRunSheet: View {
             .chromeStyle()
         }
         .frame(width: 560, height: 680)
+        .onAppear { imageFieldFocused = true }
     }
 
     /// Builds `["run", ...flags..., IMAGE, ...command]`. Flags must precede
@@ -141,16 +145,20 @@ private struct EditableStringRows: View {
                     rows.remove(at: idx)
                     if rows.isEmpty { rows = [""] }
                 } label: {
-                    Image(systemName: "minus.circle")
+                    Label("Remove Row", systemImage: "minus.circle")
+                        .labelStyle(.iconOnly)
                 }
                 .buttonStyle(.plain)
+                .help("Remove this row")
             }
         }
+        .animation(.default, value: rows)
         Button {
             rows.append("")
         } label: {
             Label("Add", systemImage: "plus.circle")
         }
         .buttonStyle(.plain)
+        .help("Add another row")
     }
 }

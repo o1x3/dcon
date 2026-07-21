@@ -30,10 +30,27 @@ struct ContainerLogsPane: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Button(isFollowing ? "Pause" : "Resume") { toggleFollow() }
+                    .help(isFollowing ? "Pause following logs" : "Resume following logs")
                 Button("Clear") { lines.removeAll() }
-                TextField("Filter", text: $filterText)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 180)
+                    .help("Clear the log buffer")
+                HStack(spacing: 4) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("Filter", text: $filterText)
+                        .textFieldStyle(.roundedBorder)
+                    if !filterText.isEmpty {
+                        Button {
+                            filterText = ""
+                        } label: {
+                            Label("Clear Filter", systemImage: "xmark.circle.fill")
+                                .labelStyle(.iconOnly)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .help("Clear filter")
+                    }
+                }
+                .frame(width: 200)
                 Toggle("Autoscroll", isOn: $autoscroll)
                     .toggleStyle(.checkbox)
                 Spacer()
@@ -45,6 +62,7 @@ struct ContainerLogsPane: View {
                 } label: {
                     Label("Export…", systemImage: "square.and.arrow.up")
                 }
+                .help("Export the full log buffer to a file")
             }
             .padding(8)
             .chromeStyle()

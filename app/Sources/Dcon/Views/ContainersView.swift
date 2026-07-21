@@ -47,12 +47,13 @@ struct ContainersView: View {
                 } label: {
                     Label("Run…", systemImage: "play.fill")
                 }
+                .help("Run a new container")
                 Button(role: .destructive) {
                     confirmPrune = true
                 } label: {
                     Label("Prune", systemImage: "trash")
                 }
-                RefreshButton()
+                .help("Remove all stopped containers")
             }
         }
         .sheet(isPresented: $showRunSheet) {
@@ -97,6 +98,8 @@ struct ContainersView: View {
         Group {
             if state.containers.isEmpty {
                 emptyState
+            } else if filtered.isEmpty {
+                ContentUnavailableView.search(text: searchText)
             } else {
                 table
             }
@@ -127,21 +130,30 @@ struct ContainersView: View {
                     Text(row.Names.isEmpty ? row.shortID : row.Names)
                         .fontWeight(.semibold)
                         .lineLimit(1)
+                        .truncationMode(.middle)
                     Text(row.Image)
-                        .font(.caption)
+                        .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .truncationMode(.middle)
                 }
             }
+            .width(min: 160, ideal: 240)
             TableColumn("Status", sortUsing: KeyPathComparator(\.Status)) { row in
                 StatusPill(text: row.State)
             }
+            .width(min: 80, ideal: 100)
             TableColumn("Ports", sortUsing: KeyPathComparator(\.Ports)) { row in
-                Text(row.Ports.isEmpty ? "–" : row.Ports).lineLimit(1)
+                Text(row.Ports.isEmpty ? "–" : row.Ports)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
+            .width(min: 120, ideal: 200)
             TableColumn("Created", sortUsing: KeyPathComparator(\.CreatedAt)) { row in
                 Text(row.RunningFor.isEmpty ? row.CreatedAt : row.RunningFor)
+                    .lineLimit(1)
             }
+            .width(min: 100, ideal: 140)
         }
         .contextMenu(forSelectionType: String.self) { ids in
             if let row = filtered.first(where: { ids.contains($0.id) }) {
@@ -153,8 +165,18 @@ struct ContainersView: View {
                 )
             }
         } primaryAction: { ids in
-            if let id = ids.first { selection = id }
+            // Double-click selects (revealing the detail pane) and, for a
+            // running container, also opens a shell — the most useful single
+            // action on a row you'd double-click, matching Docker
+            // Desktop/OrbStack "jump into it" behavior. Stopped/paused rows
+            // just select, since there's nothing to shell into.
+            guard let id = ids.first else { return }
+            selection = id
+            if let row = filtered.first(where: { $0.id == id }), row.isRunning {
+                TerminalLauncher.run(dconArgs: ["exec", "-it", row.id, "/bin/sh"])
+            }
         }
+        .animation(.default, value: sortedRows)
         .onAppear { sortedRows = filtered.sorted(using: sortOrder) }
         .onChange(of: sortOrder) { _, newOrder in
             sortedRows = filtered.sorted(using: newOrder)

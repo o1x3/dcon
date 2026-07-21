@@ -25,20 +25,21 @@ struct ContainerActionButtons: View {
             if row.isRunning {
                 Button("Stop") { perform(["stop", row.id]) }
                 Button("Restart") { perform(["restart", row.id]) }
-                Button("Kill") { perform(["kill", row.id]) }
+                Button("Kill", role: .destructive) { perform(["kill", row.id]) }
                 Button("Pause") { perform(["pause", row.id]) }
                 Button("Open Shell") {
                     TerminalLauncher.run(dconArgs: ["exec", "-it", row.id, "/bin/sh"])
                 }
             } else if row.isPaused {
                 Button("Unpause") { perform(["unpause", row.id]) }
-                Button("Kill") { perform(["kill", row.id]) }
+                Button("Kill", role: .destructive) { perform(["kill", row.id]) }
             } else {
                 Button("Start") { perform(["start", row.id]) }
             }
             Divider()
             Button("Rename…", action: onRename)
             Button("Copy ID") { copyToPasteboard(row.id) }
+            Button("Copy Name") { copyToPasteboard(row.Names.isEmpty ? row.shortID : row.Names) }
             Divider()
             Button("Remove", role: .destructive, action: onRemove)
                 .disabled(row.isRunning || row.isPaused)

@@ -12,29 +12,45 @@ struct ContainerRenameSheet: View {
     @EnvironmentObject var state: AppState
     @Environment(\.dismiss) private var dismiss
     @State private var newName: String = ""
+    @FocusState private var nameFieldFocused: Bool
 
     private var trimmedName: String { newName.trimmingCharacters(in: .whitespaces) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Rename Container").font(.headline)
-            Text(container.Names)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            TextField("New name", text: $newName)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(rename)
+        VStack(spacing: 0) {
+            Text("Rename Container")
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .chromeStyle()
+            Divider()
+            VStack(alignment: .leading, spacing: 12) {
+                Text(container.Names)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                TextField("New name", text: $newName)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($nameFieldFocused)
+                    .onSubmit(rename)
+            }
+            .padding(16)
+            Divider()
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button("Rename") { rename() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(trimmedName.isEmpty)
             }
+            .padding(12)
+            .chromeStyle()
         }
-        .padding(16)
         .frame(width: 360)
-        .onAppear { newName = container.Names }
+        .onAppear {
+            newName = container.Names
+            nameFieldFocused = true
+        }
     }
 
     private func rename() {
