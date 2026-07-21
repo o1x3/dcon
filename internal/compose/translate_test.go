@@ -1,6 +1,7 @@
 package compose
 
 import (
+	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -534,6 +535,58 @@ func TestRunArgsMacAddress(t *testing.T) {
 		if args4[i] == "--network" && strings.Contains(args4[i+1], "mac=") {
 			t.Errorf("invalid mac_address must not reach --network; got %v", args4)
 		}
+	}
+}
+
+// TestRunArgsMacAddressNetworkKeyFallback: when a service network key is
+// missing from p.Nets, the bare key is used (and still receives mac=).
+func TestRunArgsMacAddressNetworkKeyFallback(t *testing.T) {
+	p := &Project{Name: "proj", Dir: "/tmp", Nets: map[string]string{}}
+	svc := &Service{Image: "img", MacAddress: "02:42:ac:11:00:02", Networks: StringKeys{"orphan"}}
+	args := p.RunArgs("web", svc, 1, "ignored", nil)
+	mustContainPair(t, args, "--network", "orphan,mac=02:42:ac:11:00:02")
+}
+
+// TestRunArgsMacAddressWhitespaceIgnored: blank mac_address is treated as unset.
+func TestRunArgsMacAddressWhitespaceIgnored(t *testing.T) {
+	p := &Project{Name: "proj", Dir: "/tmp"}
+	svc := &Service{Image: "img", MacAddress: "   "}
+	args := p.RunArgs("web", svc, 1, "proj_default", nil)
+	mustContainPair(t, args, "--network", "proj_default")
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--network" && strings.Contains(args[i+1], "mac=") {
+			t.Errorf("whitespace mac_address must not attach; got %v", args)
+		}
+	}
+}
+
+// TestRunArgsMacAddressWarnsOnce captures stderr for an invalid mac_address
+// and checks the warnOnce message shape.
+func TestRunArgsMacAddressWarnsOnce(t *testing.T) {
+	resetWarnings()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+
+	p := &Project{Name: "proj", Dir: "/tmp"}
+	svc := &Service{Image: "img", MacAddress: "bad"}
+	_ = p.RunArgs("web", svc, 1, "proj_default", nil)
+	_ = p.RunArgs("web", svc, 1, "proj_default", nil) // second call: warnOnce must not duplicate
+
+	_ = w.Close()
+	os.Stderr = old
+	buf := make([]byte, 4096)
+	n, _ := r.Read(buf)
+	_ = r.Close()
+	errOut := string(buf[:n])
+	if !strings.Contains(errOut, "mac_address") || !strings.Contains(errOut, "ignored") {
+		t.Errorf("expected mac_address ignored warning; stderr=%q", errOut)
+	}
+	if strings.Count(errOut, "mac_address") != 1 {
+		t.Errorf("warnOnce should fire once; stderr=%q", errOut)
 	}
 }
 

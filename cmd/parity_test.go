@@ -61,6 +61,28 @@ func TestRunExtendedFlagsAcceptedNotLeaked(t *testing.T) {
 	}
 }
 
+// TestRunMacAddressInExtendedSurfaceAccepted positively asserts that
+// --mac-address is accepted alongside other Docker flags and reaches the
+// backend as --network …,mac=… (not dropped, not leaked as --mac-address).
+func TestRunMacAddressInExtendedSurfaceAccepted(t *testing.T) {
+	c := parse(t, newRunCmd(), []string{
+		"--mac-address", "02:42:ac:11:00:02",
+		"--security-opt", "seccomp=unconfined",
+		"--pids-limit", "100",
+		"alpine",
+	})
+	got, err := buildContainerArgs(c, c.Flags().Args(), "run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsPair(got, "--network", "default,mac=02:42:ac:11:00:02") {
+		t.Errorf("mac-address should translate; got %v", got)
+	}
+	if contains(got, "--mac-address") || contains(got, "--security-opt") || contains(got, "--pids-limit") {
+		t.Errorf("docker-only flags leaked: %v", got)
+	}
+}
+
 // TestCreateExtendedFlagsAccepted ensures `create` shares the same surface.
 func TestCreateExtendedFlagsAccepted(t *testing.T) {
 	c := parse(t, newCreateCmd(), []string{"--cpuset-cpus", "0,1", "--oom-kill-disable", "alpine"})

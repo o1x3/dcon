@@ -51,6 +51,91 @@ func TestBuildRunArgsResources(t *testing.T) {
 	}
 }
 
+func TestBuildRunArgsVirtKernelAlone(t *testing.T) {
+	// Nested virt without a custom kernel is still a valid Apple flag combo
+	// (the default kernel may or may not expose /dev/kvm — that's a runtime
+	// concern, not an arg-builder one).
+	got, err := BuildRunArgs(CreateOpts{
+		Name: "u", Distro: "ubuntu", Image: "ubuntu:latest",
+		Virtualization: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsArg(got, "--virtualization") {
+		t.Errorf("missing --virtualization: %v", got)
+	}
+	if containsArg(got, "--kernel") {
+		t.Errorf("empty kernel must not emit --kernel: %v", got)
+	}
+
+	got2, err := BuildRunArgs(CreateOpts{
+		Name: "u", Distro: "ubuntu", Image: "ubuntu:latest",
+		Kernel: "/custom/vmlinux",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsPairArgs(got2, "--kernel", "/custom/vmlinux") {
+		t.Errorf("missing --kernel: %v", got2)
+	}
+	if containsArg(got2, "--virtualization") {
+		t.Errorf("virtualization=false must not emit flag: %v", got2)
+	}
+}
+
+func TestBuildRunArgsVirtKernelOrder(t *testing.T) {
+	// Flag order is part of the pure-builder contract (and keeps golden diffs
+	// stable): resources → virt → kernel → volume → image → keepalive.
+	got, err := BuildRunArgs(CreateOpts{
+		Name: "u", Distro: "ubuntu", Image: "ubuntu:latest",
+		CPUs: 1, Memory: "1G", Arch: "arm64",
+		Virtualization: true, Kernel: "/k",
+		MountHome: true, HomePath: "/Users/x",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx := func(s string) int {
+		for i, a := range got {
+			if a == s {
+				return i
+			}
+		}
+		return -1
+	}
+	order := []string{"--cpus", "--memory", "--arch", "--virtualization", "--kernel", "--volume"}
+	prev := -1
+	for _, flag := range order {
+		i := idx(flag)
+		if i < 0 {
+			t.Fatalf("missing %s in %v", flag, got)
+		}
+		if i < prev {
+			t.Errorf("flag order broken: %s at %d after previous at %d in %v", flag, i, prev, got)
+		}
+		prev = i
+	}
+}
+
+func containsArg(args []string, want string) bool {
+	for _, a := range args {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsPairArgs(args []string, flag, val string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag && args[i+1] == val {
+			return true
+		}
+	}
+	return false
+}
+
 func TestBuildRunArgsDeterministic(t *testing.T) {
 	o := CreateOpts{Name: "u", Distro: "ubuntu", Image: "ubuntu:latest", CPUs: 1, Memory: "2G", MountHome: true, HomePath: "/Users/x"}
 	a, _ := BuildRunArgs(o)

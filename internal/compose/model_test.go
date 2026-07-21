@@ -77,6 +77,9 @@ services:
   web:
     image: nginx
     mac_address: "02:42:ac:11:00:02"
+  api:
+    image: redis
+    mac_address: 02-42-ac-11-00-03
 `
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
@@ -86,7 +89,10 @@ services:
 		t.Fatalf("Load: %v", err)
 	}
 	if got := p.Services["web"].MacAddress; got != "02:42:ac:11:00:02" {
-		t.Errorf("mac_address = %q", got)
+		t.Errorf("web mac_address = %q", got)
+	}
+	if got := p.Services["api"].MacAddress; got != "02-42-ac-11-00-03" {
+		t.Errorf("api mac_address = %q", got)
 	}
 }
 
