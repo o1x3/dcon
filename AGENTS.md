@@ -6,14 +6,51 @@
 
 - The **`dcon` Go CLI** (repo root) is the source of truth and fully builds/tests
   on this Linux VM. This is the in-scope deliverable for cloud agents.
-- The **Swift desktop app** in `app/` is macOS-only (needs full Xcode + SwiftUI
-  macros). `swift` is not installed here, so `make app-*` targets cannot run in
-  Cursor Cloud. Skip them unless working on a macOS runner.
-- The **Apple `container` runtime backend is macOS-only** (Virtualization.framework).
-  It is *not* present here, so commands that actually boot/inspect containers
-  (`dcon run`, `ps`, `images`, `system start`, warm pool boot, etc.) cannot reach
-  a real backend. This is expected — CI has no backend either and the test suite
-  is pure unit tests (see `CLAUDE.md`).
+- The **Swift desktop app** in `app/` is macOS-only (see "Mac app" below).
+  `swift` is not installed here, so `make app-*` targets cannot run in Cursor
+  Cloud. Building/packaging the app is handled on macOS runners by CI
+  (`.github/workflows/app-ci.yml`, `app-release.yml`).
+- The **Apple `container` runtime backend is macOS-only** (see "Container
+  backend" below). It is *not* present here, so commands that actually
+  boot/inspect containers cannot reach a real backend. This is expected — CI has
+  no backend either and the test suite is pure unit tests (see `CLAUDE.md`).
+
+### Container backend (Apple `container`)
+
+- dcon has **no daemon of its own**: every command translates Docker-style args
+  into `container` args, shells out to the `container` binary, and re-renders the
+  output Docker-style. All backend access funnels through `internal/runtime`
+  (`Run`/`Capture*`); never call `os/exec` on `container` directly from `cmd/`.
+- The backend requires macOS + Apple silicon + Virtualization.framework, so it
+  cannot run on this Linux VM. On a real Mac it is set up once with
+  `dcon system start` and `dcon system kernel set --recommended` (see `README.md`
+  "Setup"). Read-only commands work without a guest kernel; booting containers
+  needs it.
+- Backend-touching code paths (`internal/pool` boot/destroy, real `runtime`
+  calls, warm-pool exec) are validated **manually on macOS**, not in CI. Unit
+  tests that touch warm-pool/machine state redirect it via `HOME`/
+  `XDG_CONFIG_HOME` temp dirs, so they are safe here.
+- Useful env knobs: `DCON_CONTAINER_BIN` points dcon at a specific `container`
+  binary (or a stub — see below); `DCON_DEBUG=1` echoes every underlying
+  `container <args>` line to stderr.
+
+### Mac app (`app/`, Swift / SwiftUI)
+
+- **Dcon.app** is a SwiftUI menubar + window GUI (`swift-tools-version:5.10`,
+  targets macOS 14+). It is a thin front end that **shells out to the embedded
+  `dcon` CLI for everything** (`app/Sources/Dcon/Core/CLI.swift`): lists via
+  `--format json`, streams via `logs -f`/`events`, interactive shells via
+  Terminal — so GUI behavior is 1:1 with the CLI by construction.
+- Build/test/run (macOS + full Xcode only — SwiftUI macros are not in the
+  Command Line Tools; see `README.md`): `make app-build` (`swift build`),
+  `make app-test` (`swift test`), `make app-bundle` (assemble
+  `app/dist/Dcon.app`, embedding a freshly `make build`-ed `dcon`),
+  `make app-run`, `make app-dmg`. Point Xcode at the full app first, e.g.
+  `export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`.
+- The bundled app finds its CLI at `Contents/Resources/dcon`; for local dev the
+  bridge honors a `DCON_BIN` override to point at a specific `dcon` binary.
+- App releases tag as `app-v*` (CLI releases tag as `v*`); the app version is
+  derived from `app-v*` tags by `app/scripts/package-app.sh`.
 
 ### Build / lint / test (standard commands, see `Makefile`)
 
