@@ -7,10 +7,12 @@ struct ImagesView: View {
     @EnvironmentObject var state: AppState
     @State private var searchText = ""
     @State private var selection = Set<ImageRow.ID>()
+    @State private var sortOrder = [KeyPathComparator(\ImageRow.Repository)]
 
     @State private var showPullSheet = false
     @State private var showBuildSheet = false
     @State private var tagTarget: ImageRow?
+    @State private var inspectRequest: OutputRequest?
     @State private var outputRequest: OutputRequest?
     @State private var removeTarget: ImageRow?
     @State private var forceRemove = false
@@ -27,20 +29,30 @@ struct ImagesView: View {
         }
     }
 
+    private var sorted: [ImageRow] {
+        filtered.sorted(using: sortOrder)
+    }
+
     var body: some View {
-        Group {
-            if state.images.isEmpty {
-                EmptyListView(title: "Images", symbol: "opticaldiscdrive",
-                              description: "Pull or build an image to get started.")
-            } else {
-                table
+        VStack(spacing: 0) {
+            Group {
+                if state.images.isEmpty {
+                    EmptyStateView(title: "No Images", symbol: "opticaldiscdrive",
+                                   description: "Pull or build an image to get started.",
+                                   actionTitle: "Pull an Image…") { showPullSheet = true }
+                } else {
+                    table
+                }
             }
+            Divider()
+            footer
         }
         .searchable(text: $searchText, prompt: "Filter by repository, tag, or ID")
         .toolbar { toolbarContent }
         .sheet(isPresented: $showPullSheet) { PullImageSheet() }
         .sheet(isPresented: $showBuildSheet) { BuildImageSheet() }
         .sheet(item: $tagTarget) { row in TagImageSheet(source: row) }
+        .sheet(item: $inspectRequest) { req in InspectSheet(title: req.title, args: req.args) }
         .sheet(item: $outputRequest) { req in CommandOutputSheet(title: req.title, args: req.args) }
         .confirmDialog(
             forceRemove ? "Force remove \(removeTarget?.reference ?? "")?" : "Remove \(removeTarget?.reference ?? "")?",
@@ -64,20 +76,40 @@ struct ImagesView: View {
     }
 
     private var table: some View {
-        Table(filtered, selection: $selection) {
-            TableColumn("Repository", value: \.Repository)
-            TableColumn("Tag", value: \.Tag)
-            TableColumn("Image ID") { row in
-                Text(String(row.ID.prefix(12))).font(.system(.body, design: .monospaced))
+        Table(sorted, selection: $selection, sortOrder: $sortOrder) {
+            TableColumn("Repository", value: \.Repository) { row in
+                HStack(spacing: 6) {
+                    Text(row.Repository).fontWeight(.semibold)
+                    if !row.Tag.isEmpty, row.Tag != "<none>" {
+                        Text(row.Tag)
+                            .font(.caption.weight(.medium))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(Color.accentColor.opacity(0.15), in: Capsule())
+                            .foregroundStyle(Color.accentColor)
+                    }
+                }
             }
-            TableColumn("Created", value: \.CreatedSince)
-            TableColumn("Size", value: \.Size)
+            TableColumn("Image ID", value: \.ID) { row in
+                Text(String(row.ID.prefix(12)))
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            TableColumn("Created", value: \.CreatedAt) { row in
+                Text(row.CreatedSince)
+                    .foregroundStyle(.secondary)
+            }
+            TableColumn("Size", value: \.sizeBytes) { row in
+                Text(row.Size)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
         }
         .contextMenu(forSelectionType: ImageRow.ID.self) { ids in
             contextMenuItems(for: ids)
         } primaryAction: { ids in
             if let row = filtered.first(where: { ids.contains($0.id) }) {
-                outputRequest = OutputRequest(title: "Inspect \(row.reference)", args: ["image", "inspect", row.reference])
+                inspectRequest = OutputRequest(title: "Inspect \(row.reference)", args: ["image", "inspect", row.reference])
             }
         }
     }
@@ -91,14 +123,14 @@ struct ImagesView: View {
             Button("Push") { state.performDetached(["push", row.reference]) }
             Divider()
             Button("Inspect") {
-                outputRequest = OutputRequest(title: "Inspect \(row.reference)", args: ["image", "inspect", row.reference])
+                inspectRequest = OutputRequest(title: "Inspect \(row.reference)", args: ["image", "inspect", row.reference])
             }
             Button("History") {
                 outputRequest = OutputRequest(title: "History \(row.reference)", args: ["history", row.reference])
             }
             Button("Save…") { saveImage(row) }
             Divider()
-            Button("Copy ID") { copyToPasteboard(row.ID) }
+            CopyButton(label: "Copy ID", value: row.ID)
             Divider()
             Button("Remove", role: .destructive) {
                 removeTarget = row
@@ -116,11 +148,38 @@ struct ImagesView: View {
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup {
             Button { showPullSheet = true } label: { Label("Pull…", systemImage: "arrow.down.circle") }
+                .controlSize(.regular)
             Button { showBuildSheet = true } label: { Label("Build…", systemImage: "hammer") }
+                .controlSize(.regular)
             Button { loadImage() } label: { Label("Load…", systemImage: "tray.and.arrow.down") }
+                .controlSize(.regular)
             Button { showPruneConfirm = true } label: { Label("Prune", systemImage: "trash") }
+                .controlSize(.regular)
             RefreshButton()
+                .controlSize(.regular)
         }
+    }
+
+    private var footer: some View {
+        HStack {
+            Text(footerText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .chromeStyle()
+    }
+
+    private var footerText: String {
+        let count = filtered.count
+        let noun = count == 1 ? "image" : "images"
+        let totalBytes = filtered.compactMap { parseSizeToBytes($0.Size) }.reduce(0, +)
+        guard totalBytes > 0 else { return "\(count) \(noun)" }
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return "\(count) \(noun) · \(formatter.string(fromByteCount: Int64(totalBytes)))"
     }
 
     private func loadImage() {
@@ -144,11 +203,31 @@ struct ImagesView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task { await state.perform(["save", "-o", url.path, row.reference]) }
     }
+}
 
-    private func copyToPasteboard(_ text: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
+/// Parses container/Docker-style human size strings ("70.3MB", "1.2GB",
+/// "0B") into raw bytes for sorting and the footer total. Returns nil for
+/// anything that doesn't match the decimal-SI `HumanSizeWithPrecision`
+/// format dcon itself emits (defensive, not expected in practice).
+private func parseSizeToBytes(_ text: String) -> Double? {
+    let trimmed = text.trimmingCharacters(in: .whitespaces)
+    guard let unitStart = trimmed.firstIndex(where: { $0.isLetter }) else {
+        return Double(trimmed)
     }
+    guard let value = Double(trimmed[..<unitStart]) else { return nil }
+    let multipliers: [String: Double] = [
+        "B": 1,
+        "KB": 1_000, "MB": 1_000_000, "GB": 1_000_000_000,
+        "TB": 1_000_000_000_000, "PB": 1_000_000_000_000_000,
+    ]
+    guard let multiplier = multipliers[trimmed[unitStart...].uppercased()] else { return nil }
+    return value * multiplier
+}
+
+extension ImageRow {
+    /// Parsed byte count for the sortable/summable Size column; 0 when the
+    /// string doesn't parse (e.g. an unexpected unit), which sorts smallest.
+    var sizeBytes: Double { parseSizeToBytes(Size) ?? 0 }
 }
 
 /// Sheet to pull an image by reference, streaming `dcon pull` output live.

@@ -7,9 +7,10 @@ struct VolumesView: View {
     @EnvironmentObject var state: AppState
     @State private var searchText = ""
     @State private var selection = Set<VolumeRow.ID>()
+    @State private var sortOrder = [KeyPathComparator(\VolumeRow.Name)]
 
     @State private var showCreateSheet = false
-    @State private var outputRequest: OutputRequest?
+    @State private var inspectRequest: OutputRequest?
     @State private var removeTarget: VolumeRow?
     @State private var forceRemove = false
     @State private var showRemoveConfirm = false
@@ -23,19 +24,28 @@ struct VolumesView: View {
         }
     }
 
+    private var sorted: [VolumeRow] {
+        filtered.sorted(using: sortOrder)
+    }
+
     var body: some View {
-        Group {
-            if state.volumes.isEmpty {
-                EmptyListView(title: "Volumes", symbol: "externaldrive",
-                              description: "Create a volume to persist container data.")
-            } else {
-                table
+        VStack(spacing: 0) {
+            Group {
+                if state.volumes.isEmpty {
+                    EmptyStateView(title: "No Volumes", symbol: "externaldrive",
+                                   description: "Create a volume to persist container data.",
+                                   actionTitle: "Create Volume…") { showCreateSheet = true }
+                } else {
+                    table
+                }
             }
+            Divider()
+            footer
         }
         .searchable(text: $searchText, prompt: "Filter by name or driver")
         .toolbar { toolbarContent }
         .sheet(isPresented: $showCreateSheet) { CreateVolumeSheet() }
-        .sheet(item: $outputRequest) { req in CommandOutputSheet(title: req.title, args: req.args) }
+        .sheet(item: $inspectRequest) { req in InspectSheet(title: req.title, args: req.args) }
         .confirmDialog(
             forceRemove ? "Force remove volume \(removeTarget?.Name ?? "")?" : "Remove volume \(removeTarget?.Name ?? "")?",
             isPresented: $showRemoveConfirm
@@ -50,17 +60,23 @@ struct VolumesView: View {
     }
 
     private var table: some View {
-        Table(filtered, selection: $selection) {
-            TableColumn("Name", value: \.Name)
+        Table(sorted, selection: $selection, sortOrder: $sortOrder) {
+            TableColumn("Name", value: \.Name) { row in
+                Text(row.Name).fontWeight(.semibold)
+            }
             TableColumn("Driver", value: \.Driver)
             TableColumn("Scope", value: \.Scope)
-            TableColumn("Mountpoint", value: \.Mountpoint)
+            TableColumn("Mountpoint", value: \.Mountpoint) { row in
+                Text(row.Mountpoint)
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
         }
         .contextMenu(forSelectionType: VolumeRow.ID.self) { ids in
             contextMenuItems(for: ids)
         } primaryAction: { ids in
             if let row = filtered.first(where: { ids.contains($0.id) }) {
-                outputRequest = OutputRequest(title: "Inspect \(row.Name)", args: ["volume", "inspect", row.Name])
+                inspectRequest = OutputRequest(title: "Inspect \(row.Name)", args: ["volume", "inspect", row.Name])
             }
         }
     }
@@ -70,10 +86,10 @@ struct VolumesView: View {
         let rows = state.volumes.filter { ids.contains($0.id) }
         if rows.count == 1, let row = rows.first {
             Button("Inspect") {
-                outputRequest = OutputRequest(title: "Inspect \(row.Name)", args: ["volume", "inspect", row.Name])
+                inspectRequest = OutputRequest(title: "Inspect \(row.Name)", args: ["volume", "inspect", row.Name])
             }
             Divider()
-            Button("Copy Mountpoint") { copyToPasteboard(row.Mountpoint) }
+            CopyButton(label: "Copy Mountpoint", value: row.Mountpoint)
             if !row.Mountpoint.isEmpty, FileManager.default.fileExists(atPath: row.Mountpoint) {
                 Button("Show in Finder") {
                     NSWorkspace.shared.selectFile(row.Mountpoint, inFileViewerRootedAtPath: "")
@@ -96,14 +112,25 @@ struct VolumesView: View {
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup {
             Button { showCreateSheet = true } label: { Label("Create…", systemImage: "plus") }
+                .controlSize(.regular)
             Button { showPruneConfirm = true } label: { Label("Prune", systemImage: "trash") }
+                .controlSize(.regular)
             RefreshButton()
+                .controlSize(.regular)
         }
     }
 
-    private func copyToPasteboard(_ text: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
+    private var footer: some View {
+        HStack {
+            let count = filtered.count
+            Text("\(count) \(count == 1 ? "volume" : "volumes")")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .chromeStyle()
     }
 }
 

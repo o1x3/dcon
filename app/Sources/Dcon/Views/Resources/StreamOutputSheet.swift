@@ -18,12 +18,12 @@ struct StreamOutputSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text(title).font(.headline)
-                Spacer()
+            HStack(spacing: 8) {
                 if !finished {
                     ProgressView().controlSize(.small)
                 }
+                Text(title).font(.headline).lineLimit(1).truncationMode(.middle)
+                Spacer()
                 Button(finished ? "Close" : "Stop") {
                     handle?.terminate()
                     finish()
@@ -31,9 +31,31 @@ struct StreamOutputSheet: View {
                 }
             }
             .padding(12)
+            .chromeStyle()
             Divider()
-            TextPane(text: lines.joined(separator: "\n"))
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 1) {
+                        ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                            Text(line.isEmpty ? " " : line)
+                                .font(.system(.body, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        Color.clear.frame(height: 1).id("bottom")
+                    }
+                    .padding(8)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentSurface()
+                .onChange(of: lines.count) { _, _ in
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
+                }
+            }
         }
+        .paneStyle()
         .frame(minWidth: 640, minHeight: 440)
         .task {
             do {
