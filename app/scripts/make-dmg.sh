@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Packages dist/Dcon.app into a compressed DMG with an /Applications symlink.
+#
+# Usage: scripts/make-dmg.sh [version]
+set -euo pipefail
+
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DIST="$APP_DIR/dist"
+APP="$DIST/Dcon.app"
+VERSION="${1:-${APP_VERSION:-0.0.0-dev}}"
+
+[ -d "$APP" ] || { echo "error: $APP not found — run package-app.sh first" >&2; exit 1; }
+
+STAGE="$DIST/dmg-root"
+rm -rf "$STAGE"
+mkdir -p "$STAGE"
+cp -R "$APP" "$STAGE/"
+ln -s /Applications "$STAGE/Applications"
+
+DMG="$DIST/Dcon_${VERSION}.dmg"
+rm -f "$DMG"
+hdiutil create -volname "Dcon" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+rm -rf "$STAGE"
+
+echo "==> $DMG"

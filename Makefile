@@ -11,7 +11,8 @@ LDFLAGS := -s -w \
 	-X dcon/cmd.Commit=$(COMMIT) \
 	-X dcon/cmd.Date=$(DATE)
 
-.PHONY: all build install uninstall clean test test-race cover vet fmt lint link-docker unlink-docker bench
+.PHONY: all build install uninstall clean test test-race cover vet fmt lint link-docker unlink-docker bench \
+	app-build app-test app-bundle app-dmg app-run
 
 all: build
 
@@ -56,3 +57,20 @@ fmt:
 
 bench:
 	./scripts/bench.sh
+
+# --- Desktop app (app/) ------------------------------------------------------
+
+app-build:
+	swift build --package-path app
+
+app-test:
+	swift test --package-path app
+
+app-bundle:
+	./app/scripts/package-app.sh
+
+app-dmg: app-bundle
+	./app/scripts/make-dmg.sh
+
+app-run: app-bundle
+	open app/dist/Dcon.app

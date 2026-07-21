@@ -13,3 +13,7 @@ coverage.txt
 .idea/
 .vscode/
 .claude/
+
+# Swift app
+app/.build/
+app/dist/
