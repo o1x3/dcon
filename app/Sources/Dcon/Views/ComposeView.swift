@@ -27,6 +27,8 @@ struct ComposeView: View {
                 } label: {
                     Label("Open…", systemImage: "folder.badge.plus")
                 }
+                .keyboardShortcut("o", modifiers: [.command])
+                .help("Open a compose.yaml (⌘O)")
             }
         }
     }
@@ -209,14 +211,16 @@ private struct ComposeProjectPane: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
+            .help("Bring services up (compose up -d)")
 
-            Button {
+            Button(role: .destructive) {
                 startOperation(label: "down", extra: ["down"])
             } label: {
                 Label("Down", systemImage: "poweroff")
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
+            .help("Stop and remove services (compose down)")
 
             Button {
                 startOperation(label: "pull", extra: ["pull"])
@@ -225,6 +229,7 @@ private struct ComposeProjectPane: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
+            .help("Pull the latest service images (compose pull)")
 
             Button {
                 startOperation(label: "build", extra: ["build"])
@@ -233,6 +238,7 @@ private struct ComposeProjectPane: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
+            .help("Build service images (compose build)")
 
             Button {
                 startOperation(label: "restart", extra: ["restart"])
@@ -241,6 +247,7 @@ private struct ComposeProjectPane: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
+            .help("Restart services (compose restart)")
 
             Button {
                 startOperation(label: "stop", extra: ["stop"])
@@ -249,6 +256,7 @@ private struct ComposeProjectPane: View {
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
+            .help("Stop services without removing them (compose stop)")
 
             Spacer()
             if activeStream != nil {
@@ -270,6 +278,7 @@ private struct ComposeProjectPane: View {
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
+                .help("Refresh service status")
             }
             .padding(8)
             .chromeStyle()
@@ -293,6 +302,7 @@ private struct ComposeProjectPane: View {
                 } label: {
                     Label(followingLogs ? "Stop" : "Follow", systemImage: followingLogs ? "stop.fill" : "play.fill")
                 }
+                .help(followingLogs ? "Stop following logs" : "Follow live logs (compose logs --follow)")
             }
             .padding(8)
             .chromeStyle()

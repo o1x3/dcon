@@ -147,10 +147,11 @@ struct SystemView: View {
                 Button {
                     Task { await loadDiskUsage() }
                 } label: {
-                    Image(systemName: "arrow.clockwise")
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                        .labelStyle(.iconOnly)
                 }
                 .buttonStyle(.borderless)
-                .help("Refresh")
+                .help("Refresh disk usage")
             }
             if dfRows.isEmpty {
                 Text(dfLoading ? "Loading…" : "No data")
@@ -158,36 +159,31 @@ struct SystemView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.vertical, 10)
             } else {
-                VStack(spacing: 0) {
-                    HStack {
-                        Text("Type").frame(maxWidth: .infinity, alignment: .leading)
-                        Text("Count").frame(width: 50, alignment: .trailing)
-                        Text("Size").frame(width: 70, alignment: .trailing)
-                        Text("Reclaimable").frame(width: 90, alignment: .trailing)
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 5) {
+                    GridRow {
+                        Text("Type")
+                        Text("Count").gridColumnAlignment(.trailing)
+                        Text("Size").gridColumnAlignment(.trailing)
+                        Text("Reclaimable").gridColumnAlignment(.trailing)
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .padding(.bottom, 4)
+                    Divider().gridCellColumns(4)
                     ForEach(dfRows) { row in
-                        HStack {
+                        GridRow {
                             Text(row.TypeName)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            Text(row.TotalCount)
-                                .frame(width: 50, alignment: .trailing)
-                            Text(row.Size)
-                                .frame(width: 70, alignment: .trailing)
-                            Text(row.Reclaimable)
-                                .foregroundStyle(.secondary)
-                                .frame(width: 90, alignment: .trailing)
+                            Text(row.TotalCount).monospacedDigit()
+                            Text(row.Size).monospacedDigit()
+                            Text(row.Reclaimable).monospacedDigit().foregroundStyle(.secondary)
                         }
                         .font(.callout)
-                        .padding(.vertical, 3)
-                        Divider()
+                        Divider().gridCellColumns(4)
                     }
                 }
+                .animation(.default, value: dfRows)
             }
         }
-        .padding(14)
+        .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardSurface()
     }
@@ -218,7 +214,7 @@ struct SystemView: View {
                 }
             }
         }
-        .padding(14)
+        .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardSurface()
     }
@@ -229,6 +225,7 @@ struct SystemView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .buttonStyle(.bordered)
+        .help(title)
     }
 
     // MARK: - Maintenance (prune)
@@ -245,9 +242,10 @@ struct SystemView: View {
                 } label: {
                     Label("Prune", systemImage: "trash")
                 }
+                .help("Reclaim disk space from unused data")
             }
         }
-        .padding(14)
+        .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardSurface()
         .confirmDialog(pruneConfirmMessage, isPresented: $showPruneConfirm) {
@@ -278,11 +276,18 @@ struct SystemView: View {
                           systemImage: eventStream == nil ? "play.fill" : "stop.fill")
                 }
                 .buttonStyle(.bordered)
+                .help(eventStream == nil ? "Start streaming backend events" : "Stop streaming backend events")
             }
-            TextPane(text: eventLines.joined(separator: "\n"))
-                .frame(minHeight: 160)
+            if eventLines.isEmpty {
+                Text(eventStream == nil ? "Start streaming to see backend events." : "Waiting for events…")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 160, alignment: .center)
+            } else {
+                TextPane(text: eventLines.joined(separator: "\n"))
+                    .frame(minHeight: 160)
+            }
         }
-        .padding(14)
+        .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardSurface()
     }
@@ -317,15 +322,17 @@ struct SystemView: View {
                 } label: {
                     Label("Log in…", systemImage: "person.crop.circle.badge.plus")
                 }
+                .help("Sign in to a registry")
                 Button {
                     Task { await state.perform(["logout"]) }
                 } label: {
                     Label("Log out", systemImage: "person.crop.circle.badge.minus")
                 }
+                .help("Sign out of the current registry")
                 Spacer()
             }
         }
-        .padding(14)
+        .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardSurface()
     }

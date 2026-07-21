@@ -40,15 +40,26 @@ struct MachinesView: View {
                                 .help("Default machine")
                         }
                     }
-                    .width(20)
-                    TableColumn("Name", value: \.Name)
+                    .width(min: 20, ideal: 20, max: 20)
+                    TableColumn("Name", value: \.Name) { row in
+                        Text(row.Name)
+                            .font(.system(.body, design: .monospaced))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .width(min: 100, ideal: 160)
                     TableColumn("Distro", value: \.Distro)
+                        .width(min: 80, ideal: 100)
                     TableColumn("State", sortUsing: KeyPathComparator(\.State)) { row in
                         StatusPill(text: row.State)
                     }
+                    .width(min: 70, ideal: 90)
                     TableColumn("CPUs", value: \.CPUs)
+                        .width(min: 50, ideal: 60)
                     TableColumn("Memory", value: \.Memory)
+                        .width(min: 60, ideal: 80)
                     TableColumn("Created", value: \.Created)
+                        .width(min: 90, ideal: 130)
                     TableColumn("") { row in
                         HStack(spacing: 6) {
                             Button {
@@ -58,11 +69,13 @@ struct MachinesView: View {
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
+                            .help("Open a shell in \(row.Name)")
                             actionsMenu(for: row)
                         }
                     }
-                    .width(150)
+                    .width(min: 150, ideal: 150)
                 }
+                .animation(.default, value: sortedMachines)
                 .contextMenu(forSelectionType: MachineRow.ID.self) { ids in
                     contextMenuItems(for: ids)
                 } primaryAction: { ids in
@@ -75,12 +88,12 @@ struct MachinesView: View {
         .navigationTitle("Machines")
         .toolbar {
             ToolbarItemGroup {
-                RefreshButton()
                 Button {
                     showCreateSheet = true
                 } label: {
                     Label("New Machine…", systemImage: "plus")
                 }
+                .help("Create a new machine")
             }
         }
         .sheet(isPresented: $showCreateSheet) {
@@ -127,10 +140,12 @@ struct MachinesView: View {
         Menu {
             rowActions(for: row)
         } label: {
-            Image(systemName: "ellipsis.circle")
+            Label("More Actions", systemImage: "ellipsis.circle")
+                .labelStyle(.iconOnly)
         }
         .menuStyle(.borderlessButton)
         .frame(width: 24)
+        .help("More actions for \(row.Name)")
     }
 
     @ViewBuilder
@@ -162,10 +177,16 @@ private struct NewMachineSheet: View {
     @State private var cpus = ""
     @State private var memory = ""
     @State private var mountHome = false
+    @FocusState private var nameFieldFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("New Machine").font(.headline)
+        VStack(spacing: 0) {
+            Text("New Machine")
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .chromeStyle()
+            Divider()
 
             Form {
                 Section {
@@ -175,6 +196,7 @@ private struct NewMachineSheet: View {
                         }
                     }
                     TextField("Name (optional)", text: $name)
+                        .focused($nameFieldFocused)
                 }
                 Section {
                     HStack {
@@ -190,9 +212,11 @@ private struct NewMachineSheet: View {
             }
             .formStyle(.grouped)
 
+            Divider()
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button("Create") {
                     state.performDetached(createArgs)
                     dismiss()
@@ -200,9 +224,11 @@ private struct NewMachineSheet: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(distro.trimmingCharacters(in: .whitespaces).isEmpty)
             }
+            .padding(12)
+            .chromeStyle()
         }
-        .padding(20)
-        .frame(width: 420, height: 420)
+        .frame(minWidth: 420, idealWidth: 420, minHeight: 420, idealHeight: 420)
+        .task { nameFieldFocused = true }
     }
 
     private var createArgs: [String] {

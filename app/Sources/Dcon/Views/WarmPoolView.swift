@@ -9,6 +9,7 @@ struct WarmPoolView: View {
     @State private var showPruneAllConfirm = false
     @State private var pruneImageTarget: String?
     @State private var showPruneImageConfirm = false
+    @State private var selection = Set<WarmRow.ID>()
 
     private var readyCount: Int {
         state.warmMembers.filter { $0.state == "ready" }.count
@@ -37,31 +38,55 @@ struct WarmPoolView: View {
                 } else {
                     VStack(alignment: .leading, spacing: 0) {
                         summaryRow
-                        Table(state.warmMembers) {
+                        Table(state.warmMembers, selection: $selection) {
                             TableColumn("Container ID") { row in
                                 Text(row.containerID)
                                     .font(.system(.body, design: .monospaced))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
                                     .textSelection(.enabled)
-                                    .contextMenu {
-                                        CopyButton(label: "Copy Container ID", value: row.containerID)
-                                    }
                             }
+                            .width(min: 140, ideal: 200)
                             TableColumn("Image", value: \.image)
+                                .width(min: 100, ideal: 160)
                             TableColumn("Age", value: \.age)
+                                .width(min: 50, ideal: 70)
                             TableColumn("State") { row in
                                 StatusPill(text: row.state)
                             }
+                            .width(min: 70, ideal: 90)
                             TableColumn("") { row in
-                                Button {
+                                Button(role: .destructive) {
                                     pruneImageTarget = row.image
                                     showPruneImageConfirm = true
                                 } label: {
-                                    Image(systemName: "trash")
+                                    Label("Prune", systemImage: "trash")
+                                        .labelStyle(.iconOnly)
                                 }
                                 .buttonStyle(.borderless)
                                 .help("Prune warm VMs for \(row.image)")
                             }
-                            .width(28)
+                            .width(min: 28, ideal: 28, max: 28)
+                        }
+                        .animation(.default, value: state.warmMembers)
+                        .contextMenu(forSelectionType: WarmRow.ID.self) { ids in
+                            if let row = state.warmMembers.first(where: { ids.contains($0.id) }) {
+                                CopyButton(label: "Copy Container ID", value: row.containerID)
+                                Button(role: .destructive) {
+                                    pruneImageTarget = row.image
+                                    showPruneImageConfirm = true
+                                } label: {
+                                    Label("Prune Warm VMs for \(row.image)", systemImage: "trash")
+                                }
+                            }
+                        } primaryAction: { ids in
+                            // Double-click copies the container id — there's nothing to
+                            // "open" on a single-use warm VM, and it mirrors the
+                            // per-row copy affordance already in the context menu.
+                            if let row = state.warmMembers.first(where: { ids.contains($0.id) }) {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(row.containerID, forType: .string)
+                            }
                         }
                     }
                 }
@@ -78,18 +103,19 @@ struct WarmPoolView: View {
         .navigationTitle("Warm Pool")
         .toolbar {
             ToolbarItemGroup {
-                RefreshButton()
                 Button(role: .destructive) {
                     showPruneAllConfirm = true
                 } label: {
                     Label("Prune All", systemImage: "trash")
                 }
                 .disabled(state.warmMembers.isEmpty)
+                .help("Tear down the entire warm pool")
                 Button {
                     showWarmUpSheet = true
                 } label: {
                     Label("Warm Up…", systemImage: "flame")
                 }
+                .help("Pre-boot warm VMs")
             }
         }
         .sheet(isPresented: $showWarmUpSheet) {
@@ -126,31 +152,44 @@ private struct WarmUpSheet: View {
 
     @State private var image = ""
     @State private var count = 1
+    @FocusState private var imageFieldFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Warm Up").font(.headline)
+        VStack(spacing: 0) {
+            Text("Warm Up")
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .chromeStyle()
+            Divider()
 
-            TextField("Image (e.g. alpine, python:3.12)", text: $image)
-                .textFieldStyle(.roundedBorder)
+            VStack(alignment: .leading, spacing: 16) {
+                TextField("Image (e.g. alpine, python:3.12)", text: $image)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($imageFieldFocused)
 
-            if !state.images.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(state.images.prefix(8)) { img in
-                            Button(img.reference) { image = img.reference }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
+                if !state.images.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(state.images.prefix(8)) { img in
+                                Button(img.reference) { image = img.reference }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                    .help("Use \(img.reference)")
+                            }
                         }
                     }
                 }
+
+                Stepper("Count: \(count)", value: $count, in: 1...8)
             }
+            .padding(20)
 
-            Stepper("Count: \(count)", value: $count, in: 1...8)
-
+            Divider()
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button("Warm Up") {
                     state.performDetached(["warm", "-n", String(count), trimmedImage])
                     dismiss()
@@ -158,9 +197,11 @@ private struct WarmUpSheet: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(trimmedImage.isEmpty)
             }
+            .padding(12)
+            .chromeStyle()
         }
-        .padding(20)
-        .frame(width: 420)
+        .frame(minWidth: 420, idealWidth: 420)
+        .task { imageFieldFocused = true }
     }
 
     private var trimmedImage: String { image.trimmingCharacters(in: .whitespaces) }
