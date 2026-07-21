@@ -6,14 +6,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.1] — 2026-07-21
+
+Utilize Apple container 1.1.0 upstream features in the Docker translation layer.
+
 ### Added
-- `VERSION` / `app/VERSION` files drive CLI and app releases: bumping either on
-  `main` triggers the matching release workflow (builds, tags `v*` / `app-v*`,
-  publishes a GitHub Release).
-- `install.sh` now auto-installs **Dcon.app** from the latest `app-v*` release
-  (DMG → `/Applications`) and strips quarantine xattrs on both the CLI binary
-  and the app bundle so Gatekeeper does not block first launch. Skip with
-  `DCON_SKIP_APP=1`; pin with `DCON_APP_VERSION=app-vX`.
 - **`--mac-address` on `run`/`create`** now maps to Apple container's
   `--network <name>,mac=…` form (documented in apple/container ≥ 1.0). Alone it
   attaches to `default,mac=…`; combined with `--network`/`--net` it appends
@@ -29,6 +26,20 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `property get`/`set` in favour of `~/.config/container/config.toml` (`property
   list` still works). `get`/`set` now return a clear dcon error pointing at the
   TOML file instead of an opaque backend failure.
+
+## [1.2.0] — 2026-07-21
+
+CLI/app releases driven from VERSION files, installer app support, and kernel-set
+idempotency.
+
+### Added
+- `VERSION` / `app/VERSION` files drive CLI and app releases: bumping either on
+  `main` triggers the matching release workflow (builds, tags `v*` / `app-v*`,
+  publishes a GitHub Release).
+- `install.sh` now auto-installs **Dcon.app** from the latest `app-v*` release
+  (DMG → `/Applications`) and strips quarantine xattrs on both the CLI binary
+  and the app bundle so Gatekeeper does not block first launch. Skip with
+  `DCON_SKIP_APP=1`; pin with `DCON_APP_VERSION=app-vX`.
 
 ### Fixed
 - `dcon system kernel set` is now idempotent. Apple's `container system kernel
@@ -134,5 +145,8 @@ First release. A drop-in Docker CLI for macOS, backed by Apple's `container`.
   option normalization, comma-containing flag values via `StringArray`).
 - Flag-shorthand collisions that panicked `compose run`/`logs`/`rm` and `history`.
 
-[Unreleased]: https://github.com/o1x3/dcon/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/o1x3/dcon/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/o1x3/dcon/releases/tag/v1.2.1
+[1.2.0]: https://github.com/o1x3/dcon/releases/tag/v1.2.0
+[1.1.0]: https://github.com/o1x3/dcon/releases/tag/v1.1.0
 [1.0.0]: https://github.com/o1x3/dcon/releases/tag/v1.0.0
