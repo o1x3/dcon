@@ -2,8 +2,8 @@ BINARY := dcon
 PREFIX ?= /usr/local
 BINDIR := $(PREFIX)/bin
 
-# Version metadata injected at build time.
-VERSION ?= $(shell git describe --tags --match 'v*' --always --dirty 2>/dev/null || echo 1.0.0-dev)
+# Version metadata injected at build time (root VERSION file is the source of truth).
+VERSION ?= $(shell tr -d '[:space:]' < VERSION 2>/dev/null || echo 1.0.0-dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w \

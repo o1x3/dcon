@@ -1,8 +1,13 @@
 name: Release
 
+# Publishes a CLI release when VERSION on main changes (or via manual dispatch).
+# Version is read from the root VERSION file; a matching v* tag is created.
 on:
   push:
-    tags: ['v*']
+    branches: [main]
+    paths:
+      - 'VERSION'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -16,20 +21,47 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: read VERSION
+        id: ver
+        run: |
+          VERSION=$(tr -d '[:space:]' < VERSION)
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'; then
+            echo "error: VERSION must look like 1.2.3 (got '$VERSION')" >&2
+            exit 1
+          fi
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "CLI version ${VERSION} (tag ${TAG})"
+
+      - name: skip if release already exists
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ steps.ver.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release ${{ steps.ver.outputs.tag }} already exists — skipping"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-go@v6
+        if: steps.existing.outputs.exists != 'true'
         with:
           go-version-file: go.mod
           cache: true
 
       - name: run tests
+        if: steps.existing.outputs.exists != 'true'
         run: go test ./...
 
       - name: build release binaries
+        if: steps.existing.outputs.exists != 'true'
         env:
           CGO_ENABLED: 0
         run: |
-          TAG=${GITHUB_REF_NAME}
-          VERSION=${TAG#v}
+          VERSION="${{ steps.ver.outputs.version }}"
           COMMIT=$(git rev-parse --short HEAD)
           DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           LDFLAGS="-s -w -X dcon/cmd.Version=${VERSION} -X dcon/cmd.Commit=${COMMIT} -X dcon/cmd.Date=${DATE}"
@@ -43,10 +75,10 @@ jobs:
           cd dist && shasum -a 256 *.tar.gz > checksums.txt && cat checksums.txt
 
       - name: generate release notes
-        id: notes
+        if: steps.existing.outputs.exists != 'true'
         run: |
-          TAG=${GITHUB_REF_NAME}
-          PREV=$(git tag --list 'v*' --sort=-v:refname | grep -A1 -x "$TAG" | tail -1)
+          TAG="${{ steps.ver.outputs.tag }}"
+          PREV=$(git tag --list 'v*' --sort=-v:refname | head -1)
           echo "## dcon ${TAG}" > notes.md
           echo >> notes.md
           echo "A drop-in Docker CLI for macOS, backed by Apple's container runtime." >> notes.md
@@ -58,14 +90,18 @@ jobs:
           echo >> notes.md
           echo "### Changes" >> notes.md
           if [ -n "$PREV" ] && [ "$PREV" != "$TAG" ]; then
-            git log --pretty='- %s (%h)' "${PREV}..${TAG}" >> notes.md
+            git log --pretty='- %s (%h)' "${PREV}..HEAD" >> notes.md
           else
             git log --pretty='- %s (%h)' -n 30 >> notes.md
           fi
 
       - name: publish release
+        if: steps.existing.outputs.exists != 'true'
         uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: dcon ${{ steps.ver.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           files: |
             dist/*.tar.gz
             dist/checksums.txt

@@ -7,7 +7,15 @@ set -euo pipefail
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST="$APP_DIR/dist"
 APP="$DIST/Dcon.app"
-VERSION="${1:-${APP_VERSION:-0.0.0-dev}}"
+if [ -n "${1:-}" ]; then
+  VERSION="$1"
+elif [ -n "${APP_VERSION:-}" ]; then
+  VERSION="$APP_VERSION"
+elif [ -f "$APP_DIR/VERSION" ]; then
+  VERSION="$(tr -d '[:space:]' < "$APP_DIR/VERSION")"
+else
+  VERSION="0.0.0-dev"
+fi
 
 [ -d "$APP" ] || { echo "error: $APP not found — run package-app.sh first" >&2; exit 1; }
 

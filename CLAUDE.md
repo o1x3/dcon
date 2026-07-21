@@ -51,7 +51,9 @@ To **run** dcon for real you need Apple `container` installed and started (`dcon
 
 - **Comma-bearing flags use `StringArray`, never `StringSlice`** (`-v`, `-e`, `--mount`, `--label`): `StringSlice` comma-splits and corrupts mount/env/label specs. See the flag definitions in `cmd/run.go`.
 - **Backend gaps are warned, not errored.** Docker flags the `container` backend can't honor are accepted and ignored with a one-time `dcon: warning:` (compatibility shims) so existing scripts and compose files keep working; only genuinely unsupported *commands* return a hard error.
-- Build metadata (`Version`/`Commit`/`Date`) is injected via `-ldflags` (see the `Makefile`); don't hardcode it.
+- Build metadata (`Version`/`Commit`/`Date`) is injected via `-ldflags` from the
+  root `VERSION` file (see the `Makefile`); don't hardcode it. Bumping `VERSION`
+  or `app/VERSION` on `main` triggers the release workflows.
 
 ## Docs
 

@@ -37,11 +37,20 @@ jobs:
       - name: coverage summary
         run: go tool cover -func=coverage.out | tail -1
 
+      - name: check VERSION
+        run: |
+          VERSION=$(tr -d '[:space:]' < VERSION)
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'; then
+            echo "error: VERSION must look like 1.2.3 (got '$VERSION')" >&2
+            exit 1
+          fi
+          echo "VERSION=$VERSION"
+
       - name: cross-build darwin/arm64 + amd64
         env:
           CGO_ENABLED: 0
         run: |
-          VERSION=$(git describe --tags --match 'v*' --always --dirty 2>/dev/null || echo dev)
+          VERSION=$(tr -d '[:space:]' < VERSION)
           COMMIT=$(git rev-parse --short HEAD)
           DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           LDFLAGS="-s -w -X dcon/cmd.Version=$VERSION -X dcon/cmd.Commit=$COMMIT -X dcon/cmd.Date=$DATE"

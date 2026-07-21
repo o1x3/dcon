@@ -49,8 +49,9 @@
   `export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`.
 - The bundled app finds its CLI at `Contents/Resources/dcon`; for local dev the
   bridge honors a `DCON_BIN` override to point at a specific `dcon` binary.
-- App releases tag as `app-v*` (CLI releases tag as `v*`); the app version is
-  derived from `app-v*` tags by `app/scripts/package-app.sh`.
+- App releases are driven by `app/VERSION` (CLI by root `VERSION`); bumping
+  those files on `main` publishes a GitHub Release and creates an `app-v*` /
+  `v*` tag. The app version is also read by `app/scripts/package-app.sh`.
 
 ### Build / lint / test (standard commands, see `Makefile`)
 
