@@ -7,6 +7,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `VERSION` / `app/VERSION` files drive CLI and app releases: bumping either on
+  `main` triggers the matching release workflow (builds, tags `v*` / `app-v*`,
+  publishes a GitHub Release).
 - `install.sh` now auto-installs **Dcon.app** from the latest `app-v*` release
   (DMG → `/Applications`) and strips quarantine xattrs on both the CLI binary
   and the app bundle so Gatekeeper does not block first launch. Skip with

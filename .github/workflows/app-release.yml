@@ -1,8 +1,13 @@
 name: App Release
 
+# Publishes a Dcon.app DMG when app/VERSION on main changes (or via manual dispatch).
+# Version is read from app/VERSION; a matching app-v* tag is created.
 on:
   push:
-    tags: ['app-v*']
+    branches: [main]
+    paths:
+      - 'app/VERSION'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -16,28 +21,55 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: read app/VERSION
+        id: ver
+        run: |
+          VERSION=$(tr -d '[:space:]' < app/VERSION)
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'; then
+            echo "error: app/VERSION must look like 1.2.3 (got '$VERSION')" >&2
+            exit 1
+          fi
+          TAG="app-v${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "App version ${VERSION} (tag ${TAG})"
+
+      - name: skip if release already exists
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ steps.ver.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release ${{ steps.ver.outputs.tag }} already exists — skipping"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-go@v6
+        if: steps.existing.outputs.exists != 'true'
         with:
           go-version-file: go.mod
           cache: true
 
       - name: test
+        if: steps.existing.outputs.exists != 'true'
         run: swift test --package-path app
 
       - name: package app + dmg
+        if: steps.existing.outputs.exists != 'true'
         run: |
-          TAG=${GITHUB_REF_NAME}
-          VERSION=${TAG#app-v}
+          VERSION="${{ steps.ver.outputs.version }}"
           APP_VERSION="$VERSION" ./app/scripts/package-app.sh
           APP_VERSION="$VERSION" ./app/scripts/make-dmg.sh "$VERSION"
           cd app/dist && shasum -a 256 *.dmg > checksums.txt && cat checksums.txt
 
       - name: generate release notes
-        id: notes
+        if: steps.existing.outputs.exists != 'true'
         run: |
-          TAG=${GITHUB_REF_NAME}
-          VERSION=${TAG#app-v}
-          PREV=$(git tag --list 'app-v*' --sort=-v:refname | grep -A1 -x "$TAG" | tail -1)
+          TAG="${{ steps.ver.outputs.tag }}"
+          VERSION="${{ steps.ver.outputs.version }}"
+          PREV=$(git tag --list 'app-v*' --sort=-v:refname | head -1)
           echo "## Dcon.app ${VERSION}" > notes.md
           echo >> notes.md
           echo "A native macOS app for managing containers on Apple's container runtime, with the dcon CLI embedded." >> notes.md
@@ -48,15 +80,18 @@ jobs:
           echo >> notes.md
           echo "### Changes" >> notes.md
           if [ -n "$PREV" ] && [ "$PREV" != "$TAG" ]; then
-            git log --pretty='- %s (%h)' "${PREV}..${TAG}" -- app .github/workflows/app-release.yml >> notes.md
+            git log --pretty='- %s (%h)' "${PREV}..HEAD" -- app .github/workflows/app-release.yml app/VERSION >> notes.md
           else
             git log --pretty='- %s (%h)' -n 30 -- app >> notes.md
           fi
 
       - name: publish release
+        if: steps.existing.outputs.exists != 'true'
         uses: softprops/action-gh-release@v3
         with:
-          name: Dcon.app ${{ github.ref_name }}
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: Dcon.app ${{ steps.ver.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           files: |
             app/dist/*.dmg
             app/dist/checksums.txt

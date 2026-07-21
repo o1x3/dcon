@@ -3,7 +3,7 @@
 # built from this repo so the app is self-contained.
 #
 # Usage: scripts/package-app.sh [output-dir]
-# Env:   APP_VERSION (default: git describe on app-v* tags, stripped)
+# Env:   APP_VERSION (default: contents of app/VERSION)
 set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -11,8 +11,8 @@ REPO_DIR="$(cd "$APP_DIR/.." && pwd)"
 OUT_DIR="${1:-$APP_DIR/dist}"
 
 VERSION="${APP_VERSION:-}"
-if [ -z "$VERSION" ]; then
-  VERSION="$(git -C "$REPO_DIR" describe --tags --match 'app-v*' --abbrev=0 2>/dev/null | sed 's/^app-v//' || true)"
+if [ -z "$VERSION" ] && [ -f "$APP_DIR/VERSION" ]; then
+  VERSION="$(tr -d '[:space:]' < "$APP_DIR/VERSION")"
 fi
 VERSION="${VERSION:-0.0.0-dev}"
 BUILD="$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || echo dev)"

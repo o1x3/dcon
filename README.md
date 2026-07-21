@@ -143,8 +143,11 @@ Building the app locally needs full Xcode (SwiftUI macros don't ship with the
 Command Line Tools): `sudo xcode-select -s /Applications/Xcode.app` or
 `export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`.
 
-Releases: CLI versions tag as `v*` ([Release workflow](.github/workflows/release.yml)),
-app versions tag as `app-v*` and publish a DMG ([App Release workflow](.github/workflows/app-release.yml)).
+Releases are driven by version files on `main`: bump [`VERSION`](VERSION) for the
+CLI or [`app/VERSION`](app/VERSION) for Dcon.app. The matching release workflow
+reads the file, builds, creates a `v*` / `app-v*` tag, and publishes a GitHub
+Release ([Release](.github/workflows/release.yml),
+[App Release](.github/workflows/app-release.yml)).
 
 ## Documentation
 

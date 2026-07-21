@@ -22,6 +22,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: check app/VERSION
+        run: |
+          VERSION=$(tr -d '[:space:]' < app/VERSION)
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'; then
+            echo "error: app/VERSION must look like 1.2.3 (got '$VERSION')" >&2
+            exit 1
+          fi
+          echo "app/VERSION=$VERSION"
+
       - name: swift version
         run: swift --version
 
