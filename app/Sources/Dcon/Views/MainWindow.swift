@@ -64,13 +64,16 @@ struct BackendStatusFooter: View {
     var body: some View {
         HStack(spacing: 8) {
             Circle()
-                .fill(state.systemStatus.isRunning ? Color.green : Color.red)
+                .fill(statusColor)
                 .frame(width: 9, height: 9)
-            Text("Backend \(state.systemStatus.label.lowercased())")
+            Text(statusLabel)
                 .font(.callout)
                 .foregroundStyle(.secondary)
             Spacer()
-            if state.systemStatus.isRunning {
+            if !state.runtimeAvailable {
+                Link("Install Runtime", destination: URL(string: "https://github.com/apple/container/releases")!)
+                    .controlSize(.small)
+            } else if state.systemStatus.isRunning {
                 Button("Stop") { state.performDetached(["system", "stop"]) }
                     .controlSize(.small)
             } else {
@@ -80,6 +83,16 @@ struct BackendStatusFooter: View {
         }
         .padding(10)
         .background(.bar)
+    }
+
+    private var statusColor: Color {
+        if !state.runtimeAvailable { return .orange }
+        return state.systemStatus.isRunning ? .green : .red
+    }
+
+    private var statusLabel: String {
+        if !state.runtimeAvailable { return "Runtime not installed" }
+        return "Backend \(state.systemStatus.label.lowercased())"
     }
 }
 

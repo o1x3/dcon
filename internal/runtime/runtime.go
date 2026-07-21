@@ -17,9 +17,13 @@ import (
 	"strings"
 )
 
+// wellKnownBins are install locations checked after PATH when resolving the
+// Apple container binary (signed .pkg and Homebrew cask).
+var wellKnownBins = []string{"/usr/local/bin/container", "/opt/homebrew/bin/container"}
+
 // Bin returns the path to the Apple `container` binary. It honours the
-// DCON_CONTAINER_BIN environment variable, then falls back to PATH, then to the
-// well-known install location.
+// DCON_CONTAINER_BIN environment variable, then falls back to PATH, then to
+// well-known install locations, then to /usr/local/bin/container (for error text).
 func Bin() string {
 	if v := os.Getenv("DCON_CONTAINER_BIN"); v != "" {
 		return v
@@ -27,7 +31,37 @@ func Bin() string {
 	if p, err := exec.LookPath("container"); err == nil {
 		return p
 	}
-	return "/usr/local/bin/container"
+	for _, p := range wellKnownBins {
+		if isExecutable(p) {
+			return p
+		}
+	}
+	return wellKnownBins[0]
+}
+
+func isExecutable(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	return info.Mode()&0111 != 0
+}
+
+// binMissingError is the user-facing message when the backend binary cannot be
+// executed. Shared by Run/Capture and surfaced by `dcon doctor`.
+func binMissingError(path string) error {
+	return fmt.Errorf("Apple container CLI not found at %s. Install from https://github.com/apple/container/releases (or `brew install --cask container`)", path)
+}
+
+// ensureBin verifies the resolved backend binary exists and is executable.
+// Without this, a missing install surfaces as the opaque Go exec error
+// "fork/exec …: no such file or directory".
+func ensureBin() error {
+	p := Bin()
+	if !isExecutable(p) {
+		return binMissingError(p)
+	}
+	return nil
 }
 
 // debug reports whether dcon should echo the underlying container commands.
@@ -47,6 +81,9 @@ func trace(args []string) {
 // build, ...). The returned error is an *exec.ExitError when the child exits
 // non-zero, so callers can surface the underlying exit code.
 func Run(args ...string) error {
+	if err := ensureBin(); err != nil {
+		return err
+	}
 	trace(args)
 	cmd := exec.Command(Bin(), args...)
 	cmd.Stdin = os.Stdin
@@ -58,6 +95,9 @@ func Run(args ...string) error {
 // Capture runs `container <args...>` and returns its stdout. stderr is still
 // streamed to the user so progress/errors remain visible.
 func Capture(args ...string) (string, error) {
+	if err := ensureBin(); err != nil {
+		return "", err
+	}
 	trace(args)
 	var out bytes.Buffer
 	cmd := exec.Command(Bin(), args...)
@@ -85,6 +125,9 @@ func (e *BackendError) Unwrap() error { return e.Err }
 // formatting to the user. A non-zero exit returns a *BackendError whose
 // message is the trimmed stderr text and which unwraps to the *exec.ExitError.
 func CaptureSilent(args ...string) (string, error) {
+	if err := ensureBin(); err != nil {
+		return "", err
+	}
 	trace(args)
 	var out, errb bytes.Buffer
 	cmd := exec.Command(Bin(), args...)
