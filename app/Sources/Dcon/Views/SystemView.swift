@@ -18,15 +18,19 @@ struct SystemView: View {
     @State private var eventLines: [String] = []
     @State private var eventStream: StreamHandle?
 
+    private let cardColumns = [GridItem(.adaptive(minimum: 340), spacing: 16, alignment: .top)]
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                statusCard
-                diskUsageCard
-                pruneCard
-                diagnosticsCard
-                eventsCard
-                registryCard
+                heroCard
+                LazyVGrid(columns: cardColumns, alignment: .leading, spacing: 16) {
+                    diskUsageCard
+                    diagnosticsCard
+                    maintenanceCard
+                    eventsCard
+                    registryCard
+                }
             }
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -42,45 +46,72 @@ struct SystemView: View {
         }
     }
 
-    // MARK: - Status
+    // MARK: - Hero status
 
-    private var statusCard: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 8) {
+    private var heroCard: some View {
+        Group {
+            if !state.runtimeAvailable {
+                HStack(spacing: 16) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 30))
+                        .foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Runtime Not Installed")
+                            .font(.title2.bold())
+                        Text("Apple's container runtime powers dcon's backend.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Link(destination: URL(string: "https://github.com/apple/container/releases")!) {
+                        Label("Install Runtime", systemImage: "arrow.down.circle")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                }
+            } else {
+                HStack(spacing: 16) {
                     Circle()
                         .fill(statusColor)
-                        .frame(width: 10, height: 10)
-                    Text(state.systemStatus.label)
-                        .font(.title2.bold())
+                        .frame(width: 14, height: 14)
+                        .shadow(color: statusColor.opacity(0.5), radius: 4)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Backend \(state.systemStatus.label)")
+                            .font(.title2.bold())
+                        Text(state.systemStatus.isRunning
+                            ? "The container backend is up and accepting commands."
+                            : "Start the backend to run containers.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
                     Spacer()
-                }
-                HStack(spacing: 10) {
-                    Button {
-                        state.performDetached(["system", "start"])
-                    } label: {
-                        Label("Start", systemImage: "play.fill")
-                    }
-                    .disabled(!state.runtimeAvailable || state.systemStatus.isRunning)
+                    HStack(spacing: 10) {
+                        Button {
+                            Task { await state.perform(["system", "kernel", "set", "--recommended"]) }
+                        } label: {
+                            Label("Set Recommended Kernel", systemImage: "shippingbox")
+                        }
 
-                    Button {
-                        state.performDetached(["system", "stop"])
-                    } label: {
-                        Label("Stop", systemImage: "stop.fill")
-                    }
-                    .disabled(!state.systemStatus.isRunning)
-
-                    Button {
-                        Task { await state.perform(["system", "kernel", "set", "--recommended"]) }
-                    } label: {
-                        Label("Set Recommended Kernel", systemImage: "shippingbox")
+                        Button {
+                            if state.systemStatus.isRunning {
+                                state.performDetached(["system", "stop"])
+                            } else {
+                                state.performDetached(["system", "start"])
+                            }
+                        } label: {
+                            Label(state.systemStatus.isRunning ? "Stop" : "Start",
+                                  systemImage: state.systemStatus.isRunning ? "stop.fill" : "play.fill")
+                                .frame(minWidth: 44)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(state.systemStatus.isRunning ? .red : .accentColor)
                     }
                 }
             }
-            .padding(6)
-        } label: {
-            Text("Backend").font(.headline)
         }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardSurface()
     }
 
     private var statusColor: Color {
@@ -91,39 +122,74 @@ struct SystemView: View {
         }
     }
 
+    // MARK: - Card header
+
+    @ViewBuilder
+    private func cardHeader(_ title: String, caption: String? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.headline)
+            if let caption {
+                Text(caption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
     // MARK: - Disk usage
 
     private var diskUsageCard: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Spacer()
-                    if dfLoading { ProgressView().controlSize(.small) }
-                    Button {
-                        Task { await loadDiskUsage() }
-                    } label: {
-                        Label("Refresh", systemImage: "arrow.clockwise")
-                    }
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top) {
+                cardHeader("Disk Usage", caption: "Space used by images, containers, and volumes.")
+                Spacer()
+                if dfLoading { ProgressView().controlSize(.small) }
+                Button {
+                    Task { await loadDiskUsage() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
                 }
-                if dfRows.isEmpty {
-                    Text(dfLoading ? "Loading…" : "No data")
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 8)
-                } else {
-                    Table(dfRows) {
-                        TableColumn("Type", value: \.TypeName)
-                        TableColumn("Total", value: \.TotalCount)
-                        TableColumn("Active", value: \.Active)
-                        TableColumn("Size", value: \.Size)
-                        TableColumn("Reclaimable", value: \.Reclaimable)
+                .buttonStyle(.borderless)
+                .help("Refresh")
+            }
+            if dfRows.isEmpty {
+                Text(dfLoading ? "Loading…" : "No data")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 10)
+            } else {
+                VStack(spacing: 0) {
+                    HStack {
+                        Text("Type").frame(maxWidth: .infinity, alignment: .leading)
+                        Text("Count").frame(width: 50, alignment: .trailing)
+                        Text("Size").frame(width: 70, alignment: .trailing)
+                        Text("Reclaimable").frame(width: 90, alignment: .trailing)
                     }
-                    .frame(minHeight: 150)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 4)
+                    ForEach(dfRows) { row in
+                        HStack {
+                            Text(row.TypeName)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Text(row.TotalCount)
+                                .frame(width: 50, alignment: .trailing)
+                            Text(row.Size)
+                                .frame(width: 70, alignment: .trailing)
+                            Text(row.Reclaimable)
+                                .foregroundStyle(.secondary)
+                                .frame(width: 90, alignment: .trailing)
+                        }
+                        .font(.callout)
+                        .padding(.vertical, 3)
+                        Divider()
+                    }
                 }
             }
-            .padding(6)
-        } label: {
-            Text("Disk Usage").font(.headline)
         }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardSurface()
     }
 
     private func loadDiskUsage() async {
@@ -132,26 +198,58 @@ struct SystemView: View {
         dfRows = (try? await DconCLI.shared.jsonLines(DFRow.self, ["system", "df", "--format", "json"])) ?? []
     }
 
-    // MARK: - Prune
+    // MARK: - Diagnostics
 
-    private var pruneCard: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 10) {
-                Toggle("All unused images", isOn: $pruneAllImages)
-                Toggle("Volumes", isOn: $pruneVolumes)
-                HStack {
-                    Spacer()
-                    Button(role: .destructive) {
-                        showPruneConfirm = true
-                    } label: {
-                        Label("Prune", systemImage: "trash")
-                    }
+    private var diagnosticsCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            cardHeader("Diagnostics", caption: "Run backend checks and inspect logs.")
+            VStack(spacing: 6) {
+                diagnosticButton("Doctor", symbol: "stethoscope") {
+                    outputSheet = OutputSheetRequest(title: "Doctor", args: ["doctor"])
+                }
+                diagnosticButton("Info", symbol: "info.circle") {
+                    outputSheet = OutputSheetRequest(title: "Info", args: ["info"])
+                }
+                diagnosticButton("Version", symbol: "number") {
+                    outputSheet = OutputSheetRequest(title: "Version", args: ["version"])
+                }
+                diagnosticButton("Backend Logs", symbol: "doc.text.magnifyingglass") {
+                    outputSheet = OutputSheetRequest(title: "Backend Logs", args: ["system", "logs"])
                 }
             }
-            .padding(6)
-        } label: {
-            Text("Prune").font(.headline)
         }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardSurface()
+    }
+
+    private func diagnosticButton(_ title: String, symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: symbol)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.bordered)
+    }
+
+    // MARK: - Maintenance (prune)
+
+    private var maintenanceCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            cardHeader("Maintenance", caption: "Reclaim disk space from unused data.")
+            Toggle("All unused images", isOn: $pruneAllImages)
+            Toggle("Volumes", isOn: $pruneVolumes)
+            HStack {
+                Spacer()
+                Button(role: .destructive) {
+                    showPruneConfirm = true
+                } label: {
+                    Label("Prune", systemImage: "trash")
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardSurface()
         .confirmDialog(pruneConfirmMessage, isPresented: $showPruneConfirm) {
             var args = ["system", "prune", "-f"]
             if pruneAllImages { args.append("-a") }
@@ -166,44 +264,27 @@ struct SystemView: View {
         return "This removes " + parts.joined(separator: ", ") + ". This cannot be undone."
     }
 
-    // MARK: - Diagnostics
-
-    private var diagnosticsCard: some View {
-        GroupBox {
-            HStack(spacing: 10) {
-                Button("Doctor") { outputSheet = OutputSheetRequest(title: "Doctor", args: ["doctor"]) }
-                Button("Info") { outputSheet = OutputSheetRequest(title: "Info", args: ["info"]) }
-                Button("Version") { outputSheet = OutputSheetRequest(title: "Version", args: ["version"]) }
-                Button("Backend Logs") { outputSheet = OutputSheetRequest(title: "Backend Logs", args: ["system", "logs"]) }
-                Spacer()
-            }
-            .padding(6)
-        } label: {
-            Text("Diagnostics").font(.headline)
-        }
-    }
-
     // MARK: - Events
 
     private var eventsCard: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text(eventStream == nil ? "Stopped" : "Streaming…")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button(eventStream == nil ? "Start" : "Stop") {
-                        if eventStream == nil { startEvents() } else { stopEvents() }
-                    }
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top) {
+                cardHeader("Events", caption: eventStream == nil ? "Stopped" : "Streaming…")
+                Spacer()
+                Button {
+                    if eventStream == nil { startEvents() } else { stopEvents() }
+                } label: {
+                    Label(eventStream == nil ? "Start" : "Stop",
+                          systemImage: eventStream == nil ? "play.fill" : "stop.fill")
                 }
-                TextPane(text: eventLines.joined(separator: "\n"))
-                    .frame(minHeight: 160)
+                .buttonStyle(.bordered)
             }
-            .padding(6)
-        } label: {
-            Text("Events").font(.headline)
+            TextPane(text: eventLines.joined(separator: "\n"))
+                .frame(minHeight: 160)
         }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardSurface()
     }
 
     private func startEvents() {
@@ -228,19 +309,24 @@ struct SystemView: View {
     // MARK: - Registry
 
     private var registryCard: some View {
-        GroupBox {
+        VStack(alignment: .leading, spacing: 10) {
+            cardHeader("Registry", caption: "Sign in to pull and push private images.")
             HStack(spacing: 10) {
-                Button("Log in…") {
+                Button {
                     TerminalLauncher.run(dconArgs: ["login"])
+                } label: {
+                    Label("Log in…", systemImage: "person.crop.circle.badge.plus")
                 }
-                Button("Log out") {
+                Button {
                     Task { await state.perform(["logout"]) }
+                } label: {
+                    Label("Log out", systemImage: "person.crop.circle.badge.minus")
                 }
                 Spacer()
             }
-            .padding(6)
-        } label: {
-            Text("Registry").font(.headline)
         }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardSurface()
     }
 }

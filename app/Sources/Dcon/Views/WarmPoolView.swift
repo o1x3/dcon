@@ -10,48 +10,70 @@ struct WarmPoolView: View {
     @State private var pruneImageTarget: String?
     @State private var showPruneImageConfirm = false
 
+    private var readyCount: Int {
+        state.warmMembers.filter { $0.state == "ready" }.count
+    }
+
+    private var imagesCovered: Int {
+        Set(state.warmMembers.map(\.image)).count
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             Group {
                 if state.warmMembers.isEmpty {
-                    EmptyListView(
-                        title: "Pool Empty",
-                        symbol: "flame",
-                        description: "Pre-boot warm VMs so eligible `--rm` runs start instantly."
-                    )
+                    ContentUnavailableView {
+                        Label("Pool Empty", systemImage: "flame")
+                    } description: {
+                        Text("Pre-boot warm VMs so an eligible `dcon run --rm` starts in ~90 ms instead of cold-booting in ~700 ms.")
+                    } actions: {
+                        Button {
+                            showWarmUpSheet = true
+                        } label: {
+                            Label("Warm Up…", systemImage: "flame")
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
                 } else {
-                    Table(state.warmMembers) {
-                        TableColumn("Container ID", value: \.containerID)
-                        TableColumn("Image", value: \.image)
-                        TableColumn("Age", value: \.age)
-                        TableColumn("State") { row in
-                            HStack(spacing: 6) {
-                                Circle()
-                                    .fill(row.state == "ready" ? Color.green : Color.red)
-                                    .frame(width: 8, height: 8)
-                                Text(row.state)
+                    VStack(alignment: .leading, spacing: 0) {
+                        summaryRow
+                        Table(state.warmMembers) {
+                            TableColumn("Container ID") { row in
+                                Text(row.containerID)
+                                    .font(.system(.body, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .contextMenu {
+                                        CopyButton(label: "Copy Container ID", value: row.containerID)
+                                    }
                             }
-                        }
-                        TableColumn("") { row in
-                            Button {
-                                pruneImageTarget = row.image
-                                showPruneImageConfirm = true
-                            } label: {
-                                Image(systemName: "trash")
+                            TableColumn("Image", value: \.image)
+                            TableColumn("Age", value: \.age)
+                            TableColumn("State") { row in
+                                StatusPill(text: row.state)
                             }
-                            .buttonStyle(.borderless)
-                            .help("Prune warm VMs for \(row.image)")
+                            TableColumn("") { row in
+                                Button {
+                                    pruneImageTarget = row.image
+                                    showPruneImageConfirm = true
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .buttonStyle(.borderless)
+                                .help("Prune warm VMs for \(row.image)")
+                            }
+                            .width(28)
                         }
-                        .width(28)
                     }
                 }
             }
-            Divider()
-            Text("Warm VMs are pre-booted single-use microVMs (~35 MB idle each). An eligible `dcon run --rm` claims one in ~90 ms instead of cold-booting in ~700 ms; each is destroyed after one use and the pool tops itself back up.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if !state.warmMembers.isEmpty {
+                Divider()
+                Text("Warm VMs are pre-booted single-use microVMs (~35 MB idle each). An eligible `dcon run --rm` claims one in ~90 ms instead of cold-booting in ~700 ms; each is destroyed after one use and the pool tops itself back up.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .navigationTitle("Warm Pool")
         .toolbar {
@@ -84,6 +106,15 @@ struct WarmPoolView: View {
                 Task { await state.perform(["warm", "prune", image]) }
             }
         }
+    }
+
+    private var summaryRow: some View {
+        HStack(spacing: 12) {
+            StatTile(label: "Ready VMs", value: "\(readyCount)", symbol: "checkmark.circle")
+            StatTile(label: "Images Covered", value: "\(imagesCovered)", symbol: "square.stack.3d.up")
+            Spacer()
+        }
+        .padding(12)
     }
 }
 

@@ -8,6 +8,7 @@ import UniformTypeIdentifiers
 struct ComposeView: View {
     @AppStorage("composeRecents") private var recentsData = Data()
     @State private var selected: String?
+    @State private var hoveredRecent: String?
 
     var body: some View {
         HSplitView {
@@ -33,9 +34,7 @@ struct ComposeView: View {
     private var recentsList: some View {
         List(selection: $selected) {
             ForEach(recents, id: \.self) { path in
-                Label(displayName(path), systemImage: "doc.text")
-                    .lineLimit(1)
-                    .help(path)
+                recentRow(path)
                     .tag(path)
                     .contextMenu {
                         Button("Remove from Recents", role: .destructive) {
@@ -55,6 +54,40 @@ struct ComposeView: View {
         }
     }
 
+    private func recentRow(_ path: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "doc.text")
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(displayName(path))
+                    .font(.headline)
+                    .lineLimit(1)
+                Text(parentDirectory(path))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 8)
+            if hoveredRecent == path {
+                Button {
+                    removeRecent(path)
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .help("Remove from Recents")
+            }
+        }
+        .padding(.vertical, 2)
+        .contentShape(Rectangle())
+        .help(path)
+        .onHover { hovering in
+            hoveredRecent = hovering ? path : (hoveredRecent == path ? nil : hoveredRecent)
+        }
+    }
+
     @ViewBuilder
     private var detailArea: some View {
         if let selected, recents.contains(selected) {
@@ -64,7 +97,16 @@ struct ComposeView: View {
             })
             .id(selected)
         } else {
-            ContentUnavailableView("Select a Compose Project", systemImage: "square.stack.3d.up")
+            ContentUnavailableView {
+                Label("Open a Compose File to Get Started", systemImage: "square.stack.3d.up")
+            } actions: {
+                Button {
+                    openFile()
+                } label: {
+                    Label("Open…", systemImage: "folder.badge.plus")
+                }
+                .buttonStyle(.borderedProminent)
+            }
         }
     }
 
@@ -85,6 +127,10 @@ struct ComposeView: View {
     private func displayName(_ path: String) -> String {
         let url = URL(fileURLWithPath: path)
         return url.lastPathComponent
+    }
+
+    private func parentDirectory(_ path: String) -> String {
+        URL(fileURLWithPath: path).deletingLastPathComponent().path
     }
 
     private func openFile() {
@@ -126,9 +172,9 @@ private struct ComposeProjectPane: View {
     private var fileArgs: [String] { ["compose", "-f", path] }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 0) {
             header
-            Divider()
+                .padding(16)
             operationsRow
             Divider()
             HSplitView {
@@ -136,7 +182,6 @@ private struct ComposeProjectPane: View {
                 logPane.frame(minWidth: 320)
             }
         }
-        .padding(16)
         .task { await refreshStatusLoop() }
         .onDisappear {
             activeStream?.terminate()
@@ -157,18 +202,62 @@ private struct ComposeProjectPane: View {
 
     private var operationsRow: some View {
         HStack(spacing: 8) {
-            Button("Up") { startOperation(label: "up -d", extra: ["up", "-d"]) }
-            Button("Down") { startOperation(label: "down", extra: ["down"]) }
-            Button("Pull") { startOperation(label: "pull", extra: ["pull"]) }
-            Button("Build") { startOperation(label: "build", extra: ["build"]) }
-            Button("Restart") { startOperation(label: "restart", extra: ["restart"]) }
-            Button("Stop") { startOperation(label: "stop", extra: ["stop"]) }
+            Button {
+                startOperation(label: "up -d", extra: ["up", "-d"])
+            } label: {
+                Label("Up", systemImage: "play.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+
+            Button {
+                startOperation(label: "down", extra: ["down"])
+            } label: {
+                Label("Down", systemImage: "poweroff")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
+            Button {
+                startOperation(label: "pull", extra: ["pull"])
+            } label: {
+                Label("Pull", systemImage: "arrow.down.circle")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
+            Button {
+                startOperation(label: "build", extra: ["build"])
+            } label: {
+                Label("Build", systemImage: "hammer")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
+            Button {
+                startOperation(label: "restart", extra: ["restart"])
+            } label: {
+                Label("Restart", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
+            Button {
+                startOperation(label: "stop", extra: ["stop"])
+            } label: {
+                Label("Stop", systemImage: "stop.fill")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+
             Spacer()
             if activeStream != nil {
                 ProgressView().controlSize(.small)
                 Text(streamLabel).font(.caption).foregroundStyle(.secondary)
             }
         }
+        .padding(10)
+        .chromeStyle()
     }
 
     private var statusPane: some View {
@@ -195,12 +284,14 @@ private struct ComposeProjectPane: View {
             HStack {
                 Text("Logs").font(.headline)
                 Spacer()
-                Button(followingLogs ? "Stop" : "Follow") {
+                Button {
                     if followingLogs {
                         stopStream()
                     } else {
                         startFollowLogs()
                     }
+                } label: {
+                    Label(followingLogs ? "Stop" : "Follow", systemImage: followingLogs ? "stop.fill" : "play.fill")
                 }
             }
             .padding(8)
