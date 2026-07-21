@@ -1,0 +1,64 @@
+name: App Release
+
+on:
+  push:
+    tags: ['app-v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: build · package dmg · publish
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: test
+        run: swift test --package-path app
+
+      - name: package app + dmg
+        run: |
+          TAG=${GITHUB_REF_NAME}
+          VERSION=${TAG#app-v}
+          APP_VERSION="$VERSION" ./app/scripts/package-app.sh
+          APP_VERSION="$VERSION" ./app/scripts/make-dmg.sh "$VERSION"
+          cd app/dist && shasum -a 256 *.dmg > checksums.txt && cat checksums.txt
+
+      - name: generate release notes
+        id: notes
+        run: |
+          TAG=${GITHUB_REF_NAME}
+          VERSION=${TAG#app-v}
+          PREV=$(git tag --list 'app-v*' --sort=-v:refname | grep -A1 -x "$TAG" | tail -1)
+          echo "## Dcon.app ${VERSION}" > notes.md
+          echo >> notes.md
+          echo "A native macOS app for managing containers on Apple's container runtime, with the dcon CLI embedded." >> notes.md
+          echo >> notes.md
+          echo "### Install" >> notes.md
+          echo "Download the DMG below, open it, and drag Dcon to Applications." >> notes.md
+          echo "The app is unsigned; on first launch, right-click → Open." >> notes.md
+          echo >> notes.md
+          echo "### Changes" >> notes.md
+          if [ -n "$PREV" ] && [ "$PREV" != "$TAG" ]; then
+            git log --pretty='- %s (%h)' "${PREV}..${TAG}" -- app .github/workflows/app-release.yml >> notes.md
+          else
+            git log --pretty='- %s (%h)' -n 30 -- app >> notes.md
+          fi
+
+      - name: publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: Dcon.app ${{ github.ref_name }}
+          files: |
+            app/dist/*.dmg
+            app/dist/checksums.txt
+          body_path: notes.md
+          generate_release_notes: false

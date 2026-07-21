@@ -1,0 +1,32 @@
+name: App CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - '.github/workflows/app-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - '.github/workflows/app-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: swift build · test
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: swift version
+        run: swift --version
+
+      - name: build
+        run: swift build --package-path app
+
+      - name: test
+        run: swift test --package-path app

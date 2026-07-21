@@ -1,6 +1,6 @@
 # dcon
 
-A drop-in Docker CLI for macOS, powered by Apple container. Speak `docker`, run on Apple's per-container VMs from one ~6.2 MB static binary.
+A drop-in Docker CLI for macOS, powered by Apple container. Speak `docker`, run on Apple's per-container VMs from one ~6.2 MB static binary. Ships with **Dcon.app**, a native menubar + window GUI over the same CLI.
 
 <div align="center">
 
@@ -119,6 +119,32 @@ dcon doctor                             # verify backend, kernel, builder, warm 
 
 Read-only commands (`ps`, `images`, `volume ls`, …) work without a kernel;
 booting containers needs it.
+
+## Repository layout
+
+Two deliverables, one repo:
+
+| Path | What | Build |
+|---|---|---|
+| `/` (Go) | the `dcon` CLI — the source of truth for all container behavior | `make build` · `make test` |
+| `app/` (Swift) | **Dcon.app**, a SwiftUI menubar + window GUI that drives the dcon binary | `make app-build` · `make app-test` |
+
+The app shells out to the embedded dcon CLI for everything (lists via
+`--format json`, streams via `logs -f`/`events`, interactive shells via
+Terminal), so GUI behavior is 1:1 with the CLI by construction.
+
+```sh
+make app-bundle    # assemble app/dist/Dcon.app (embeds the dcon binary)
+make app-run       # build + open the app
+make app-dmg       # package a DMG
+```
+
+Building the app locally needs full Xcode (SwiftUI macros don't ship with the
+Command Line Tools): `sudo xcode-select -s /Applications/Xcode.app` or
+`export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`.
+
+Releases: CLI versions tag as `v*` ([Release workflow](.github/workflows/release.yml)),
+app versions tag as `app-v*` and publish a DMG ([App Release workflow](.github/workflows/app-release.yml)).
 
 ## Documentation
 
