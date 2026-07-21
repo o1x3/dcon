@@ -15,6 +15,9 @@ struct ContainersView: View {
     @State private var pendingRemove: ContainerRow?
     @State private var pendingForceRemove: ContainerRow?
 
+    @State private var sortOrder: [KeyPathComparator<ContainerRow>] = [KeyPathComparator(\.Names, order: .forward)]
+    @State private var sortedRows: [ContainerRow] = []
+
     private var filtered: [ContainerRow] {
         guard !searchText.isEmpty else { return state.containers }
         let q = searchText.lowercased()
@@ -93,7 +96,7 @@ struct ContainersView: View {
     private var listPane: some View {
         Group {
             if state.containers.isEmpty {
-                EmptyListView(title: "No Containers", symbol: "shippingbox", description: "Run a container to see it here.")
+                emptyState
             } else {
                 table
             }
@@ -102,20 +105,41 @@ struct ContainersView: View {
         .paneStyle()
     }
 
+    private var emptyState: some View {
+        ContentUnavailableView {
+            Label("No Containers", systemImage: "shippingbox")
+        } description: {
+            Text("Run a container to see it here.")
+        } actions: {
+            Button {
+                showRunSheet = true
+            } label: {
+                Label("Run a Container…", systemImage: "play.fill")
+            }
+            .buttonStyle(.borderedProminent)
+        }
+    }
+
     private var table: some View {
-        Table(filtered, selection: $selection) {
-            TableColumn("Name") { row in
-                HStack(spacing: 6) {
-                    Circle().fill(statusColor(row)).frame(width: 8, height: 8)
-                    Text(row.Names.isEmpty ? row.shortID : row.Names).lineLimit(1)
+        Table(sortedRows, selection: $selection, sortOrder: $sortOrder) {
+            TableColumn("Name", sortUsing: KeyPathComparator(\.Names)) { row in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.Names.isEmpty ? row.shortID : row.Names)
+                        .fontWeight(.semibold)
+                        .lineLimit(1)
+                    Text(row.Image)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
-            TableColumn("Image", value: \.Image)
-            TableColumn("Status", value: \.Status)
-            TableColumn("Ports") { row in
+            TableColumn("Status", sortUsing: KeyPathComparator(\.Status)) { row in
+                StatusPill(text: row.State)
+            }
+            TableColumn("Ports", sortUsing: KeyPathComparator(\.Ports)) { row in
                 Text(row.Ports.isEmpty ? "–" : row.Ports).lineLimit(1)
             }
-            TableColumn("Created") { row in
+            TableColumn("Created", sortUsing: KeyPathComparator(\.CreatedAt)) { row in
                 Text(row.RunningFor.isEmpty ? row.CreatedAt : row.RunningFor)
             }
         }
@@ -131,12 +155,13 @@ struct ContainersView: View {
         } primaryAction: { ids in
             if let id = ids.first { selection = id }
         }
-    }
-
-    private func statusColor(_ row: ContainerRow) -> Color {
-        if row.isRunning { return .green }
-        if row.isPaused { return .orange }
-        return .gray
+        .onAppear { sortedRows = filtered.sorted(using: sortOrder) }
+        .onChange(of: sortOrder) { _, newOrder in
+            sortedRows = filtered.sorted(using: newOrder)
+        }
+        .onChange(of: filtered) { _, newFiltered in
+            sortedRows = newFiltered.sorted(using: sortOrder)
+        }
     }
 
     // MARK: - Detail

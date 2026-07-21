@@ -7,6 +7,7 @@ import SwiftUI
 /// `.id(container.id)` at the call site so switching the selection tears down
 /// and rebuilds it (terminating any running log stream / stats poll cleanly).
 struct ContainerDetailPane: View {
+    @EnvironmentObject var state: AppState
     let container: ContainerRow
     var onRename: () -> Void
     var onRemove: () -> Void
@@ -51,31 +52,79 @@ struct ContainerDetailPane: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Circle().fill(statusColor).frame(width: 10, height: 10)
-                Text(container.Names).font(.title3).bold()
+                Text(container.Names.isEmpty ? container.shortID : container.Names)
+                    .font(.title2)
+                    .bold()
+                    .lineLimit(1)
+                StatusPill(text: container.State)
                 Spacer()
-                Text(container.State.capitalized)
+            }
+            HStack(spacing: 6) {
+                Text(container.Image)
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text("·")
+                    .foregroundStyle(.secondary)
+                Text(container.shortID)
+                    .font(.system(.callout, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                CopyButton(label: "Copy ID", value: container.id)
+                    .controlSize(.small)
             }
-            Text(container.Image)
-                .font(.callout)
-                .foregroundStyle(.secondary)
             if !container.Ports.isEmpty {
                 Text(container.Ports)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            actionRow
         }
         .padding(12)
     }
 
-    private var statusColor: Color {
-        if container.isRunning { return .green }
-        if container.isPaused { return .orange }
-        return .gray
+    private var actionRow: some View {
+        HStack(spacing: 8) {
+            Button {
+                perform(["start", container.id])
+            } label: {
+                Label("Start", systemImage: "play.fill")
+            }
+            .disabled(container.isRunning || container.isPaused)
+
+            Button {
+                perform(["stop", container.id])
+            } label: {
+                Label("Stop", systemImage: "stop.fill")
+            }
+            .disabled(!container.isRunning)
+
+            Button {
+                perform(["restart", container.id])
+            } label: {
+                Label("Restart", systemImage: "arrow.clockwise")
+            }
+            .disabled(!container.isRunning)
+
+            Button {
+                TerminalLauncher.run(dconArgs: ["exec", "-it", container.id, "/bin/sh"])
+            } label: {
+                Label("Shell", systemImage: "terminal")
+            }
+            .disabled(!container.isRunning)
+
+            Button(role: .destructive, action: onRemove) {
+                Label("Remove", systemImage: "trash")
+            }
+            .tint(.red)
+            .disabled(container.isRunning || container.isPaused)
+        }
+        .buttonStyle(.bordered)
+    }
+
+    private func perform(_ args: [String]) {
+        Task { await state.perform(args) }
     }
 
     @ViewBuilder

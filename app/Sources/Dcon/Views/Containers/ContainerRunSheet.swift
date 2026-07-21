@@ -33,15 +33,11 @@ struct ContainerRunSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Run Container").font(.headline)
-                Spacer()
-                Button("Cancel") { dismiss() }
-                Button("Run") { launch() }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!canLaunch)
-            }
-            .padding(12)
+            Text("New Container")
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .chromeStyle()
             Divider()
             Form {
                 Section("Image") {
@@ -53,11 +49,16 @@ struct ContainerRunSheet: View {
                             .font(.callout)
                     }
                 }
-                Section("Container") {
+                Section("Identity") {
                     TextField("Name (optional)", text: $name)
+                }
+                Section("Execution") {
                     TextField("Command override (optional)", text: $command)
                     TextField("Working directory", text: $workdir)
                     TextField("User", text: $user)
+                    Toggle("Detached (-d)", isOn: $detach)
+                    Toggle("Remove on exit (--rm)", isOn: $removeOnExit)
+                    Toggle("Interactive TTY (opens in Terminal)", isOn: $interactiveTTY)
                 }
                 Section("Ports (host:container)") {
                     EditableStringRows(rows: $ports, placeholder: "8080:80")
@@ -68,15 +69,21 @@ struct ContainerRunSheet: View {
                 Section("Volumes (host:container)") {
                     EditableStringRows(rows: $volumes, placeholder: "/host/path:/container/path")
                 }
-                Section {
-                    Toggle("Detached (-d)", isOn: $detach)
-                    Toggle("Remove on exit (--rm)", isOn: $removeOnExit)
-                    Toggle("Interactive TTY (opens in Terminal)", isOn: $interactiveTTY)
-                }
             }
             .formStyle(.grouped)
+            Divider()
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Run") { launch() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canLaunch)
+            }
+            .padding(12)
+            .chromeStyle()
         }
-        .frame(width: 520, height: 640)
+        .frame(width: 560, height: 680)
     }
 
     /// Builds `["run", ...flags..., IMAGE, ...command]`. Flags must precede

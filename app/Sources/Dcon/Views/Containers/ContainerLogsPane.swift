@@ -1,27 +1,50 @@
+import AppKit
 import SwiftUI
 
 /// Live-following log view (`dcon logs --follow -n 500 CONTAINER`). Lines are
 /// capped at ~5000 to bound memory on chatty containers. The stream is torn
 /// down on disappear (parent gives this pane a fresh `.id` per selection, so
 /// switching containers naturally terminates the old stream).
+///
+/// The filter field only narrows what's *displayed* — the underlying buffer
+/// (and its 5000-line cap) is untouched, so Export… always writes the full
+/// unfiltered log.
 struct ContainerLogsPane: View {
     let containerID: String
 
     @State private var lines: [String] = []
     @State private var handle: StreamHandle?
     @State private var isFollowing = false
+    @State private var filterText = ""
+    @State private var autoscroll = true
 
     private static let lineCap = 5000
 
+    private var filteredLines: [String] {
+        guard !filterText.isEmpty else { return lines }
+        let q = filterText.lowercased()
+        return lines.filter { $0.lowercased().contains(q) }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
+            HStack(spacing: 8) {
                 Button(isFollowing ? "Pause" : "Resume") { toggleFollow() }
                 Button("Clear") { lines.removeAll() }
+                TextField("Filter", text: $filterText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 180)
+                Toggle("Autoscroll", isOn: $autoscroll)
+                    .toggleStyle(.checkbox)
                 Spacer()
-                Text("\(lines.count) lines")
+                Text(filterText.isEmpty ? "\(lines.count) lines" : "\(filteredLines.count) / \(lines.count) lines")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Button {
+                    exportLogs()
+                } label: {
+                    Label("Export…", systemImage: "square.and.arrow.up")
+                }
             }
             .padding(8)
             .chromeStyle()
@@ -29,7 +52,7 @@ struct ContainerLogsPane: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 1) {
-                        ForEach(Array(lines.enumerated()), id: \.offset) { idx, line in
+                        ForEach(Array(filteredLines.enumerated()), id: \.offset) { idx, line in
                             Text(line)
                                 .font(.system(.caption, design: .monospaced))
                                 .textSelection(.enabled)
@@ -41,8 +64,8 @@ struct ContainerLogsPane: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentSurface()
-                .onChange(of: lines.count) { _, newCount in
-                    guard newCount > 0 else { return }
+                .onChange(of: filteredLines.count) { _, newCount in
+                    guard autoscroll, newCount > 0 else { return }
                     proxy.scrollTo(newCount - 1, anchor: .bottom)
                 }
             }
@@ -72,6 +95,20 @@ struct ContainerLogsPane: View {
         handle?.terminate()
         handle = nil
         isFollowing = false
+    }
+
+    /// Writes the full (unfiltered) log buffer to a user-chosen file.
+    private func exportLogs() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "\(String(containerID.prefix(12)))-logs.txt"
+        panel.prompt = "Export"
+        panel.message = "Export the full log buffer"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            lines.append("[dcon: failed to export logs — \(error.localizedDescription)]")
+        }
     }
 
     private func toggleFollow() {

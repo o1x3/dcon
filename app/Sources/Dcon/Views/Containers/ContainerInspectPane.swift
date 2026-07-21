@@ -1,16 +1,17 @@
 import SwiftUI
 
-/// One-shot `dcon inspect CONTAINER` view, refreshable, with a Copy button.
+/// One-shot `dcon inspect CONTAINER` view, refreshable, rendered as a
+/// structured JSON tree (with a raw-text fallback) via `JSONInspectorView`.
 struct ContainerInspectPane: View {
     let containerID: String
 
-    @State private var output = "Loading…"
+    @State private var output = ""
+    @State private var loaded = false
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 Spacer()
-                Button("Copy") { copyToPasteboard(output) }
                 Button {
                     Task { await load() }
                 } label: {
@@ -20,7 +21,11 @@ struct ContainerInspectPane: View {
             .padding(8)
             .chromeStyle()
             Divider()
-            TextPane(text: output)
+            if loaded {
+                JSONInspectorView(jsonText: output)
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task { await load() }
@@ -32,5 +37,6 @@ struct ContainerInspectPane: View {
         } catch {
             output = error.localizedDescription
         }
+        loaded = true
     }
 }
