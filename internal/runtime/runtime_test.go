@@ -3,6 +3,7 @@ package runtime
 import (
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -37,6 +38,20 @@ func TestBinFallback(t *testing.T) {
 	// Either resolves via PATH or falls back to the well-known location.
 	if got := Bin(); got == "" {
 		t.Error("Bin() returned empty")
+	}
+}
+
+func TestEnsureBinMissing(t *testing.T) {
+	t.Setenv("DCON_CONTAINER_BIN", "/no/such/container/binary")
+	err := Run("system", "start")
+	if err == nil {
+		t.Fatal("expected error when backend binary is missing")
+	}
+	if got := err.Error(); !strings.Contains(got, "Apple container CLI not found") {
+		t.Errorf("Run error = %q; want friendly missing-binary message", got)
+	}
+	if got := err.Error(); strings.Contains(got, "fork/exec") {
+		t.Errorf("Run error should not expose fork/exec: %q", got)
 	}
 }
 

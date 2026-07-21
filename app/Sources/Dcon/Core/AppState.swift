@@ -46,6 +46,7 @@ final class AppState: ObservableObject {
     @Published var warmMembers: [WarmRow] = []
     @Published var stats: [StatsRow] = []
     @Published var systemStatus: SystemStatus = .unknown("not checked")
+    @Published var runtimeAvailable: Bool = true
     @Published var cliAvailable: Bool = true
 
     // UX
@@ -80,8 +81,9 @@ final class AppState: ObservableObject {
         cliAvailable = cli.binaryURL != nil
         guard cliAvailable else { return }
 
+        await refreshRuntimeAvailable()
         await refreshSystemStatus()
-        guard systemStatus.isRunning else {
+        guard runtimeAvailable, systemStatus.isRunning else {
             containers = []
             stats = []
             machines = []
@@ -105,6 +107,10 @@ final class AppState: ObservableObject {
     }
 
     func refreshSystemStatus() async {
+        guard runtimeAvailable else {
+            systemStatus = .unknown("runtime not installed")
+            return
+        }
         guard let out = try? await cli.capture(["system", "status"]) else {
             systemStatus = .unknown("status unavailable")
             return
@@ -120,6 +126,21 @@ final class AppState: ObservableObject {
         case .some(let s): systemStatus = s.contains("stop") ? .stopped : .unknown(s)
         case .none: systemStatus = out.lowercased().contains("running") ? .running : .stopped
         }
+    }
+
+    /// Probe whether Apple's `container` runtime is installed (`dcon version`).
+    func refreshRuntimeAvailable() async {
+        struct VersionInfo: Decodable {
+            struct Component: Decodable { let Version: String }
+            let Server: Component
+        }
+        guard let out = try? await cli.capture(["version", "--format", "json"]),
+              let data = out.data(using: .utf8),
+              let info = try? JSONDecoder().decode(VersionInfo.self, from: data) else {
+            runtimeAvailable = false
+            return
+        }
+        runtimeAvailable = info.Server.Version != "unknown"
     }
 
     /// Fetch live stats once (`stats --no-stream`); used by the containers view.

@@ -61,7 +61,7 @@ struct SystemView: View {
                     } label: {
                         Label("Start", systemImage: "play.fill")
                     }
-                    .disabled(state.systemStatus.isRunning)
+                    .disabled(!state.runtimeAvailable || state.systemStatus.isRunning)
 
                     Button {
                         state.performDetached(["system", "stop"])
