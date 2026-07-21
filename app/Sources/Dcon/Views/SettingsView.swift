@@ -1,4 +1,5 @@
 import SwiftUI
+import ServiceManagement
 
 /// App preferences (⌘,): polling cadence, CLI location, appearance.
 struct SettingsView: View {
@@ -7,6 +8,8 @@ struct SettingsView: View {
     @AppStorage(AppSettings.dconPathKey) private var dconPath = ""
     @AppStorage(AppSettings.appearanceKey) private var appearance = AppearanceChoice.system.rawValue
     @AppStorage(AppSettings.startBackendOnLaunchKey) private var startBackendOnLaunch = false
+    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var launchAtLoginError: String?
 
     var body: some View {
         Form {
@@ -20,6 +23,27 @@ struct SettingsView: View {
                     (AppearanceChoice(rawValue: new) ?? .system).apply()
                 }
                 Toggle("Start backend when the app launches", isOn: $startBackendOnLaunch)
+                VStack(alignment: .leading, spacing: 2) {
+                    Toggle("Launch Dcon at login", isOn: $launchAtLogin)
+                        .onChange(of: launchAtLogin) { _, enable in
+                            do {
+                                if enable {
+                                    try SMAppService.mainApp.register()
+                                } else {
+                                    try SMAppService.mainApp.unregister()
+                                }
+                                launchAtLoginError = nil
+                            } catch {
+                                launchAtLoginError = error.localizedDescription
+                                launchAtLogin = SMAppService.mainApp.status == .enabled
+                            }
+                        }
+                    if let launchAtLoginError {
+                        Text(launchAtLoginError)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
             }
 
             Section("Refresh") {

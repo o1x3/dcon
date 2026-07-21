@@ -31,7 +31,12 @@ struct DconApp: App {
             MenuBarView()
                 .environmentObject(state)
         } label: {
-            Image(systemName: state.systemStatus.isRunning ? "shippingbox.fill" : "shippingbox")
+            if state.systemStatus.isRunning && !state.runningContainers.isEmpty {
+                Label("\(state.runningContainers.count)", systemImage: "shippingbox.fill")
+                    .labelStyle(.titleAndIcon)
+            } else {
+                Image(systemName: state.systemStatus.isRunning ? "shippingbox.fill" : "shippingbox")
+            }
         }
     }
 }

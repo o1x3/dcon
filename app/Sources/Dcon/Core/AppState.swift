@@ -52,6 +52,9 @@ final class AppState: ObservableObject {
     // UX
     @Published var lastError: String?
     @Published var busy: Bool = false
+    /// False until the first full refresh finishes — lets the window show a
+    /// connecting state instead of flashing empty tables at launch.
+    @Published var initialLoadComplete: Bool = false
 
     private var pollTask: Task<Void, Never>?
 
@@ -79,6 +82,7 @@ final class AppState: ObservableObject {
     /// silent (the backend may simply be stopped); explicit actions surface
     /// their own errors.
     func refreshAll() async {
+        defer { initialLoadComplete = true }
         cliAvailable = cli.binaryURL != nil
         guard cliAvailable else { return }
 

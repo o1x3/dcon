@@ -199,6 +199,7 @@ struct InspectSheet: View {
         }
         .paneStyle()
         .frame(minWidth: 640, minHeight: 480)
+        .onExitCommand { dismiss() }
         .task {
             do {
                 output = try await DconCLI.shared.capture(args)

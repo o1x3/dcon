@@ -23,17 +23,19 @@ struct CommandOutputSheet: View {
     let title: String
     let args: [String]
     @Environment(\.dismiss) private var dismiss
-    @State private var output = "Loading…"
+    @State private var output = ""
+    @State private var loaded = false
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 Text(title).font(.headline)
                 Spacer()
-                Button("Copy") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(output, forType: .string)
+                if !loaded {
+                    ProgressView().controlSize(.small)
                 }
+                CopyButton(label: "Copy", value: output)
+                    .disabled(!loaded)
                 Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
             }
             .padding(12)
@@ -43,12 +45,14 @@ struct CommandOutputSheet: View {
         }
         .paneStyle()
         .frame(minWidth: 640, minHeight: 440)
+        .onExitCommand { dismiss() }
         .task {
             do {
                 output = try await DconCLI.shared.capture(args)
             } catch {
                 output = error.localizedDescription
             }
+            loaded = true
         }
     }
 }

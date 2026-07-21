@@ -28,6 +28,22 @@ struct MainWindow: View {
         } detail: {
             detailView
                 .paneStyle()
+                .navigationTitle(state.section.rawValue)
+                .toolbar {
+                    ToolbarItemGroup(placement: .primaryAction) {
+                        if state.busy {
+                            ProgressView()
+                                .controlSize(.small)
+                                .help("Working…")
+                        }
+                        Button {
+                            Task { await state.refreshAll() }
+                        } label: {
+                            Label("Refresh", systemImage: "arrow.clockwise")
+                        }
+                        .help("Refresh all data (⌘R)")
+                    }
+                }
         }
         .navigationSplitViewStyle(.balanced)
         .alert("dcon", isPresented: Binding(
@@ -66,6 +82,13 @@ struct MainWindow: View {
     private var detailView: some View {
         if !state.cliAvailable {
             MissingCLIView()
+        } else if !state.initialLoadComplete {
+            VStack(spacing: 12) {
+                ProgressView()
+                Text("Connecting to dcon…")
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             switch state.section {
             case .containers: ContainersView()
