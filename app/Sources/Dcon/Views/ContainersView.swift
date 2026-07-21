@@ -32,14 +32,17 @@ struct ContainersView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
+        // HSplitView, not a nested NavigationSplitView: the main window already
+        // provides the navigation chrome, and nesting split views clips the
+        // detail pane and duplicates toolbars.
+        HSplitView {
             listPane
-                .navigationSplitViewColumnWidth(min: 380, ideal: 480)
-        } detail: {
+                .frame(minWidth: 340, idealWidth: 460)
             detailPane
                 .paneStyle()
+                .frame(minWidth: 420)
+                .layoutPriority(1)
         }
-        .navigationSplitViewStyle(.balanced)
         .toolbar {
             ToolbarItemGroup {
                 Button {

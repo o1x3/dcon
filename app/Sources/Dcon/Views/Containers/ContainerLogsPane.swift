@@ -29,15 +29,28 @@ struct ContainerLogsPane: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Button(isFollowing ? "Pause" : "Resume") { toggleFollow() }
-                    .help(isFollowing ? "Pause following logs" : "Resume following logs")
-                Button("Clear") { lines.removeAll() }
-                    .help("Clear the log buffer")
+                Button {
+                    toggleFollow()
+                } label: {
+                    Label(isFollowing ? "Pause" : "Resume",
+                          systemImage: isFollowing ? "pause.fill" : "play.fill")
+                        .labelStyle(.iconOnly)
+                }
+                .help(isFollowing ? "Pause following logs" : "Resume following logs")
+
+                Button {
+                    lines.removeAll()
+                } label: {
+                    Label("Clear", systemImage: "xmark.bin")
+                        .labelStyle(.iconOnly)
+                }
+                .help("Clear the log buffer")
+
                 HStack(spacing: 4) {
                     Image(systemName: "magnifyingglass")
                         .foregroundStyle(.secondary)
                     TextField("Filter", text: $filterText)
-                        .textFieldStyle(.roundedBorder)
+                        .textFieldStyle(.plain)
                     if !filterText.isEmpty {
                         Button {
                             filterText = ""
@@ -50,21 +63,39 @@ struct ContainerLogsPane: View {
                         .help("Clear filter")
                     }
                 }
-                .frame(width: 200)
-                Toggle("Autoscroll", isOn: $autoscroll)
-                    .toggleStyle(.checkbox)
-                Spacer()
-                Text(filterText.isEmpty ? "\(lines.count) lines" : "\(filteredLines.count) / \(lines.count) lines")
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+                .frame(minWidth: 100, maxWidth: 260)
+
+                Toggle(isOn: $autoscroll) {
+                    Label("Autoscroll", systemImage: "arrow.down.to.line")
+                        .labelStyle(.iconOnly)
+                }
+                .toggleStyle(.button)
+                .help(autoscroll ? "Autoscroll on — click to disable" : "Autoscroll off — click to follow new lines")
+
+                Spacer(minLength: 4)
+
+                Text(filterText.isEmpty ? "\(lines.count) lines" : "\(filteredLines.count)/\(lines.count)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .fixedSize()
+
                 Button {
                     exportLogs()
                 } label: {
                     Label("Export…", systemImage: "square.and.arrow.up")
+                        .labelStyle(.iconOnly)
                 }
                 .help("Export the full log buffer to a file")
             }
-            .padding(8)
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
             .chromeStyle()
             Divider()
             ScrollViewReader { proxy in

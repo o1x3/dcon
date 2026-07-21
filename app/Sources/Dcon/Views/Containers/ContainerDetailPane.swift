@@ -67,13 +67,16 @@ struct ContainerDetailPane: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .truncationMode(.middle)
                 Text("·")
                     .foregroundStyle(.secondary)
                 Text(container.shortID)
                     .font(.system(.callout, design: .monospaced))
                     .foregroundStyle(.secondary)
+                    .fixedSize()
                 CopyButton(label: "Copy ID", value: container.id)
                     .controlSize(.small)
+                    .fixedSize()
             }
             if !container.Ports.isEmpty {
                 Text(container.Ports)
@@ -86,41 +89,65 @@ struct ContainerDetailPane: View {
     }
 
     private var actionRow: some View {
+        // Full labels when the pane is wide enough, icon-only (with tooltips)
+        // when it isn't — never truncated label text like "Res…".
+        ViewThatFits(in: .horizontal) {
+            actionButtons(iconOnly: false)
+            actionButtons(iconOnly: true)
+        }
+    }
+
+    private func actionButtons(iconOnly: Bool) -> some View {
         HStack(spacing: 8) {
             Button {
                 perform(["start", container.id])
             } label: {
-                Label("Start", systemImage: "play.fill")
+                styled(Label("Start", systemImage: "play.fill"), iconOnly: iconOnly)
             }
             .disabled(container.isRunning || container.isPaused)
+            .help("Start the container")
 
             Button {
                 perform(["stop", container.id])
             } label: {
-                Label("Stop", systemImage: "stop.fill")
+                styled(Label("Stop", systemImage: "stop.fill"), iconOnly: iconOnly)
             }
             .disabled(!container.isRunning)
+            .help("Stop the container")
 
             Button {
                 perform(["restart", container.id])
             } label: {
-                Label("Restart", systemImage: "arrow.clockwise")
+                styled(Label("Restart", systemImage: "arrow.clockwise"), iconOnly: iconOnly)
             }
             .disabled(!container.isRunning)
+            .help("Restart the container")
 
             Button {
                 TerminalLauncher.run(dconArgs: ["exec", "-it", container.id, "/bin/sh"])
             } label: {
-                Label("Shell", systemImage: "terminal")
+                styled(Label("Shell", systemImage: "terminal"), iconOnly: iconOnly)
             }
             .disabled(!container.isRunning)
+            .help("Open a shell in Terminal")
 
             Button(role: .destructive, action: onRemove) {
-                Label("Remove", systemImage: "trash")
+                styled(Label("Remove", systemImage: "trash"), iconOnly: iconOnly)
             }
             .disabled(container.isRunning || container.isPaused)
+            .help("Remove the container")
         }
         .buttonStyle(.bordered)
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    @ViewBuilder
+    private func styled(_ label: Label<Text, Image>, iconOnly: Bool) -> some View {
+        if iconOnly {
+            label.labelStyle(.iconOnly)
+        } else {
+            label.fixedSize()
+        }
     }
 
     private func perform(_ args: [String]) {
