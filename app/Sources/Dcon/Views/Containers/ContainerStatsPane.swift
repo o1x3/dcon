@@ -25,11 +25,11 @@ struct ContainerStatsPane: View {
             if let stats {
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: 12)], spacing: 12) {
-                        StatTile(title: "CPU", value: stats.CPUPerc)
-                        StatTile(title: "Memory", value: "\(stats.MemUsage)  (\(stats.MemPerc))")
-                        StatTile(title: "Net I/O", value: stats.NetIO)
-                        StatTile(title: "Block I/O", value: stats.BlockIO)
-                        StatTile(title: "PIDs", value: stats.PIDs)
+                        StatTile(label: "CPU", value: stats.CPUPerc)
+                        StatTile(label: "Memory", value: "\(stats.MemUsage)  (\(stats.MemPerc))")
+                        StatTile(label: "Net I/O", value: stats.NetIO)
+                        StatTile(label: "Block I/O", value: stats.BlockIO)
+                        StatTile(label: "PIDs", value: stats.PIDs)
                     }
                     .padding(12)
                 }
@@ -59,24 +59,5 @@ struct ContainerStatsPane: View {
     private func stopPolling() {
         pollTask?.cancel()
         pollTask = nil
-    }
-}
-
-private struct StatTile: View {
-    let title: String
-    let value: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title.uppercased())
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.title3)
-                .monospacedDigit()
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface()
     }
 }

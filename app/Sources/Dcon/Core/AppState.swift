@@ -59,12 +59,13 @@ final class AppState: ObservableObject {
 
     // MARK: - Polling
 
-    func startPolling(interval: TimeInterval = 3) {
+    func startPolling() {
         guard pollTask == nil else { return }
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refreshAll()
-                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                // Interval is re-read each cycle so Settings changes apply live.
+                try? await Task.sleep(nanoseconds: UInt64(AppSettings.pollInterval * 1_000_000_000))
             }
         }
     }

@@ -8,12 +8,12 @@ struct MainWindow: View {
             List(selection: $state.section) {
                 Section("Resources") {
                     ForEach([SidebarSection.containers, .images, .volumes, .networks]) { s in
-                        Label(s.rawValue, systemImage: s.symbol).tag(s)
+                        sidebarRow(s)
                     }
                 }
                 Section("Environments") {
                     ForEach([SidebarSection.machines, .warmPool, .compose]) { s in
-                        Label(s.rawValue, systemImage: s.symbol).tag(s)
+                        sidebarRow(s)
                     }
                 }
                 Section {
@@ -37,6 +37,28 @@ struct MainWindow: View {
             Button("OK", role: .cancel) { state.lastError = nil }
         } message: {
             Text(state.lastError ?? "")
+        }
+    }
+
+    /// Sidebar row with a live item-count badge (running/total for containers).
+    @ViewBuilder
+    private func sidebarRow(_ s: SidebarSection) -> some View {
+        let label = Label(s.rawValue, systemImage: s.symbol)
+        switch s {
+        case .containers where !state.containers.isEmpty:
+            label.tag(s).badge(Text("\(state.runningContainers.count)/\(state.containers.count)"))
+        case .images where !state.images.isEmpty:
+            label.tag(s).badge(state.images.count)
+        case .volumes where !state.volumes.isEmpty:
+            label.tag(s).badge(state.volumes.count)
+        case .networks where !state.networks.isEmpty:
+            label.tag(s).badge(state.networks.count)
+        case .machines where !state.machines.isEmpty:
+            label.tag(s).badge(state.machines.count)
+        case .warmPool where !state.warmMembers.isEmpty:
+            label.tag(s).badge(state.warmMembers.count)
+        default:
+            label.tag(s)
         }
     }
 

@@ -32,6 +32,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp "$BIN" "$APP/Contents/MacOS/Dcon"
 cp "$REPO_DIR/dcon" "$APP/Contents/Resources/dcon"
+cp "$APP_DIR/Assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 sed -e "s/APP_VERSION/$VERSION/" -e "s/APP_BUILD/$BUILD/" \
   "$APP_DIR/Support/Info.plist" > "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"

@@ -74,15 +74,20 @@ final class DconCLI {
     static let shared = DconCLI()
 
     /// Resolved path to the dcon binary. Resolution order:
-    /// 1. DCON_BIN environment variable
-    /// 2. dcon bundled in the app's Resources
-    /// 3. Well-known install locations
-    /// 4. First `dcon` on PATH
+    /// 1. Explicit path from Settings
+    /// 2. DCON_BIN environment variable
+    /// 3. dcon bundled in the app's Resources
+    /// 4. Well-known install locations
+    /// 5. First `dcon` on PATH
     private(set) lazy var binaryURL: URL? = Self.locateBinary()
 
     static func locateBinary() -> URL? {
         let fm = FileManager.default
         var candidates: [String] = []
+        let custom = AppSettings.dconPath
+        if !custom.isEmpty {
+            candidates.append((custom as NSString).expandingTildeInPath)
+        }
         if let env = ProcessInfo.processInfo.environment["DCON_BIN"], !env.isEmpty {
             candidates.append(env)
         }
