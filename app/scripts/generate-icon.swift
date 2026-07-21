@@ -1,5 +1,8 @@
-// Renders the Dcon app icon: a macOS-style rounded square with a blue-slate
-// gradient and the shippingbox symbol, exported as an .icns.
+// Renders a vector approximation of the Dcon app icon (macOS Big Sur+ style):
+// deep slate→ocean gradient, soft isometric microVM cube, cyan terminal caret.
+// Master artwork lives at app/Assets/AppIcon-1024.png; prefer packing that via
+//   python3 app/scripts/generate_icon.py
+// when regenerating AppIcon.icns. This script is a code-only fallback on macOS.
 //
 // Usage: swift app/scripts/generate-icon.swift app/Assets/AppIcon.icns
 import AppKit
@@ -17,42 +20,77 @@ func drawIcon(size: CGFloat) -> NSImage {
     let radius = tile.width * 0.224
     let path = NSBezierPath(roundedRect: tile, xRadius: radius, yRadius: radius)
 
-    // Background gradient: deep slate to blue.
+    // Background: deep ink → ocean blue (no hard glass split).
     let gradient = NSGradient(colors: [
-        NSColor(calibratedRed: 0.09, green: 0.14, blue: 0.24, alpha: 1),
-        NSColor(calibratedRed: 0.13, green: 0.34, blue: 0.65, alpha: 1),
+        NSColor(calibratedRed: 0.04, green: 0.07, blue: 0.13, alpha: 1), // bottom
+        NSColor(calibratedRed: 0.11, green: 0.37, blue: 0.66, alpha: 1), // top
     ])!
     path.setClip()
     gradient.draw(in: tile, angle: 90)
 
-    // Subtle top sheen.
+    // Soft top sheen (continuous, not a midline gloss band).
     let sheen = NSGradient(colors: [
-        NSColor(calibratedWhite: 1, alpha: 0.18),
+        NSColor(calibratedWhite: 1, alpha: 0.16),
         NSColor(calibratedWhite: 1, alpha: 0),
     ])!
-    sheen.draw(in: NSRect(x: tile.minX, y: tile.midY, width: tile.width, height: tile.height / 2), angle: 90)
+    sheen.draw(
+        in: NSRect(x: tile.minX, y: tile.midY, width: tile.width, height: tile.height / 2),
+        angle: 90
+    )
 
-    // Glyph: shippingbox, white, centered.
-    let config = NSImage.SymbolConfiguration(pointSize: size * 0.42, weight: .medium)
-    if let symbol = NSImage(systemSymbolName: "shippingbox.fill", accessibilityDescription: nil)?
-        .withSymbolConfiguration(config) {
-        let tinted = NSImage(size: symbol.size)
-        tinted.lockFocus()
-        NSColor.white.set()
-        let r = NSRect(origin: .zero, size: symbol.size)
-        symbol.draw(in: r)
-        r.fill(using: .sourceAtop)
-        tinted.unlockFocus()
+    // Drop shadow under cube.
+    let shadow = NSShadow()
+    shadow.shadowColor = NSColor(calibratedRed: 0.01, green: 0.03, blue: 0.08, alpha: 0.55)
+    shadow.shadowBlurRadius = size * 0.04
+    shadow.shadowOffset = NSSize(width: 0, height: -size * 0.01)
+    shadow.set()
 
-        let glyphW = tile.width * 0.56
-        let glyphH = glyphW * (tinted.size.height / tinted.size.width)
-        let glyphRect = NSRect(
-            x: tile.midX - glyphW / 2,
-            y: tile.midY - glyphH / 2,
-            width: glyphW, height: glyphH
-        )
-        tinted.draw(in: glyphRect, from: .zero, operation: .sourceOver, fraction: 0.96)
+    let cx = tile.midX
+    let cy = tile.midY + size * 0.01
+    let u = size * 0.175
+    let v = size * 0.10
+    let h = size * 0.235
+
+    let T = NSPoint(x: cx, y: cy + h * 0.55)
+    let L = NSPoint(x: cx - u, y: cy + h * 0.55 - v)
+    let R = NSPoint(x: cx + u, y: cy + h * 0.55 - v)
+    let M = NSPoint(x: cx, y: cy + h * 0.55 - 2 * v)
+    let BL = NSPoint(x: cx - u, y: cy + h * 0.55 - v - h)
+    let BR = NSPoint(x: cx + u, y: cy + h * 0.55 - v - h)
+    let B = NSPoint(x: cx, y: cy + h * 0.55 - 2 * v - h)
+
+    func fill(_ pts: [NSPoint], _ color: NSColor) {
+        let p = NSBezierPath()
+        p.move(to: pts[0])
+        for pt in pts.dropFirst() { p.line(to: pt) }
+        p.close()
+        color.setFill()
+        p.fill()
     }
+
+    // Faces: top lightest, left mid, right darkest.
+    fill([T, R, M, L], NSColor(calibratedRed: 0.96, green: 0.97, blue: 0.99, alpha: 1))
+    // Clear shadow so faces stay crisp.
+    NSShadow().set()
+    fill([L, M, B, BL], NSColor(calibratedRed: 0.85, green: 0.89, blue: 0.94, alpha: 1))
+    fill([M, R, BR, B], NSColor(calibratedRed: 0.72, green: 0.80, blue: 0.87, alpha: 1))
+
+    // Cyan terminal caret on left face.
+    let fx = (L.x + M.x + B.x + BL.x) / 4
+    let fy = (L.y + M.y + B.y + BL.y) / 4
+    let w = size * 0.045
+    let hh = size * 0.075
+    let t = size * 0.018
+    let caret = NSBezierPath()
+    caret.move(to: NSPoint(x: fx - w * 0.5, y: fy + hh))
+    caret.line(to: NSPoint(x: fx + w * 0.8, y: fy))
+    caret.line(to: NSPoint(x: fx - w * 0.5, y: fy - hh))
+    caret.line(to: NSPoint(x: fx - w * 0.5 + t, y: fy - hh + t * 0.9))
+    caret.line(to: NSPoint(x: fx + w * 0.35, y: fy))
+    caret.line(to: NSPoint(x: fx - w * 0.5 + t, y: fy + hh - t * 0.9))
+    caret.close()
+    NSColor(calibratedRed: 0.37, green: 0.92, blue: 0.83, alpha: 1).setFill()
+    caret.fill()
 
     return img
 }
