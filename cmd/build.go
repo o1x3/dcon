@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"dcon/internal/buildssh"
 	"dcon/internal/pool"
 	"dcon/internal/runtime"
 
@@ -221,8 +222,20 @@ func buildBuildArgs(cmd *cobra.Command, args []string) ([]string, error) {
 	if f.Changed("push") {
 		fmt.Fprintln(os.Stderr, "dcon: warning: --push is not supported by the backend; build, then push separately with 'dcon push'")
 	}
+
+	// --ssh: Apple container ≥ 1.2.1 accepts only `--ssh default` (agent).
+	if f.Changed("ssh") {
+		enable, warns := buildssh.Translate(mustStringArray(f, "ssh"))
+		for _, w := range warns {
+			fmt.Fprintln(os.Stderr, "dcon: warning: "+w)
+		}
+		if enable {
+			cargs = append(cargs, "--ssh", "default")
+		}
+	}
+
 	for _, name := range []string{
-		"network", "add-host", "ssh", "squash", "build-context",
+		"network", "add-host", "squash", "build-context",
 		"no-cache-filter", "cgroup-parent", "isolation", "shm-size", "ulimit",
 		"memory-swap", "security-opt", "metadata-file", "allow", "builder",
 		"provenance", "sbom", "attest", "annotation", "compress",
@@ -265,7 +278,9 @@ func addBuildFlags(cmd *cobra.Command) {
 	// Accepted-but-ignored docker build flags
 	f.String("network", "", "Networking mode for RUN instructions (unsupported)")
 	f.StringSlice("add-host", nil, "Add a custom host-to-IP mapping (unsupported)")
-	f.StringSlice("ssh", nil, "SSH agent socket or keys to expose (unsupported)")
+	// StringArray: SSH specs can contain commas (id=default,src=…); StringSlice
+	// would corrupt them. Apple only honors `--ssh default` (see buildssh).
+	f.StringArray("ssh", nil, "SSH agent to expose to the build (Apple container 1.2.1+: only default)")
 	f.Bool("squash", false, "Squash newly built layers (unsupported)")
 	f.String("iidfile", "", "Write the image ID to the file")
 	f.StringArray("build-context", nil, "Additional build contexts (unsupported)")

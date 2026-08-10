@@ -29,7 +29,7 @@ func TestNoFlagShorthandCollisions(t *testing.T) {
 
 // TestCoreCommandsRegistered sanity-checks that the headline commands exist.
 func TestCoreCommandsRegistered(t *testing.T) {
-	want := []string{"run", "ps", "images", "build", "compose", "exec", "logs", "volume", "network", "version"}
+	want := []string{"run", "ps", "images", "build", "compose", "exec", "logs", "volume", "network", "version", "k8s", "machine"}
 	have := map[string]bool{}
 	for _, c := range rootCmd.Commands() {
 		have[c.Name()] = true

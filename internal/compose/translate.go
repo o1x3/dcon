@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"dcon/internal/buildssh"
 	"dcon/internal/netflag"
 )
 
@@ -597,6 +598,17 @@ func (p *Project) BuildArgs(service string, svc *Service) []string {
 	}
 	if svc.Platform != "" {
 		args = append(args, "--platform", svc.Platform)
+	}
+	// Compose build.ssh → Apple `--ssh default` (agent only). Unsupported specs
+	// are warned; a valid default still enables forwarding.
+	if len(svc.Build.SSH) > 0 {
+		enable, warns := buildssh.Translate([]string(svc.Build.SSH))
+		for _, w := range warns {
+			fmt.Fprintln(os.Stderr, "dcon: warning: "+w)
+		}
+		if enable {
+			args = append(args, "--ssh", "default")
+		}
 	}
 	args = append(args, ctx)
 	return args

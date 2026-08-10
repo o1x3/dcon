@@ -386,7 +386,12 @@ func newExportCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "export [OPTIONS] CONTAINER",
 		Short: "Export a container's filesystem as a tar archive",
-		Args:  cobra.ExactArgs(1),
+		Long: `Export a container's filesystem as a tar archive.
+
+On Apple container ≥ 1.2.1, running containers are snapshotted automatically so
+export works without stopping first (older backends required a stopped
+container).`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cargs := []string{"export"}
 			if o, _ := cmd.Flags().GetString("output"); o != "" {

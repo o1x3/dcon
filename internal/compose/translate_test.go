@@ -160,6 +160,24 @@ func indexOf(args []string, want string) int {
 	return -1
 }
 
+func TestBuildArgsSSHDefault(t *testing.T) {
+	p := &Project{Name: "proj", Dir: "/tmp"}
+	svc := &Service{Build: Build{Context: ".", SSH: StringList{"default"}}}
+	svc.Build.set = true
+	got := p.BuildArgs("web", svc)
+	mustContainPair(t, got, "--ssh", "default")
+}
+
+func TestBuildArgsSSHUnsupportedDropped(t *testing.T) {
+	p := &Project{Name: "proj", Dir: "/tmp"}
+	svc := &Service{Build: Build{Context: ".", SSH: StringList{"id=foo,src=/tmp/k"}}}
+	svc.Build.set = true
+	got := p.BuildArgs("web", svc)
+	if indexOf(got, "--ssh") != -1 {
+		t.Errorf("unsupported ssh must not reach build args: %v", got)
+	}
+}
+
 func TestOneOffArgsEnvAndOverride(t *testing.T) {
 	p := &Project{Name: "proj", Dir: "/tmp"}
 	svc := &Service{Image: "nginx", Command: StringList{"orig"}}

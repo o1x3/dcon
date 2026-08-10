@@ -75,6 +75,9 @@ func init() {
 		// dcon-native: warm-VM pool (sub-OrbStack start latency) + setup doctor
 		newWarmCmd(), newDoctorCmd(),
 
+		// Apple-container-native (no Docker analogue): local k8s clusters (1.2.1+)
+		newPassthrough("k8s [SUBCOMMAND]", "Manage local Kubernetes development clusters (Apple container 1.2+ experimental)", []string{"k8s"}),
+
 		// management groups
 		newContainerGroupCmd(), newImageGroupCmd(), newVolumeGroupCmd(),
 		newNetworkGroupCmd(), newSystemGroupCmd(), newBuilderGroupCmd(),

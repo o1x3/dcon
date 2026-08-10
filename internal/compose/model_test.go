@@ -96,6 +96,31 @@ services:
 	}
 }
 
+func TestLoadBuildSSH(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yaml")
+	content := `
+services:
+  web:
+    build:
+      context: .
+      ssh:
+        - default
+        - id=default
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(path, "proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ssh := p.Services["web"].Build.SSH
+	if len(ssh) != 2 || ssh[0] != "default" || ssh[1] != "id=default" {
+		t.Errorf("build.ssh = %v", ssh)
+	}
+}
+
 func TestLoadBuildMapForm(t *testing.T) {
 	p := loadSample(t)
 	api := p.Services["api"]
