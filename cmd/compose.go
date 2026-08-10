@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"dcon/internal/buildssh"
 	"dcon/internal/compose"
 	"dcon/internal/dockerfmt"
 	"dcon/internal/runtime"
@@ -1047,6 +1048,16 @@ func composeBuild() *cobra.Command {
 				for _, ba := range extraArgs {
 					bargs = append(bargs, "--build-arg", ba)
 				}
+				if cmd.Flags().Changed("ssh") {
+					sshSpecs, _ := cmd.Flags().GetStringArray("ssh")
+					enable, warns := buildssh.Translate(sshSpecs)
+					for _, w := range warns {
+						fmt.Fprintln(os.Stderr, "dcon: warning: "+w)
+					}
+					if enable {
+						bargs = append(bargs, "--ssh", "default")
+					}
+				}
 				if err := runtime.Run(bargs...); err != nil {
 					return err
 				}
@@ -1061,7 +1072,7 @@ func composeBuild() *cobra.Command {
 	cmd.Flags().String("progress", "", "Set type of progress output (accepted)")
 	cmd.Flags().Bool("with-dependencies", false, "Also build dependencies (transitively) (no-op)")
 	cmd.Flags().Bool("push", false, "Push service images (unsupported; use 'dcon compose push')")
-	cmd.Flags().StringArray("ssh", nil, "Set SSH authentications used when building (unsupported)")
+	cmd.Flags().StringArray("ssh", nil, "SSH agent to expose to the build (Apple container 1.2.1+: only default)")
 	cmd.Flags().StringP("memory", "m", "", "Set memory limit for the build container (accepted)")
 	return cmd
 }

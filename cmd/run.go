@@ -15,6 +15,7 @@ import (
 	"dcon/internal/netflag"
 	"dcon/internal/pool"
 	"dcon/internal/runtime"
+	"dcon/internal/secopt"
 
 	"github.com/spf13/cobra"
 )
@@ -81,6 +82,9 @@ func addRunFlags(cmd *cobra.Command) {
 	f.StringP("arch", "a", "", "Target architecture for a multi-arch image (e.g. arm64, amd64)")
 	f.String("os", "", "Target OS for a multi-OS image")
 	f.StringP("kernel", "k", "", "Custom kernel path")
+	f.StringArray("kernel-arg", nil, "Append a raw boot argument to the guest kernel command line (Apple container 1.2+)")
+	f.StringArray("read-only-path", nil, "Mark a path inside the container read-only (Apple container 1.2+; NONE clears defaults)")
+	f.StringArray("masked-path", nil, "Hide a path inside the container (Apple container 1.2+; NONE clears defaults)")
 	f.String("init-image", "", "Custom init image")
 	f.String("dns-domain", "", "Default DNS domain")
 	f.String("runtime", "", "Runtime handler for the container")
@@ -134,8 +138,9 @@ func addRunFlags(cmd *cobra.Command) {
 	// Logging
 	f.String("log-driver", "", "Logging driver for the container (unsupported by backend)")
 	f.StringArray("log-opt", nil, "Log driver options (unsupported by backend)")
-	// Security / OCI metadata
-	f.StringArray("security-opt", nil, "Security options (unsupported by backend)")
+	// Security / OCI metadata. systempaths=unconfined is translated; other
+	// values warn-and-ignore (see secopt.Translate).
+	f.StringArray("security-opt", nil, "Security options (systempaths=unconfined → --masked-path NONE; others ignored)")
 	f.StringArray("annotation", nil, "Add an OCI annotation to the container (unsupported by backend)")
 	f.Bool("disable-content-trust", true, "Skip image signing verification (no-op; backend has no content trust)")
 	// Resource limits the backend cannot honor
@@ -448,6 +453,18 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 		out = append(out, "--env", e)
 	}
 
+	// --security-opt: translate what the backend can approximate; warn on the rest.
+	// Emit BEFORE explicit --masked-path so systempaths=unconfined (--masked-path
+	// NONE) clears defaults first; subsequent --masked-path values then rebuild
+	// a custom set (Apple processes values in order).
+	if f.Changed("security-opt") {
+		so := secopt.Translate(mustStringArray(f, "security-opt"))
+		for _, p := range so.MaskedPaths {
+			out = append(out, "--masked-path", p)
+		}
+		warnings = append(warnings, so.Warnings...)
+	}
+
 	// repeatable string flags -> repeated container flags
 	sliceMap := []struct{ name, flag string }{
 		{"env-file", "--env-file"},
@@ -455,6 +472,10 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 		{"cap-add", "--cap-add"}, {"cap-drop", "--cap-drop"},
 		{"dns", "--dns"}, {"dns-search", "--dns-search"},
 		{"publish-socket", "--publish-socket"}, {"ulimit", "--ulimit"},
+		// Apple container ≥ 1.2.0/1.2.1 extras (boot-bound; warm-ineligible).
+		{"kernel-arg", "--kernel-arg"},
+		{"read-only-path", "--read-only-path"},
+		{"masked-path", "--masked-path"},
 	}
 	for _, s := range sliceMap {
 		vals, _ := f.GetStringArray(s.name)
@@ -537,8 +558,8 @@ func buildContainerArgs(cmd *cobra.Command, posArgs []string, subcmd string) ([]
 		"link": "--link", "link-local-ip": "--link-local-ip", "network-alias": "--network-alias",
 		// Logging
 		"log-driver": "--log-driver", "log-opt": "--log-opt",
-		// Security / OCI metadata
-		"security-opt": "--security-opt", "annotation": "--annotation",
+		// Security / OCI metadata (--security-opt partially translated above)
+		"annotation": "--annotation",
 		// Resource limits
 		"pids-limit": "--pids-limit", "cpuset-cpus": "--cpuset-cpus", "cpuset-mems": "--cpuset-mems",
 		"cpu-period": "--cpu-period", "cpu-quota": "--cpu-quota",

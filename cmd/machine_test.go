@@ -128,6 +128,9 @@ func TestMachineCreateVirtFlagsRegistered(t *testing.T) {
 	if f := c.Flags().Lookup("kernel"); f == nil {
 		t.Error("machine create missing --kernel")
 	}
+	if f := c.Flags().Lookup("kernel-arg"); f == nil {
+		t.Error("machine create missing --kernel-arg")
+	}
 	if f := c.Flags().Lookup("mount-home"); f == nil {
 		t.Error("machine create missing --mount-home")
 	}

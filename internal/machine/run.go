@@ -72,9 +72,10 @@ type CreateOpts struct {
 	Memory         string
 	Arch           string
 	MountHome      bool
-	HomePath       string // absolute host home dir, mounted at /mnt/mac when MountHome
-	Virtualization bool   // expose nested virt (/dev/kvm); needs M3+ and a KVM-enabled kernel
-	Kernel         string // custom guest kernel path (e.g. for nested virt)
+	HomePath       string   // absolute host home dir, mounted at /mnt/mac when MountHome
+	Virtualization bool     // expose nested virt (/dev/kvm); needs M3+ and a KVM-enabled kernel
+	Kernel         string   // custom guest kernel path (e.g. for nested virt)
+	KernelArgs     []string // extra guest kernel boot args (Apple container ≥ 1.2.0 --kernel-arg)
 }
 
 // BuildRunArgs builds the `container run` argument list that boots a machine. It
@@ -111,6 +112,12 @@ func BuildRunArgs(o CreateOpts) ([]string, error) {
 	}
 	if o.Kernel != "" {
 		out = append(out, "--kernel", o.Kernel)
+	}
+	for _, a := range o.KernelArgs {
+		if a == "" {
+			continue
+		}
+		out = append(out, "--kernel-arg", a)
 	}
 	if o.MountHome {
 		if o.HomePath == "" {

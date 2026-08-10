@@ -174,10 +174,11 @@ func (u *Ulimits) UnmarshalYAML(value *yaml.Node) error {
 
 // Build is `build:` which may be a string (context) or a mapping.
 type Build struct {
-	Context    string `yaml:"context"`
-	Dockerfile string `yaml:"dockerfile"`
-	Args       EnvMap `yaml:"args"`
-	Target     string `yaml:"target"`
+	Context    string     `yaml:"context"`
+	Dockerfile string     `yaml:"dockerfile"`
+	Args       EnvMap     `yaml:"args"`
+	Target     string     `yaml:"target"`
+	SSH        StringList `yaml:"ssh"` // Compose build.ssh → container build --ssh (1.2.1+)
 	set        bool
 }
 

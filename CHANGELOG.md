@@ -6,6 +6,29 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-08-10
+
+Utilize Apple container 1.2.x upstream features and tighten the Docker translation
+layer around them.
+
+### Added
+- **`dcon build --ssh default`** (and `id=default`) now forwards to Apple
+  container's `--ssh default` agent forwarding (apple/container ≥ 1.2.1). Named
+  agents and key-file forms warn and are ignored. Compose `build.ssh` and
+  `dcon compose build --ssh` use the same path.
+- **`--read-only-path` / `--masked-path` on `run`/`create`** — Apple container
+  1.2.1 experimental OCI path controls (repeatable; `NONE` clears defaults).
+- **`--kernel-arg` on `run`/`create` and `dcon machine create`** — forward raw
+  guest kernel boot arguments (apple/container ≥ 1.2.0).
+- **`dcon k8s …`** — passthrough to Apple's experimental local Kubernetes
+  plugin (`container k8s`, apple/container ≥ 1.2.1).
+
+### Changed
+- **`--security-opt systempaths=unconfined`** now maps to `--masked-path NONE`
+  instead of being silently ignored; other `security-opt` values still warn.
+- `dcon export` help notes that apple/container ≥ 1.2.1 snapshots running
+  containers automatically (no stop required).
+
 ## [1.2.1] — 2026-07-21
 
 Utilize Apple container 1.1.0 upstream features in the Docker translation layer.
@@ -145,7 +168,8 @@ First release. A drop-in Docker CLI for macOS, backed by Apple's `container`.
   option normalization, comma-containing flag values via `StringArray`).
 - Flag-shorthand collisions that panicked `compose run`/`logs`/`rm` and `history`.
 
-[Unreleased]: https://github.com/o1x3/dcon/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/o1x3/dcon/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/o1x3/dcon/releases/tag/v1.3.0
 [1.2.1]: https://github.com/o1x3/dcon/releases/tag/v1.2.1
 [1.2.0]: https://github.com/o1x3/dcon/releases/tag/v1.2.0
 [1.1.0]: https://github.com/o1x3/dcon/releases/tag/v1.1.0

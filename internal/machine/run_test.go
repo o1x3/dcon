@@ -84,6 +84,35 @@ func TestBuildRunArgsVirtKernelAlone(t *testing.T) {
 	}
 }
 
+func TestBuildRunArgsKernelArgs(t *testing.T) {
+	got, err := BuildRunArgs(CreateOpts{
+		Name: "u", Distro: "ubuntu", Image: "ubuntu:latest",
+		Kernel: "/k", KernelArgs: []string{"console=hvc0", "", "quiet"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsPairArgs(got, "--kernel", "/k") {
+		t.Errorf("missing --kernel: %v", got)
+	}
+	if !containsPairArgs(got, "--kernel-arg", "console=hvc0") || !containsPairArgs(got, "--kernel-arg", "quiet") {
+		t.Errorf("missing --kernel-arg: %v", got)
+	}
+	// empty KernelArgs entries must be skipped (no bare --kernel-arg)
+	n := 0
+	for i := 0; i+1 < len(got); i++ {
+		if got[i] == "--kernel-arg" {
+			n++
+			if got[i+1] == "" {
+				t.Errorf("empty kernel-arg value emitted: %v", got)
+			}
+		}
+	}
+	if n != 2 {
+		t.Errorf("want 2 --kernel-arg pairs, got %d in %v", n, got)
+	}
+}
+
 func TestBuildRunArgsVirtKernelOrder(t *testing.T) {
 	// Flag order is part of the pure-builder contract (and keeps golden diffs
 	// stable): resources → virt → kernel → volume → image → keepalive.

@@ -43,6 +43,10 @@ Nested virtualization (Apple container 1.1+, M3+ host, KVM-enabled kernel):
 
   dcon machine create ubuntu --virtualization --kernel /path/to/vmlinux-kvm
 
+Custom guest kernel boot args (Apple container 1.2+):
+
+  dcon machine create ubuntu --kernel-arg console=hvc0
+
 Apple's native machine group remains reachable via ` + "`dcon machine native …`" + `.
 
 Supported distros: ` + strings.Join(machine.Distros(), ", "),
@@ -218,6 +222,7 @@ func machineCreateCmd() *cobra.Command {
 			}
 			opts.Virtualization, _ = cmd.Flags().GetBool("virtualization")
 			opts.Kernel, _ = cmd.Flags().GetString("kernel")
+			opts.KernelArgs, _ = cmd.Flags().GetStringArray("kernel-arg")
 			for _, f := range []string{"set-password", "disk", "user"} {
 				if cmd.Flags().Changed(f) {
 					fmt.Fprintf(os.Stderr, "dcon: warning: --%s is not supported by the container backend and was ignored\n", f)
@@ -253,6 +258,7 @@ func machineCreateCmd() *cobra.Command {
 	f.Bool("mount-home", false, "Bind-mount your macOS home directory at /mnt/mac inside the machine")
 	f.Bool("virtualization", false, "Expose nested virtualization (/dev/kvm; requires M3+, macOS 15+, and a KVM-enabled kernel)")
 	f.String("kernel", "", "Path to a custom guest kernel (e.g. a vmlinux built with CONFIG_KVM=y)")
+	f.StringArray("kernel-arg", nil, "Append a raw boot argument to the guest kernel command line (Apple container 1.2+)")
 	// Accepted-but-unsupported OrbStack flags (warned, not errored, for parity).
 	f.Bool("set-password", false, "Set a password for the default user (unsupported by backend)")
 	f.String("disk", "", "Disk size, e.g. 64G (unsupported; the backend sizes storage automatically)")
