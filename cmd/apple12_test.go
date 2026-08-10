@@ -50,14 +50,14 @@ func TestRunKernelArg(t *testing.T) {
 // TestRunSecurityOptSystempathsUnconfined maps Docker's systempaths=unconfined
 // onto --masked-path NONE and still warns on other security-opt values.
 func TestRunSecurityOptSystempathsUnconfined(t *testing.T) {
+	restore := captureStderr(t)
 	c := parse(t, newRunCmd(), []string{
 		"--security-opt", "systempaths=unconfined",
 		"--security-opt", "seccomp=unconfined",
 		"alpine",
 	})
-	stderr, restore := captureStderr(t)
-	defer restore()
 	got, err := buildContainerArgs(c, c.Flags().Args(), "run")
+	out := restore()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,6 @@ func TestRunSecurityOptSystempathsUnconfined(t *testing.T) {
 	if contains(got, "--security-opt") {
 		t.Errorf("--security-opt must not leak: %v", got)
 	}
-	out := stderr.String()
 	if !strings.Contains(out, "seccomp=unconfined") {
 		t.Errorf("expected warning for seccomp; stderr=%q", out)
 	}
@@ -118,39 +117,39 @@ func TestBuildSSHDefault(t *testing.T) {
 
 // TestBuildSSHUnsupportedWarnsAndDrops key-file / named-agent forms.
 func TestBuildSSHUnsupportedWarnsAndDrops(t *testing.T) {
+	restore := captureStderr(t)
 	c := parse(t, newBuildCmd(), []string{"--ssh", "id=mykey,src=/tmp/k", "-t", "img", "."})
-	stderr, restore := captureStderr(t)
-	defer restore()
 	got, err := buildBuildArgs(c, c.Flags().Args())
+	out := restore()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if contains(got, "--ssh") {
 		t.Errorf("unsupported --ssh must not reach backend; got %v", got)
 	}
-	if !strings.Contains(stderr.String(), "not supported") {
-		t.Errorf("expected warning; stderr=%q", stderr.String())
+	if !strings.Contains(out, "not supported") {
+		t.Errorf("expected warning; stderr=%q", out)
 	}
 }
 
 // TestBuildSSHMixed enables default while warning on the bad sibling.
 func TestBuildSSHMixed(t *testing.T) {
+	restore := captureStderr(t)
 	c := parse(t, newBuildCmd(), []string{
 		"--ssh", "id=foo",
 		"--ssh", "default",
 		"-t", "img", ".",
 	})
-	stderr, restore := captureStderr(t)
-	defer restore()
 	got, err := buildBuildArgs(c, c.Flags().Args())
+	out := restore()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !containsPair(got, "--ssh", "default") {
 		t.Errorf("default should still enable; got %v", got)
 	}
-	if !strings.Contains(stderr.String(), "id=foo") {
-		t.Errorf("expected warning for id=foo; stderr=%q", stderr.String())
+	if !strings.Contains(out, "id=foo") {
+		t.Errorf("expected warning for id=foo; stderr=%q", out)
 	}
 }
 
@@ -220,7 +219,7 @@ func TestExportHelpMentionsLiveSnapshot(t *testing.T) {
 	}
 }
 
-func captureStderr(t *testing.T) (*bytes.Buffer, func()) {
+func captureStderr(t *testing.T) func() string {
 	t.Helper()
 	var buf bytes.Buffer
 	old := os.Stderr
@@ -234,10 +233,11 @@ func captureStderr(t *testing.T) (*bytes.Buffer, func()) {
 		_, _ = io.Copy(&buf, r)
 		close(done)
 	}()
-	return &buf, func() {
+	return func() string {
 		_ = w.Close()
 		<-done
 		_ = r.Close()
 		os.Stderr = old
+		return buf.String()
 	}
 }
